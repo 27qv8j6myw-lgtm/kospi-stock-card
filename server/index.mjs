@@ -1,0 +1,678 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import cors from 'cors'
+import dotenv from 'dotenv'
+import express from 'express'
+import { inquireChartByTimeframe, inquireDomesticPrice, inquireInvestorByStock } from './kisClient.mjs'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+/** `server/` 의 부모 = 프로젝트 루트 (실행 cwd 와 무관) */
+const PROJECT_ROOT = path.resolve(__dirname, '..')
+const ENV_PATH = path.join(PROJECT_ROOT, '.env')
+
+// dotenv v17+: 이미 process.env 에 키가 있으면(빈 문자열 포함) .env 값을 쓰지 않음.
+// IDE/에이전트가 KIS_APP_KEY= 형태로 비워 둔 경우가 있어 override 필수.
+const envLoad = dotenv.config({
+  path: ENV_PATH,
+  override: true,
+  quiet: true,
+})
+if (envLoad.error && envLoad.error.code !== 'ENOENT') {
+  console.warn('[dotenv]', envLoad.error.message)
+}
+
+const PORT = Number(process.env.PORT) || 8787
+const app = express()
+
+/** .env 에 따옴표·앞뒤 공백이 붙은 비밀값 정리 */
+function cleanEnvSecret(v) {
+  if (v == null || typeof v !== 'string') return ''
+  let s = v.trim()
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim()
+  }
+  return s
+}
+
+
+/** 차트 요청 캐시/중복제거 (모의투자 호출 제한 보호) */
+const chartCache = new Map()
+const chartInflight = new Map()
+const logicCache = new Map()
+const logicInflight = new Map()
+
+function chartTtlMs(tf) {
+  return tf === '3D' ? 5_000 : 10 * 60_000
+}
+
+function logicTtlMs() {
+  // vps 호출 제한 보호: 로직 지표는 10분 캐시
+  return 10 * 60_000
+}
+
+function clamp(n, lo, hi) {
+  return Math.max(lo, Math.min(hi, n))
+}
+
+function mean(arr) {
+  if (!arr.length) return 0
+  return arr.reduce((a, b) => a + b, 0) / arr.length
+}
+
+function stddev(arr) {
+  if (arr.length < 2) return 0
+  const m = mean(arr)
+  const v = mean(arr.map((x) => (x - m) ** 2))
+  return Math.sqrt(v)
+}
+
+function computeRsi(closes, period = 14) {
+  if (closes.length < period + 1) return null
+  let gain = 0
+  let loss = 0
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1]
+    if (diff >= 0) gain += diff
+    else loss += Math.abs(diff)
+  }
+  const avgGain = gain / period
+  const avgLoss = loss / period
+  if (avgLoss === 0) return 100
+  const rs = avgGain / avgLoss
+  return 100 - 100 / (1 + rs)
+}
+
+function formatSupplyDate(yyyymmdd) {
+  const s = String(yyyymmdd || '')
+  if (s.length !== 8) return '최근 거래일'
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
+}
+
+function parseNumberText(v) {
+  if (v == null) return null
+  const n = Number(String(v).replace(/[^\d.-]/g, ''))
+  return Number.isFinite(n) ? n : null
+}
+
+async function fetchNaverConsensus(code6) {
+  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const url = `https://finance.naver.com/item/main.naver?code=${code}`
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Mozilla/5.0',
+      accept: 'text/html,application/xhtml+xml',
+    },
+  })
+  if (!res.ok) throw new Error(`네이버 컨센서스 조회 실패 (${res.status})`)
+  const html = await res.text()
+  const table = html.match(/<table[^>]*summary="투자의견 정보"[\s\S]*?<\/table>/)?.[0] ?? ''
+  if (!table) return null
+
+  const recommendationScore = parseNumberText(
+    table.match(/<span class="f_(?:up|down|eq)"><em>([\d.]+)<\/em>/)?.[1],
+  )
+  const recommendationText =
+    table.match(/<span class="f_(?:up|down|eq)"><em>[\d.]+<\/em>\s*([^<\s]+)/)?.[1] ?? null
+  const targetPrice = parseNumberText(table.match(/<span class="bar">l<\/span>\s*<em>([\d,]+)<\/em>/)?.[1])
+  if (!targetPrice || targetPrice <= 0) return null
+
+  return {
+    source: 'naver-finance',
+    avgTargetPrice: targetPrice,
+    maxTargetPrice: targetPrice,
+    recommendationScore,
+    recommendationText,
+    analystCount: null,
+    lastUpdateDays: null,
+  }
+}
+
+function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
+  const closes = chart1m.map((p) => Number(p.price)).filter((n) => Number.isFinite(n))
+  const last = closes.length ? closes[closes.length - 1] : quote.price
+  const prev = closes.length > 1 ? closes[closes.length - 2] : last
+  const sma20 = closes.length >= 20 ? mean(closes.slice(-20)) : mean(closes)
+  const rsi = computeRsi(closes, 14)
+  const mfiProxy = rsi == null ? null : clamp(rsi - 3, 0, 100)
+
+  let upStreak = 0
+  for (let i = closes.length - 1; i > 0; i--) {
+    if (closes[i] > closes[i - 1]) upStreak += 1
+    else break
+  }
+  let downStreak = 0
+  for (let i = closes.length - 1; i > 0; i--) {
+    if (closes[i] < closes[i - 1]) downStreak += 1
+    else break
+  }
+
+  const rets = []
+  const diffs = []
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1] > 0) rets.push((closes[i] - closes[i - 1]) / closes[i - 1])
+    diffs.push(Math.abs(closes[i] - closes[i - 1]))
+  }
+  const volDaily = stddev(rets.slice(-20))
+  const volPct = volDaily * Math.sqrt(252) * 100
+  const atrProxy = diffs.length ? mean(diffs.slice(-14)) : 0
+  const atrGap = atrProxy > 0 ? Math.abs(last - sma20) / atrProxy : 0
+
+  const m5Base = closes.length >= 6 ? closes[closes.length - 6] : prev
+  const m20Base = closes.length >= 21 ? closes[closes.length - 21] : prev
+  const m5 = m5Base > 0 ? ((last - m5Base) / m5Base) * 100 : 0
+  const m20 = m20Base > 0 ? ((last - m20Base) / m20Base) * 100 : 0
+
+  const trend = sma20 > 0 ? ((last - sma20) / sma20) * 100 : 0
+  const structureScore = Math.round(clamp(50 + trend * 6 + m20 * 1.2, 1, 99))
+  const executionScore = Math.round(
+    clamp(
+      55 +
+        (rsi == null ? 0 : (50 - Math.abs(50 - rsi)) * 0.5) -
+        volPct * 0.35 +
+        Math.abs(m5) * 0.8,
+      1,
+      99,
+    ),
+  )
+
+  const market =
+    Math.abs(quote.changePercent) >= 2.5
+      ? `Caution (일중 변동 ${quote.changePercent.toFixed(2)}%)`
+      : `Neutral (일중 변동 ${quote.changePercent.toFixed(2)}%)`
+
+  const foreignNetShares = investor?.latest?.foreignNetShares ?? num(quote.raw?.frgn_ntby_qty) ?? 0
+  const institutionNetShares =
+    investor?.latest?.institutionNetShares ??
+    num(quote.raw?.orgn_ntby_qty) ??
+    num(quote.raw?.inst_ntby_qty) ??
+    num(quote.raw?.orgn_ntby_vol) ??
+    num(quote.raw?.pgtr_ntby_qty) ??
+    0
+  const retailNetShares = investor?.latest?.personalNetShares ?? -(foreignNetShares + institutionNetShares)
+  const foreignNetAmount = investor?.latest?.foreignNetAmount ?? Math.round(foreignNetShares * quote.price)
+  const institutionNetAmount = investor?.latest?.institutionNetAmount ?? Math.round(institutionNetShares * quote.price)
+  const retailNetAmount = investor?.latest?.personalNetAmount ?? -(foreignNetAmount + institutionNetAmount)
+  const fiNetAmount = foreignNetAmount + institutionNetAmount
+  const flow = `수급 ${fiNetAmount >= 0 ? '우위' : '약세'} | 외인 ${foreignNetShares.toLocaleString('ko-KR')}주 · 기관 ${institutionNetShares.toLocaleString('ko-KR')}주`
+  const foreign = `외국인 ${foreignNetShares >= 0 ? '순매수' : '순매도'} ${Math.abs(foreignNetShares).toLocaleString('ko-KR')}주`
+  const institution = `기관 ${institutionNetShares >= 0 ? '순매수' : '순매도'} ${Math.abs(institutionNetShares).toLocaleString('ko-KR')}주`
+  const volume = `거래량 ${Number(quote.volume || 0).toLocaleString('ko-KR')}주`
+  const volatility = `연환산 변동성 ${volPct.toFixed(1)}%`
+  const momentum = `5일 ${m5 >= 0 ? '+' : ''}${m5.toFixed(2)}% · 20일 ${m20 >= 0 ? '+' : ''}${m20.toFixed(2)}%`
+  const candle = quote.change >= 0 ? '양봉(종가 우위) · 단기 상승 압력' : '음봉(종가 약세) · 단기 조정 압력'
+  const stats = `20일 평균 ${Math.round(sma20).toLocaleString('ko-KR')}원 대비 ${trend >= 0 ? '+' : ''}${trend.toFixed(2)}%`
+  const rotation =
+    Math.abs(m20) >= 6 ? (m20 > 0 ? 'Risk-On' : 'Risk-Off') : 'Neutral'
+  const structureState =
+    trend >= 1.5 ? '상승장 유지 / 눌림 대기' : trend <= -1.5 ? '하락장 진행 / 반등 경계' : '횡보 / 방향성 약함'
+  const adjustment = `CMF20 ${(m5 / 10).toFixed(2)} / Flow20 ${(quote.changePercent / 5).toFixed(2)}x`
+  const candleQuality = `CLV5 ${(m5 / 20).toFixed(2)} / CLV10 ${(m20 / 20).toFixed(2)}`
+  const liquidity = `ADV20 ${(Number(quote.tradeValue || 0) / 1_0000_0000_0000).toFixed(2)}조 / RVOL20 ${(Number(quote.volume || 0) / 50_000_000).toFixed(2)}x`
+  const indicator = `RSI ${rsi == null ? 'N/A' : rsi.toFixed(0)} / MFI ${mfiProxy == null ? 'N/A' : mfiProxy.toFixed(0)}`
+  const unusual = upStreak >= 4 || downStreak >= 4 ? `연속 ${upStreak >= 4 ? '상승' : '하락'} ${Math.max(upStreak, downStreak)}일` : '특이사항 없음'
+
+  return {
+    structure: `${structureScore} / 100`,
+    execution: `${executionScore} / 100`,
+    market,
+    flow,
+    technical: `RSI ${rsi == null ? 'N/A' : rsi.toFixed(1)} | SMA20 ${Math.round(sma20).toLocaleString('ko-KR')}`,
+    stats,
+    atrGap: `${atrGap.toFixed(1)} ATR`,
+    streak: upStreak > 0 ? `연속상승 ${upStreak}일` : downStreak > 0 ? `연속하락 ${downStreak}일` : '연속 없음',
+    rotation,
+    structureState,
+    adjustment,
+    candleQuality,
+    liquidity,
+    indicator,
+    unusual,
+    rsi: rsi == null ? 'RSI 데이터 부족' : `RSI ${rsi.toFixed(1)}`,
+    volume,
+    volatility,
+    foreign,
+    institution,
+    momentum,
+    candle,
+    supplyDetails: {
+      foreignNetShares,
+      foreignNetAmount,
+      institutionNetShares,
+      institutionNetAmount,
+      retailNetShares,
+      retailNetAmount,
+      supplyPeriod: formatSupplyDate(investor?.latest?.date),
+    },
+    consensusDetails: consensus || null,
+  }
+}
+
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+)
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      if (!origin || allowedOrigins.has(origin)) return cb(null, true)
+      return cb(null, false)
+    },
+  }),
+)
+
+
+async function generateAIFill({ openaiApiKey, model, payload }) {
+  const system = [
+    '너는 한국 주식 카드 데이터 생성기다.',
+    '입력 데이터를 바탕으로 과장 없이 보수적으로 요약한다.',
+    '반드시 JSON만 반환한다.',
+  ].join(' ')
+
+  const kisOk = payload?.kisDataAvailable !== false
+  const user = {
+    instruction: kisOk
+      ? '아래 시세/차트 입력을 바탕으로 카드 데이터를 생성해라. 최근 뉴스/공시/증권사 리포트 등 공개정보를 검색해 반영하고, 모든 문구는 한국어로 작성해라. 특히 logicIndicators의 각 필드는 1줄씩 반드시 채워라.'
+      : 'KIS 시세·차트 데이터가 없고 종목 코드(또는 최소 정보만) 주어졌다. 공개 정보·일반적 관점으로만 보수적으로 작성하고, 특정 가격·등락·수치는 단정하거나 꾸며내지 마라. 모르면 "데이터 없음" 톤으로 짧게 써라. 모든 문구는 한국어로. logicIndicators의 각 필드는 반드시 채워라.',
+    input: payload,
+    output_schema: {
+      summaryTitle: 'string',
+      summaryBody: 'string',
+      finalOpinion: {
+        finalGrade: 'A|B|C|D',
+        strategy: 'BUY|WATCH',
+        entryStage: '신규진입|보유|관망|익절',
+        keyReasons: ['핵심 근거1', '핵심 근거2', '핵심 근거3'],
+        risks: ['리스크1', '리스크2'],
+      },
+      executionSignals: {
+        decision: '신규진입|보유|관망|익절',
+        upsideScore: 0,
+        targetReturnPct: 0,
+        stopLossPct: 0,
+      },
+      executionPlan: 'string',
+      logicIndicators: {
+        structure: '예: 74 / 100',
+        execution: '예: 63 / 100',
+        market: '예: Caution (VIX 17.2)',
+        flow: '예: 에너지 중립 | 체결강도 1.02x',
+        technical: '예: RSI 58 | MFI 54',
+        stats: '예: 유사 패턴 승률 62.1%, 참고 수익률 +2.1%',
+        rsi: '예: RSI 58',
+        volume: '예: 20일 평균 대비 1.42x',
+        volatility: '예: 저변동 수축 구간',
+        foreign: '예: 외국인 3일 순매수',
+        institution: '예: 기관 2일 순매도',
+        momentum: '예: 단기 모멘텀 +0.6σ',
+        candle: '예: 양봉 장악형',
+      },
+      executionStrategy: {
+        positionSize: { percent: 0, amountKrw: 0, note: 'string' },
+        oneRLossKrw: 0,
+        oneRLossNote: 'string',
+        basePlan: 'string',
+        maxPositionPercent: 0,
+        maxPositionNote: 'string',
+      },
+      targets: [
+        { horizon: '1D', sub: '', price: 0, pct: 0, rate: 0, n: 0 },
+        { horizon: '7D', sub: '', price: 0, pct: 0, rate: 0, n: 0 },
+        { horizon: '1M', sub: '(21D)', price: 0, pct: 0, rate: 0, n: 0 },
+        { horizon: '3M', sub: '(63D)', price: 0, pct: 0, rate: 0, n: 0 },
+      ],
+    },
+  }
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: JSON.stringify(user) },
+      ],
+    }),
+  })
+
+  const text = await res.text()
+  let data = null
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error(`OpenAI 응답 파싱 실패: ${text.slice(0, 200)}`)
+  }
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `OpenAI 오류 (${res.status})`)
+  }
+
+  const content = data?.choices?.[0]?.message?.content
+  if (!content || typeof content !== 'string') {
+    throw new Error('OpenAI 응답에 content가 없습니다.')
+  }
+
+  let json = null
+  try {
+    json = JSON.parse(content)
+  } catch {
+    throw new Error('OpenAI content JSON 파싱 실패')
+  }
+
+  return json
+}
+
+app.get('/api/health', (_req, res) => {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  const openaiKey = cleanEnvSecret(process.env.OPENAI_API_KEY)
+  const hasKis = Boolean(appKey && appSecret)
+  const envFileExists = fs.existsSync(ENV_PATH)
+  res.json({
+    ok: true,
+    kisConfigured: hasKis,
+    openaiConfigured: Boolean(openaiKey),
+    kisEnv: process.env.KIS_ENV || 'vps',
+    openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    /** 비밀값은 절대 내려주지 않음 — 파일/변수만 점검용 */
+    check: {
+      envPath: ENV_PATH,
+      envFileExists,
+      appKeyPresent: Boolean(appKey),
+      appSecretPresent: Boolean(appSecret),
+      openaiKeyPresent: Boolean(openaiKey),
+    },
+  })
+})
+
+
+app.get('/api/chart', async (req, res) => {
+  const appKey = process.env.KIS_APP_KEY?.trim()
+  const appSecret = process.env.KIS_APP_SECRET?.trim()
+  if (!appKey || !appSecret) {
+    res.status(503).json({
+      error: '서버에 KIS_APP_KEY, KIS_APP_SECRET 이 설정되지 않았습니다.',
+    })
+    return
+  }
+
+  const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
+  const tf = String(req.query.tf || '3D')
+  if (!['3D', '1W', '1M', '3M', '1Y'].includes(tf)) {
+    res.status(400).json({ error: '지원하지 않는 timeframe 입니다.' })
+    return
+  }
+
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+  const key = `${env}:${code}:${tf}`
+  const ttl = chartTtlMs(tf)
+  const now = Date.now()
+
+  const cached = chartCache.get(key)
+  if (cached && now - cached.at < ttl) {
+    res.json({
+      code,
+      tf,
+      points: cached.points,
+      fetchedAt: new Date(cached.at).toISOString(),
+      kisEnv: env,
+      cached: true,
+    })
+    return
+  }
+
+  try {
+    let task = chartInflight.get(key)
+    if (!task) {
+      task = inquireChartByTimeframe(appKey, appSecret, env, code, tf)
+      chartInflight.set(key, task)
+    }
+    const points = await task
+    chartInflight.delete(key)
+
+    chartCache.set(key, { points, at: Date.now() })
+
+    res.json({
+      code,
+      tf,
+      points,
+      fetchedAt: new Date().toISOString(),
+      kisEnv: env,
+      cached: false,
+    })
+  } catch (e) {
+    chartInflight.delete(key)
+    const message = e instanceof Error ? e.message : String(e)
+
+    // 한도 초과 시 직전 캐시를 살려서 화면 깨짐 방지
+    if (message.includes('EGW00201')) {
+      const stale = chartCache.get(key)
+      if (stale?.points?.length) {
+        res.json({
+          code,
+          tf,
+          points: stale.points,
+          fetchedAt: new Date(stale.at).toISOString(),
+          kisEnv: env,
+          cached: true,
+          warning: 'KIS 호출 한도로 캐시 차트를 표시합니다.',
+        })
+        return
+      }
+    }
+
+    res.status(502).json({ error: message })
+  }
+})
+
+
+app.get('/api/ai-fill', async (req, res) => {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  const openaiApiKey = cleanEnvSecret(process.env.OPENAI_API_KEY)
+
+  if (!openaiApiKey) {
+    res.status(503).json({
+      error:
+        'OPENAI_API_KEY가 비어 있습니다. 프로젝트 루트 .env 에 키를 넣고 프록시 서버(npm run dev 또는 npm run dev:server)를 재시작하세요.',
+      stage: 'config',
+    })
+    return
+  }
+
+  const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'
+
+  let payload
+  if (appKey && appSecret) {
+    try {
+      const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
+      const chart1w = await inquireChartByTimeframe(appKey, appSecret, env, code, '1W')
+      const chart1m = await inquireChartByTimeframe(appKey, appSecret, env, code, '1M')
+
+      payload = {
+        code,
+        kisDataAvailable: true,
+        quote: {
+          nameKr: quote.nameKr,
+          market: quote.market,
+          price: quote.price,
+          change: quote.change,
+          changePercent: quote.changePercent,
+          volume: quote.volume,
+        },
+        chart: {
+          w1Last7: chart1w.slice(-7),
+          m1Last22: chart1m.slice(-22),
+        },
+        timestamp: new Date().toISOString(),
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[api/ai-fill] stage=kis', message)
+      res.status(502).json({
+        error: `KIS 조회 실패(시세·차트). OpenAI 이전 단계에서 중단되었습니다: ${message}`,
+        stage: 'kis',
+        hint: '모의투자 호출 한도·토큰 만료·종목코드를 확인하거나, KIS 없이 테스트하려면 .env 에서 KIS_APP_KEY/SECRET 을 비워 두면 됩니다.',
+      })
+      return
+    }
+  } else {
+    payload = {
+      code,
+      kisDataAvailable: false,
+      quote: null,
+      chart: { w1Last7: [], m1Last22: [] },
+      timestamp: new Date().toISOString(),
+    }
+  }
+
+  try {
+    const ai = await generateAIFill({ openaiApiKey, model, payload })
+    res.json({
+      code,
+      ai,
+      model,
+      kisDataAvailable: payload.kisDataAvailable === true,
+      fetchedAt: new Date().toISOString(),
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[api/ai-fill] stage=openai', message)
+    res.status(502).json({
+      error: message,
+      stage: 'openai',
+      hint:
+        '모델 이름을 확인하세요(.env 의 OPENAI_MODEL). 계정에서 쓸 수 있는 모델(예: gpt-4o-mini)로 바꿔 보세요.',
+    })
+  }
+})
+
+app.get('/api/logic-indicators', async (req, res) => {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  if (!appKey || !appSecret) {
+    res.status(503).json({
+      error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.',
+      stage: 'config',
+    })
+    return
+  }
+
+  const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+  const key = `${env}:${code}:v5`
+  const ttl = logicTtlMs()
+  const now = Date.now()
+
+  const cached = logicCache.get(key)
+  if (cached && now - cached.at < ttl) {
+    res.json({
+      code,
+      source: 'kis-derived',
+      logicIndicators: cached.logicIndicators,
+      fetchedAt: new Date(cached.at).toISOString(),
+      kisEnv: env,
+      cached: true,
+    })
+    return
+  }
+
+  try {
+    let task = logicInflight.get(key)
+    if (!task) {
+      task = (async () => {
+        const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
+        const chart1m = await inquireChartByTimeframe(appKey, appSecret, env, code, '1M')
+        const investor = await inquireInvestorByStock(appKey, appSecret, env, code)
+        const consensus = await fetchNaverConsensus(code).catch(() => null)
+        return computeKisLogicIndicators(quote, chart1m, investor, consensus)
+      })()
+      logicInflight.set(key, task)
+    }
+    const logicIndicators = await task
+    logicInflight.delete(key)
+    logicCache.set(key, { at: Date.now(), logicIndicators })
+    res.json({
+      code,
+      source: 'kis-derived',
+      logicIndicators,
+      fetchedAt: new Date().toISOString(),
+      kisEnv: env,
+      cached: false,
+    })
+  } catch (e) {
+    logicInflight.delete(key)
+    const message = e instanceof Error ? e.message : String(e)
+    const stale = logicCache.get(key)
+    if (stale?.logicIndicators) {
+      res.json({
+        code,
+        source: 'kis-derived',
+        logicIndicators: stale.logicIndicators,
+        fetchedAt: new Date(stale.at).toISOString(),
+        kisEnv: env,
+        cached: true,
+        warning: 'KIS 호출 한도로 캐시 로직 지표를 표시합니다.',
+      })
+      return
+    }
+    res.status(502).json({ error: message, stage: 'kis' })
+  }
+})
+
+app.get('/api/quote', async (req, res) => {
+  const appKey = process.env.KIS_APP_KEY?.trim()
+  const appSecret = process.env.KIS_APP_SECRET?.trim()
+  if (!appKey || !appSecret) {
+    res.status(503).json({
+      error:
+        '서버에 KIS_APP_KEY, KIS_APP_SECRET 이 설정되지 않았습니다. 프로젝트 루트 .env 경로를 확인하세요.',
+      check: {
+        envPath: ENV_PATH,
+        envFileExists: fs.existsSync(ENV_PATH),
+      },
+    })
+    return
+  }
+
+  const code = String(req.query.code || '005930')
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const q = await inquireDomesticPrice(appKey, appSecret, env, code)
+    const { raw: _raw, ...rest } = q
+    res.json({
+      ...rest,
+      fetchedAt: new Date().toISOString(),
+      kisEnv: env,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    res.status(502).json({ error: message })
+  }
+})
+
+export default app
+
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    const exists = fs.existsSync(ENV_PATH)
+    const kisOk = Boolean(cleanEnvSecret(process.env.KIS_APP_KEY) && cleanEnvSecret(process.env.KIS_APP_SECRET))
+    const oaOk = Boolean(cleanEnvSecret(process.env.OPENAI_API_KEY))
+    console.log(`KIS proxy listening on http://127.0.0.1:${PORT}`)
+    console.log(`[dotenv] ${ENV_PATH} exists=${exists}`)
+    console.log(`[ai-fill] KIS=${kisOk ? 'on' : 'off'} OpenAI=${oaOk ? 'on' : 'off'} model=${process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'}`)
+  })
+}

@@ -1,0 +1,181 @@
+export const metricGuides = {
+  structure: {
+    title: '구조',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '매우 강함', meaning: '정배열 또는 강한 상승 구조. 좋은 종목 후보로 유지 가능.' },
+      { min: 70, max: 84, label: '양호', meaning: '상승 구조는 유지되지만 일부 단기 부담 가능성 존재.' },
+      { min: 55, max: 69, label: '중립', meaning: '추세는 유지되나 확실한 상승 구조로 보기에는 애매함.' },
+      { min: 40, max: 54, label: '주의', meaning: '구조가 약화되고 있어 주요 지지선 확인 필요.' },
+      { min: 0, max: 39, label: '위험', meaning: '상승 구조가 훼손되어 신규진입 위험.' },
+    ],
+    note: '구조 점수가 높아도 실행 점수가 낮으면 신규진입은 보류합니다.',
+  },
+  execution: {
+    title: '실행',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '매우 좋음', meaning: '눌림목, 지지선, 손익비가 모두 좋아 신규진입 가능.' },
+      { min: 70, max: 84, label: '좋음', meaning: '진입 가능 구간이나 일부 단기 부담 존재.' },
+      { min: 55, max: 69, label: '보통', meaning: '종목은 괜찮지만 현재 가격대의 매력은 보통.' },
+      { min: 40, max: 54, label: '주의', meaning: '신규진입 매력이 낮아 관망이 유리.' },
+      { min: 0, max: 39, label: '비추천', meaning: '단기 과열, 저항선 근접, 손익비 부족으로 신규진입 비추천.' },
+    ],
+    note: '실행 점수는 지금 사도 되는지를 판단하는 핵심 지표입니다.',
+  },
+  supply: {
+    title: '수급',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '매우 강함', meaning: '외국인과 기관 수급이 강하게 유입되는 상태.' },
+      { min: 70, max: 84, label: '긍정', meaning: '수급 흐름이 상승 모멘텀을 지지.' },
+      { min: 55, max: 69, label: '중립', meaning: '방향성이 뚜렷하지 않은 수급.' },
+      { min: 40, max: 54, label: '주의', meaning: '기관 또는 외국인 수급 약화.' },
+      { min: 0, max: 39, label: '위험', meaning: '매도 압력이 우세한 수급.' },
+    ],
+    note: '국내주식 단기 모멘텀에서는 수급 점수를 중요하게 봅니다.',
+  },
+  rotation: {
+    title: '로테이션',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '주도 섹터', meaning: '시장 자금이 강하게 유입되는 핵심 주도 섹터.' },
+      { min: 70, max: 84, label: '긍정', meaning: '섹터 순환매 흐름이 긍정적.' },
+      { min: 55, max: 69, label: '중립', meaning: '섹터 흐름은 무난하지만 강한 주도력은 부족.' },
+      { min: 40, max: 54, label: '약화', meaning: '섹터 순환매 강도가 약해지는 구간.' },
+      { min: 0, max: 39, label: '소외', meaning: '시장 자금이 다른 섹터로 이동 중.' },
+    ],
+    note: '1개월 수익률 전략에서는 섹터 로테이션이 후보 우선순위에 큰 영향을 줍니다.',
+  },
+  consensus: {
+    title: '컨센서스',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '매우 높음', meaning: '평균 목표가 기준 상승여력이 크고 애널리스트 커버리지도 충분합니다.' },
+      { min: 70, max: 84, label: '긍정', meaning: '목표가 기준 상승여력이 유의미하게 남아 있습니다.' },
+      { min: 55, max: 69, label: '보통', meaning: '상승여력은 있으나 강한 저평가 구간은 아닙니다.' },
+      { min: 40, max: 54, label: '제한적', meaning: '평균 목표가 기준 상승여력이 크지 않습니다.' },
+      { min: 0, max: 39, label: '부담', meaning: '목표가 대비 상승여력이 부족하거나 이미 목표가에 근접했습니다.' },
+    ],
+    note: '컨센서스는 후행지표일 수 있으므로 수급·실적 모멘텀과 함께 봐야 합니다.',
+  },
+  valuation: {
+    title: '밸류에이션',
+    unit: '점',
+    ranges: [
+      {
+        min: 85,
+        max: 100,
+        label: '매우 매력적',
+        meaning: '실적 성장 대비 PER 부담이 낮고 forward 개선 폭이 큽니다.',
+      },
+      {
+        min: 70,
+        max: 84,
+        label: '긍정',
+        meaning: '실적 개선 기대가 반영되지만 아직 부담은 제한적입니다.',
+      },
+      {
+        min: 55,
+        max: 69,
+        label: '보통',
+        meaning: '현재 밸류에이션은 평균 수준입니다.',
+      },
+      {
+        min: 40,
+        max: 54,
+        label: '부담 증가',
+        meaning: '실적 기대가 상당 부분 선반영된 상태입니다.',
+      },
+      {
+        min: 0,
+        max: 39,
+        label: '고평가 위험',
+        meaning: 'PER 부담이 크고 역사적 고평가 구간일 가능성이 있습니다.',
+      },
+    ],
+    note: 'Forward PER이 낮아지는 것은 실적 성장 기대를 의미하지만, 과도한 기대는 리스크가 될 수 있습니다.',
+  },
+  indicators: {
+    title: '지표',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '강하지만 과열', meaning: '기술적 모멘텀이 강하지만 신규진입은 신중.' },
+      { min: 70, max: 84, label: '긍정', meaning: '기술적 흐름은 좋지만 과열 여부 확인 필요.' },
+      { min: 55, max: 69, label: '중립', meaning: '무난한 기술적 흐름.' },
+      { min: 40, max: 54, label: '약화', meaning: '기술적 흐름이 약해지는 구간.' },
+      { min: 0, max: 39, label: '약세', meaning: '기술적 지표상 약세 흐름.' },
+    ],
+    note: 'RSI 70 이상은 주의, 80 이상은 신규진입 부담으로 봅니다.',
+  },
+  atrDistance: {
+    title: 'ATR 이격',
+    unit: 'ATR',
+    ranges: [
+      { min: 0, max: 1.5, label: '정상', meaning: '평균 변동폭 내 움직임. 신규진입 부담 낮음.' },
+      { min: 1.5, max: 2.5, label: '강함', meaning: '상승 탄력이 있으나 단기 부담이 생기기 시작.' },
+      { min: 2.5, max: 3.5, label: '주의', meaning: '평균 변동폭 대비 많이 올라 신규진입 주의.' },
+      { min: 3.5, max: 99, label: '위험', meaning: '단기 과열 가능성이 높아 눌림 대기 유리.' },
+    ],
+    note: 'ATR 이격이 높을수록 좋은 종목이어도 신규진입 비중은 줄입니다.',
+  },
+  consecutiveRise: {
+    title: '연속상승',
+    unit: '일',
+    ranges: [
+      { min: 0, max: 2, label: '정상', meaning: '1~2일 상승은 정상적인 흐름.' },
+      { min: 3, max: 4, label: '주의', meaning: '단기 부담이 생기는 구간.' },
+      { min: 5, max: 99, label: '눌림 대기', meaning: '연속 상승 피로도가 높아 신규진입은 신중.' },
+    ],
+    note: '연속상승은 단독 판단 지표가 아니라 과열 보조 지표입니다.',
+  },
+  candleQuality: {
+    title: '캔들질',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '매우 좋음', meaning: '종가가 고가권에서 마감되며 매수세가 강함.' },
+      { min: 70, max: 84, label: '좋음', meaning: '캔들 흐름이 긍정적.' },
+      { min: 55, max: 69, label: '보통', meaning: '방향성은 있으나 강하지 않음.' },
+      { min: 40, max: 54, label: '주의', meaning: '윗꼬리 또는 저가 마감 증가.' },
+      { min: 0, max: 39, label: '위험', meaning: '매도 압력이 강한 캔들 흐름.' },
+    ],
+    note: '캔들질이 낮으면 좋은 종목도 단기 매물 소화가 필요합니다.',
+  },
+  market: {
+    title: '시장',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: 'Risk On', meaning: '시장 환경이 매우 우호적.' },
+      { min: 70, max: 84, label: '긍정', meaning: '시장 흐름이 긍정적.' },
+      { min: 55, max: 69, label: '중립', meaning: '방향성이 뚜렷하지 않음.' },
+      { min: 40, max: 54, label: '주의', meaning: '시장 리스크가 증가하는 구간.' },
+      { min: 0, max: 39, label: '위험', meaning: '시장 환경이 불안정.' },
+    ],
+    note: '시장 점수가 낮으면 전체 추천 비중과 최대 비중을 낮춥니다.',
+  },
+  special: {
+    title: '특이',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '강한 호재', meaning: '이벤트가 추세에 강한 우호 신호를 제공합니다.' },
+      { min: 70, max: 84, label: '긍정', meaning: '단기 수급/심리에 긍정 영향을 줄 수 있습니다.' },
+      { min: 55, max: 69, label: '중립', meaning: '특이 이벤트 영향이 제한적입니다.' },
+      { min: 40, max: 54, label: '주의', meaning: '이벤트 리스크가 일부 존재합니다.' },
+      { min: 0, max: 39, label: '위험', meaning: '악재성 이벤트 가능성이 높습니다.' },
+    ],
+    note: '특이 항목은 공시/이벤트성 변수로 단독 판단보다 보조 지표로 사용합니다.',
+  },
+  statistics: {
+    title: '통계',
+    unit: '점',
+    ranges: [
+      { min: 85, max: 100, label: '신뢰도 높음', meaning: '유사 패턴 승률과 표본 수가 충분.' },
+      { min: 70, max: 84, label: '참고 가능', meaning: '통계적으로 참고할 만한 수준.' },
+      { min: 55, max: 69, label: '보조 참고', meaning: '단독 판단에는 부족.' },
+      { min: 0, max: 54, label: '신뢰 낮음', meaning: '표본 수나 승률이 부족.' },
+    ],
+    note: '초기 MVP에서는 mock 데이터이므로 참고용으로만 봅니다.',
+  },
+} as const
+
+export type MetricGuideKey = keyof typeof metricGuides

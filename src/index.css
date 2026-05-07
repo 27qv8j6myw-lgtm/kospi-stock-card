@@ -1,0 +1,50 @@
+@import 'tailwindcss';
+
+@font-face {
+  font-family: 'Pretendard';
+  font-weight: 45 920;
+  font-display: swap;
+  src: url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/woff2/PretendardVariable.woff2')
+    format('woff2-variations');
+}
+
+@theme {
+  --font-sans: 'Pretendard', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --color-signal-bg: #f1f5f9;
+  --color-signal-surface: rgba(255, 255, 255, 0.82);
+  --color-signal-border: rgba(15, 23, 42, 0.08);
+  --shadow-signal-soft: 0 18px 48px -24px rgba(15, 23, 42, 0.14);
+  --shadow-signal-glow: 0 0 40px -12px rgba(14, 165, 233, 0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  background-color: var(--color-signal-bg);
+  color: #0f172a;
+}
+
+::selection {
+  background: rgba(14, 165, 233, 0.18);
+  color: #0f172a;
+}
+
+/* Reference: light grey page, white cards */
+.signal-backdrop {
+  background: #f3f4f6;
+}
+
+.tabular-nums-strong {
+  font-variant-numeric: tabular-nums lining-nums;
+}
