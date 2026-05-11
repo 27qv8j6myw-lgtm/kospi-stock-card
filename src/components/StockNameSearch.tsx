@@ -13,7 +13,7 @@ export type StockNameSearchProps = {
   value: string
   onChange: (v: string) => void
   onPick: (code: string, nameKr: string) => void
-  /** 레퍼런스용: 라벨 숨김 */
+  /** 컴팩트 모드: 라벨 숨김 */
   compact?: boolean
 }
 
@@ -110,7 +110,7 @@ export function StockNameSearch({
           type="search"
           autoComplete="off"
           spellCheck={false}
-          placeholder="삼성전자 · samsung · 005930"
+          placeholder="종목명 또는 6자리 코드"
           role="combobox"
           aria-expanded={open}
           aria-controls={listId + '-listbox'}
@@ -128,13 +128,7 @@ export function StockNameSearch({
           className="w-full rounded-xl border border-slate-200/95 bg-white/90 py-2.5 pl-11 pr-3.5 text-[15px] text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] outline-none ring-sky-400/20 placeholder:text-slate-400 focus:border-sky-400/55 focus:ring-2"
         />
       </div>
-      {loadError ? (
-        <p className="mt-2 text-xs text-rose-600">{loadError}</p>
-      ) : compact ? null : (
-        <p className="mt-2 text-xs text-slate-500">
-          한글 · 로마자 · 6자리 코드
-        </p>
-      )}
+      {loadError ? <p className="mt-2 text-xs text-rose-600">{loadError}</p> : null}
 
       {open && value.trim() && results.length > 0 ? (
         <ul
@@ -160,9 +154,6 @@ export function StockNameSearch({
                 <span className="font-semibold tracking-tight">{row.n}</span>
                 <span className="font-mono text-xs tabular-nums text-slate-500">
                   {row.c}
-                  {row.r ? (
-                    <span className="ml-2 font-sans text-slate-400">· {row.r}</span>
-                  ) : null}
                 </span>
               </button>
             </li>

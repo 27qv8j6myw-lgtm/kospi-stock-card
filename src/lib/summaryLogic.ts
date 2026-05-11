@@ -3,12 +3,12 @@ export type MetricSummaryInput = {
   structureScore: number
   executionScore: number
   supplyScore: number
-  rotationScore: number
+  sectorFlowScore: number
   consensusScore: number
   valuationScore: number
-  foreignNetAmount: number
-  institutionNetAmount: number
-  retailNetAmount: number
+  foreignNetAmount3D: number
+  institutionNetAmount3D: number
+  retailNetAmount3D: number
   indicatorScore: number
   candleQualityScore: number
   marketScore: number
@@ -77,38 +77,51 @@ export function generateMetricSummary(input: MetricSummaryInput): MetricSummaryR
     }
   }
 
-  if (input.supplyScore >= 75 && input.rotationScore >= 65) {
+  if (input.supplyScore >= 75 && input.sectorFlowScore >= 65) {
     return {
-      line1: '수급과 섹터 흐름이 상승 모멘텀을 지지하는 구간입니다.',
+      line1: '수급과 섹터 자금흐름이 상승 모멘텀을 지지하는 구간입니다.',
       line2: '시장만 흔들리지 않으면 보유 관점이 유리합니다.',
       tone: 'positive',
     }
   }
 
-  if (input.foreignNetAmount + input.institutionNetAmount > 0) {
+  if (input.sectorFlowScore >= 75) {
     return {
-      line1: '외국인·기관 합산 수급이 유입되며 모멘텀을 지지합니다.',
+      line1: '해당 섹터가 시장 대비 강해 자금흐름은 우호적입니다.',
+      line2: '과열 신호가 겹치면 눌림 후 접근을 고려하는 편이 좋습니다.',
+      tone: 'positive',
+    }
+  }
+
+  if (input.sectorFlowScore < 45) {
+    return {
+      line1: '섹터 자금흐름이 약해 개별 종목 모멘텀만으로는 힘이 부족할 수 있습니다.',
+      line2: '섹터 상대강도가 살아나기 전까지는 비중·속도 조절이 유리합니다.',
+      tone: 'caution',
+    }
+  }
+
+  const fi3 = input.foreignNetAmount3D + input.institutionNetAmount3D
+  if (fi3 > 0) {
+    return {
+      line1: '직전 3거래일 기준 외국인·기관 수급이 유입되고 있습니다.',
       line2: '시장 변동성만 안정적이면 보유 전략이 유리합니다.',
       tone: 'positive',
     }
   }
 
-  if (input.foreignNetAmount < 0 && input.institutionNetAmount < 0) {
+  if (input.foreignNetAmount3D < 0 && input.institutionNetAmount3D < 0) {
     return {
-      line1: '외국인과 기관이 동시에 매도 중이라 추세 확인이 필요합니다.',
+      line1: '직전 3거래일 기준 외국인과 기관이 동시에 매도 중입니다.',
       line2: '반등이 나와도 지속성은 보수적으로 판단하는 편이 좋습니다.',
       tone: 'caution',
     }
   }
 
-  if (
-    input.retailNetAmount > 0 &&
-    input.foreignNetAmount <= 0 &&
-    input.institutionNetAmount <= 0
-  ) {
+  if (input.retailNetAmount3D > 0 && input.foreignNetAmount3D <= 0 && input.institutionNetAmount3D <= 0) {
     return {
-      line1: '개인 매수 중심 반등이라 수급 신뢰도는 낮은 편입니다.',
-      line2: '추격매수는 신중하게 보고 눌림 확인이 좋습니다.',
+      line1: '개인 매수 중심의 흐름이라 추격매수는 신중하게 볼 필요가 있습니다.',
+      line2: '눌림·지지 확인 후 접근하는 편이 안전합니다.',
       tone: 'caution',
     }
   }

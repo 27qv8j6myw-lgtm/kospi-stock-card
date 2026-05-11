@@ -1,13 +1,41 @@
+import { useMemo } from 'react'
 import { Activity, Gauge, Info, Target } from 'lucide-react'
 import type { SummaryInfo } from '../types/stock'
 import type { MetricSummaryResult } from '../lib/summaryLogic'
+import type { DetailedInvestmentMemoResult } from '../types/aiBriefing'
+import { investmentMemoAtAGlance } from '../lib/investmentMemoAtAGlance'
 
 type SummaryPanelProps = {
   summary: SummaryInfo
   metricSummary: MetricSummaryResult
+  investmentMemo: DetailedInvestmentMemoResult | null
+  aiLoading?: boolean
 }
 
-export function SummaryPanel({ summary, metricSummary }: SummaryPanelProps) {
+function LoadingDots({ label = '로딩중' }: { label?: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-slate-500">
+      <span>{label}</span>
+      <span className="size-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:0ms]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:120ms]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:240ms]" />
+    </span>
+  )
+}
+
+export function SummaryPanel({ summary, metricSummary, investmentMemo, aiLoading }: SummaryPanelProps) {
+  const { line2 } = useMemo(
+    () => (investmentMemo ? investmentMemoAtAGlance(investmentMemo) : { line2: '' }),
+    [investmentMemo],
+  )
+  const memoTitleCompact = useMemo(() => {
+    const raw = (investmentMemo?.title || '').trim()
+    if (!raw) return ''
+    // "삼성전자 (005930) — 투자 메모" -> "투자 메모"
+    const noPrefix = raw.replace(/^[^-—–]+[-—–]\s*/u, '').trim()
+    const noStock = noPrefix.replace(/\([^)]+\)/g, '').trim()
+    return noStock || '투자 메모'
+  }, [investmentMemo?.title])
   const toneStyle =
     metricSummary.tone === 'positive'
       ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -34,11 +62,13 @@ export function SummaryPanel({ summary, metricSummary }: SummaryPanelProps) {
         </p>
       </div>
       <h4 className="mt-3 text-[17px] font-bold leading-snug text-slate-900 sm:text-lg">
-        {metricSummary.line1}
+        {aiLoading || !memoTitleCompact ? <LoadingDots /> : memoTitleCompact}
       </h4>
-      <p className="mt-2 text-sm leading-relaxed text-slate-500">{metricSummary.line2}</p>
+      <p className="mt-2 text-sm leading-relaxed text-slate-500">
+        {aiLoading || !line2 ? <LoadingDots label="전략 생성중" /> : line2}
+      </p>
 
-      <ul className="mt-6 space-y-3 border-t border-slate-200 pt-5 text-sm">
+      <ul className="mt-6 space-y-4 border-t border-slate-100 pt-6 text-sm">
         <li className="flex items-center gap-2">
           <Gauge className="size-4 text-amber-500" />
           <span className="text-slate-500">Final Grade</span>
@@ -58,7 +88,7 @@ export function SummaryPanel({ summary, metricSummary }: SummaryPanelProps) {
           <Info className="mt-0.5 size-4 text-slate-400" />
           <div className="min-w-0">
             <span className="text-slate-500">Reason</span>
-            <p className="mt-1 whitespace-pre-line font-medium text-slate-800">{summary.reason}</p>
+            <p className="mt-1 whitespace-pre-line font-medium leading-relaxed text-slate-800">{summary.reason}</p>
           </div>
         </li>
       </ul>

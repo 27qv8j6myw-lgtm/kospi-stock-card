@@ -86,16 +86,81 @@ function computeRsi(closes, period = 14) {
   return 100 - 100 / (1 + rs)
 }
 
-function formatSupplyDate(yyyymmdd) {
-  const s = String(yyyymmdd || '')
-  if (s.length !== 8) return '최근 거래일'
-  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
-}
-
 function parseNumberText(v) {
   if (v == null) return null
   const n = Number(String(v).replace(/[^\d.-]/g, ''))
   return Number.isFinite(n) ? n : null
+}
+
+/** FnGuide 컨센서스 JSON — 증권사별 목표가(TARGET_PRC) + 평균(AVG_PRC) */
+async function fetchFnGuideConsensus(code6) {
+  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const gicode = `A${code}`
+  const url = `https://comp.fnguide.com/SVO2/json/data/01_06/03_${gicode}.json`
+  const res = await fetch(url, {
+    headers: {
+      'user-agent': 'Mozilla/5.0 (compatible; kospi-stock-card)',
+      accept: 'application/json,text/plain,*/*',
+      referer: `https://comp.fnguide.com/SVO2/ASP/SVD_Consensus.asp?pGB=1&gicode=${gicode}`,
+    },
+  })
+  if (!res.ok) return null
+  let data
+  try {
+    const raw = await res.text()
+    data = JSON.parse(raw.replace(/^\uFEFF/, ''))
+  } catch {
+    return null
+  }
+  const comp = Array.isArray(data?.comp) ? data.comp : []
+  if (!comp.length) return null
+
+  const brokerTargets = []
+  for (const row of comp) {
+    const t = parseNumberText(row.TARGET_PRC)
+    if (t != null && t > 0) brokerTargets.push(t)
+  }
+  if (!brokerTargets.length) return null
+
+  const avgFromConsensus = parseNumberText(comp[0].AVG_PRC)
+  const avgTargetPrice =
+    avgFromConsensus != null && avgFromConsensus > 0
+      ? avgFromConsensus
+      : Math.round(mean(brokerTargets))
+  const maxTargetPrice = Math.max(...brokerTargets)
+  const minTargetPrice = Math.min(...brokerTargets)
+  const safeMax = Math.max(maxTargetPrice, avgTargetPrice)
+  const safeMin = Math.min(minTargetPrice, avgTargetPrice)
+
+  const avgRecomCd = parseNumberText(comp[0].AVG_RECOM_CD)
+
+  let latestEst = 0
+  for (const row of comp) {
+    const raw = String(row.EST_DT || '').trim()
+    const normalized = raw.replace(/\//g, '-')
+    const ts = Date.parse(normalized)
+    if (Number.isFinite(ts) && ts > latestEst) latestEst = ts
+  }
+  const lastUpdateDays =
+    latestEst > 0 ? Math.max(0, Math.floor((Date.now() - latestEst) / 86_400_000)) : null
+
+  return {
+    avgTargetPrice,
+    maxTargetPrice: safeMax,
+    minTargetPrice: safeMin,
+    analystCount: comp.length,
+    lastUpdateDays,
+    avgRecomCd,
+  }
+}
+
+function recommendationLabelFromFnGuideScore(cd) {
+  if (cd == null || !Number.isFinite(cd)) return null
+  if (cd >= 4.5) return '매수(상단)'
+  if (cd >= 3.5) return '매수'
+  if (cd >= 2.5) return '보유'
+  if (cd >= 1.5) return '매도'
+  return '매도(강)'
 }
 
 async function fetchNaverConsensus(code6) {
@@ -129,6 +194,29 @@ async function fetchNaverConsensus(code6) {
     analystCount: null,
     lastUpdateDays: null,
   }
+}
+
+/** FnGuide 우선(증권사별 목표가 분포), 실패 시 네이버 단일 목표가 */
+async function fetchConsensusDetails(code6) {
+  const [fg, nv] = await Promise.all([
+    fetchFnGuideConsensus(code6).catch(() => null),
+    fetchNaverConsensus(code6).catch(() => null),
+  ])
+
+  if (fg) {
+    return {
+      source: 'fnguide',
+      avgTargetPrice: fg.avgTargetPrice,
+      maxTargetPrice: fg.maxTargetPrice,
+      minTargetPrice: fg.minTargetPrice,
+      recommendationScore: fg.avgRecomCd ?? nv?.recommendationScore ?? null,
+      recommendationText: nv?.recommendationText ?? recommendationLabelFromFnGuideScore(fg.avgRecomCd),
+      analystCount: fg.analystCount,
+      lastUpdateDays: fg.lastUpdateDays ?? nv?.lastUpdateDays ?? null,
+    }
+  }
+  if (nv) return nv
+  return null
 }
 
 function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
@@ -184,22 +272,28 @@ function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
       ? `Caution (일중 변동 ${quote.changePercent.toFixed(2)}%)`
       : `Neutral (일중 변동 ${quote.changePercent.toFixed(2)}%)`
 
-  const foreignNetShares = investor?.latest?.foreignNetShares ?? num(quote.raw?.frgn_ntby_qty) ?? 0
-  const institutionNetShares =
-    investor?.latest?.institutionNetShares ??
-    num(quote.raw?.orgn_ntby_qty) ??
-    num(quote.raw?.inst_ntby_qty) ??
-    num(quote.raw?.orgn_ntby_vol) ??
-    num(quote.raw?.pgtr_ntby_qty) ??
-    0
-  const retailNetShares = investor?.latest?.personalNetShares ?? -(foreignNetShares + institutionNetShares)
-  const foreignNetAmount = investor?.latest?.foreignNetAmount ?? Math.round(foreignNetShares * quote.price)
-  const institutionNetAmount = investor?.latest?.institutionNetAmount ?? Math.round(institutionNetShares * quote.price)
-  const retailNetAmount = investor?.latest?.personalNetAmount ?? -(foreignNetAmount + institutionNetAmount)
-  const fiNetAmount = foreignNetAmount + institutionNetAmount
-  const flow = `수급 ${fiNetAmount >= 0 ? '우위' : '약세'} | 외인 ${foreignNetShares.toLocaleString('ko-KR')}주 · 기관 ${institutionNetShares.toLocaleString('ko-KR')}주`
-  const foreign = `외국인 ${foreignNetShares >= 0 ? '순매수' : '순매도'} ${Math.abs(foreignNetShares).toLocaleString('ko-KR')}주`
-  const institution = `기관 ${institutionNetShares >= 0 ? '순매수' : '순매도'} ${Math.abs(institutionNetShares).toLocaleString('ko-KR')}주`
+  const c3 = investor?.cumulative3d
+  const c5 = investor?.cumulative5d
+  const hasInvHistory = (c3?.daysUsed ?? 0) > 0
+  const invRowsLen = Array.isArray(investor?.rows) ? investor.rows.length : 0
+
+  const foreignNetShares3D = c3?.foreignNetShares ?? 0
+  const foreignNetAmount3D = c3?.foreignNetAmount ?? 0
+  const institutionNetShares3D = c3?.institutionNetShares ?? 0
+  const institutionNetAmount3D = c3?.institutionNetAmount ?? 0
+  const retailNetShares3D = c3?.personalNetShares ?? 0
+  const retailNetAmount3D = c3?.personalNetAmount ?? 0
+
+  const fiNetAmount3D = foreignNetAmount3D + institutionNetAmount3D
+  const flow = hasInvHistory
+    ? `수급(3거래일 누적) ${fiNetAmount3D >= 0 ? '우위' : '약세'} | 외인 ${foreignNetShares3D.toLocaleString('ko-KR')}주 · 기관 ${institutionNetShares3D.toLocaleString('ko-KR')}주`
+    : '수급(3거래일 누적) 데이터 없음'
+  const foreign = hasInvHistory
+    ? `외국인(3거래일 누적) ${foreignNetShares3D >= 0 ? '순매수' : '순매도'} ${Math.abs(foreignNetShares3D).toLocaleString('ko-KR')}주`
+    : '외국인(3거래일 누적) 데이터 없음'
+  const institution = hasInvHistory
+    ? `기관(3거래일 누적) ${institutionNetShares3D >= 0 ? '순매수' : '순매도'} ${Math.abs(institutionNetShares3D).toLocaleString('ko-KR')}주`
+    : '기관(3거래일 누적) 데이터 없음'
   const volume = `거래량 ${Number(quote.volume || 0).toLocaleString('ko-KR')}주`
   const volatility = `연환산 변동성 ${volPct.toFixed(1)}%`
   const momentum = `5일 ${m5 >= 0 ? '+' : ''}${m5.toFixed(2)}% · 20일 ${m20 >= 0 ? '+' : ''}${m20.toFixed(2)}%`
@@ -239,13 +333,20 @@ function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
     momentum,
     candle,
     supplyDetails: {
-      foreignNetShares,
-      foreignNetAmount,
-      institutionNetShares,
-      institutionNetAmount,
-      retailNetShares,
-      retailNetAmount,
-      supplyPeriod: formatSupplyDate(investor?.latest?.date),
+      foreignNetShares3D,
+      foreignNetAmount3D,
+      institutionNetShares3D,
+      institutionNetAmount3D,
+      retailNetShares3D,
+      retailNetAmount3D,
+      ...(invRowsLen >= 5 && c5
+        ? {
+            foreignNetAmount5D: c5.foreignNetAmount,
+            institutionNetAmount5D: c5.institutionNetAmount,
+            retailNetAmount5D: c5.personalNetAmount,
+          }
+        : {}),
+      supplyPeriod: '직전 3거래일 누적',
     },
     consensusDetails: consensus || null,
   }
@@ -261,12 +362,20 @@ const allowedOrigins = new Set(
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedOrigins.has(origin)) return cb(null, true)
+      if (!origin) return cb(null, true)
+      if (allowedOrigins.has(origin)) return cb(null, true)
+      try {
+        const host = new URL(origin).hostname
+        if (host.endsWith('.vercel.app')) return cb(null, true)
+      } catch {
+        /* ignore */
+      }
       return cb(null, false)
     },
   }),
 )
 
+app.use(express.json({ limit: '512kb' }))
 
 async function generateAIFill({ openaiApiKey, model, payload }) {
   const system = [
@@ -372,6 +481,114 @@ async function generateAIFill({ openaiApiKey, model, payload }) {
   return json
 }
 
+/** AI 투자 메모 — 클라이언트 프롬프트(종목·숫자·뉴스 JSON)를 받아 OpenAI JSON 응답 */
+async function generateOpenAiBriefingJson({ openaiApiKey, model, prompt }) {
+  const system = [
+    '너는 한국 주식 애널리스트다. 입력 프롬프트의 규칙·금지사항·문단 순서를 그대로 따른다.',
+    '숫자(원, %, PER, 억)를 빼먹지 말고, 추상 표현만으로 채우지 말 것.',
+    '매수·매도를 단정하지 말고 가능성·조건부 표현을 쓴다.',
+    '반드시 아래 키만 가진 JSON 객체 하나만 반환한다 (다른 텍스트 금지).',
+    '키: title(string), paragraphs(string[] 정확히 5개 — 가격/트리거/펀더멘털/수급리스크/전략 순),',
+    'keyPoints(string[] 4~7), risks(string[] 2~5), strategyComment(string), tone은 "bullish"|"neutral"|"caution" 중 하나.',
+  ].join(' ')
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${openaiApiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+    }),
+  })
+
+  const text = await res.text()
+  let data = null
+  try {
+    data = JSON.parse(text)
+  } catch {
+    throw new Error(`OpenAI 응답 파싱 실패: ${text.slice(0, 200)}`)
+  }
+  if (!res.ok) {
+    throw new Error(data?.error?.message || `OpenAI 오류 (${res.status})`)
+  }
+
+  const content = data?.choices?.[0]?.message?.content
+  if (!content || typeof content !== 'string') {
+    throw new Error('OpenAI 응답에 content가 없습니다.')
+  }
+
+  let json = null
+  try {
+    json = JSON.parse(content)
+  } catch {
+    throw new Error('OpenAI content JSON 파싱 실패')
+  }
+
+  const strArr = (v, max = 8) =>
+    Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).slice(0, max).map((x) => x.trim()) : []
+  const str = (v, fallback = '') => (typeof v === 'string' && v.trim() ? v.trim() : fallback)
+
+  const toneRaw = str(json.tone, 'neutral').toLowerCase()
+  const tone = ['bullish', 'neutral', 'caution'].includes(toneRaw) ? toneRaw : 'neutral'
+
+  let paragraphs = strArr(json.paragraphs, 8)
+  const pad = '이 문단은 생성되지 않았습니다.'
+  while (paragraphs.length < 5) paragraphs.push(pad)
+  paragraphs = paragraphs.slice(0, 5)
+
+  const keyPoints = strArr(json.keyPoints, 10)
+  const risks = strArr(json.risks, 10)
+
+  return {
+    title: str(json.title, '투자 메모'),
+    paragraphs,
+    keyPoints: keyPoints.length ? keyPoints : ['핵심 포인트를 생성하지 못했습니다.'],
+    risks: risks.length ? risks : ['리스크를 생성하지 못했습니다.'],
+    strategyComment: str(json.strategyComment, ''),
+    tone,
+  }
+}
+
+app.post('/api/ai-briefing', async (req, res) => {
+  const openaiApiKey = cleanEnvSecret(process.env.OPENAI_API_KEY)
+  if (!openaiApiKey) {
+    res.status(503).json({
+      error:
+        'OPENAI_API_KEY가 비어 있습니다. Vercel Project → Settings → Environment Variables에 OPENAI_API_KEY를 추가한 뒤 재배포하세요.',
+      stage: 'config',
+    })
+    return
+  }
+
+  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : ''
+  if (!prompt) {
+    res.status(400).json({ error: 'JSON body에 prompt(string)가 필요합니다.' })
+    return
+  }
+  if (prompt.length > 48_000) {
+    res.status(400).json({ error: 'prompt가 너무 깁니다.' })
+    return
+  }
+
+  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'
+
+  try {
+    const briefing = await generateOpenAiBriefingJson({ openaiApiKey, model, prompt })
+    res.json(briefing)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[api/ai-briefing]', message)
+    res.status(502).json({ error: message, stage: 'openai' })
+  }
+})
+
 app.get('/api/health', (_req, res) => {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
   const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
@@ -382,6 +599,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     kisConfigured: hasKis,
     openaiConfigured: Boolean(openaiKey),
+    aiBriefingPost: Boolean(openaiKey),
     kisEnv: process.env.KIS_ENV || 'vps',
     openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
     /** 비밀값은 절대 내려주지 않음 — 파일/변수만 점검용 */
@@ -596,7 +814,7 @@ app.get('/api/logic-indicators', async (req, res) => {
         const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
         const chart1m = await inquireChartByTimeframe(appKey, appSecret, env, code, '1M')
         const investor = await inquireInvestorByStock(appKey, appSecret, env, code)
-        const consensus = await fetchNaverConsensus(code).catch(() => null)
+        const consensus = await fetchConsensusDetails(code).catch(() => null)
         return computeKisLogicIndicators(quote, chart1m, investor, consensus)
       })()
       logicInflight.set(key, task)

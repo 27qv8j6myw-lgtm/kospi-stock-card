@@ -2,16 +2,20 @@ import {
   calculateConsensusScore,
   calculateConsensusUpside,
   calculateFinalScore,
-  calculateExecutionPlan,
   calculateRiskReward,
+  calculateSectorFlowScore,
   calculateSupplyScore,
   calculateStopPrice,
   calculateTargetPrices,
+  calculateThreeMonthStrategy,
   calculateValuationScore,
   formatKrwAmountToEok,
   getEntryStage,
   getFinalGrade,
   getStrategy,
+  sectorFlowMainTitle,
+  sectorFlowStatusFromScore,
+  sectorFlowSubLines,
 } from './signalLogic'
 import type {
   ChartPoint,
@@ -22,9 +26,11 @@ import type {
   StopInfo,
   SummaryInfo,
   ExecutionInput,
+  TargetPriceInput,
   TargetStopInput,
-  TargetPrice,
   Timeframe,
+  ThreeMonthStrategy,
+  SectorFlowSnapshot,
 } from '../types/stock'
 
 export const intradayTrend: 'up' | 'down' | 'sideways' = 'up'
@@ -98,25 +104,53 @@ export function generateIntradaySeries(params: {
   })) as ChartPoint[]
 }
 
-export const foreignNetShares = -245_000
-export const foreignNetAmount = -19_600_000_000
-export const institutionNetShares = 132_000
-export const institutionNetAmount = 10_500_000_000
-export const retailNetShares = 113_000
-export const retailNetAmount = 9_100_000_000
-export const supplyPeriod = '금일 실시간'
+export const foreignNetShares3D = -380_000
+export const foreignNetAmount3D = -12_000_000_000
+export const institutionNetShares3D = 280_000
+export const institutionNetAmount3D = 8_000_000_000
+export const retailNetShares3D = 95_000
+export const retailNetAmount3D = 4_000_000_000
+export const foreignNetAmount5D = -11_000_000_000
+export const institutionNetAmount5D = 7_500_000_000
+export const retailNetAmount5D = 3_500_000_000
+export const supplyPeriod = '직전 3거래일 누적'
 const supplyScore = calculateSupplyScore({
-  foreignNetAmount,
-  institutionNetAmount,
-  retailNetAmount,
-  volumeTrendScore: 62,
+  foreignNetAmount3D,
+  institutionNetAmount3D,
+  retailNetAmount3D,
+  foreignNetAmount5D,
+  institutionNetAmount5D,
+  retailNetAmount5D,
 })
+
+export const mockSectorName = '반도체'
+export const sectorReturn5D = 6.2
+export const marketReturn5D = 1.4
+export const sectorRelativeReturn5D = Number((sectorReturn5D - marketReturn5D).toFixed(2))
+export const sectorRankPercentile = 18
+export const sectorFlowScoreCalc = calculateSectorFlowScore({
+  sectorReturn5D,
+  marketReturn5D,
+  sectorRankPercentile,
+  supplyScore,
+})
+export const sectorFlowStatus = sectorFlowStatusFromScore(sectorFlowScoreCalc)
+
+export const mockSectorFlowSnapshot: SectorFlowSnapshot = {
+  sectorName: mockSectorName,
+  sectorReturn5D,
+  marketReturn5D,
+  sectorRelativeReturn5D,
+  sectorRankPercentile,
+  sectorFlowScore: sectorFlowScoreCalc,
+  sectorFlowStatus,
+}
 
 const scoreInputs: ScoreInputs = {
   structure: 72,
   execution: 10,
   supply: supplyScore,
-  rotation: 58,
+  sectorFlow: sectorFlowScoreCalc,
   consensus: 70,
   valuation: 74,
   momentum: 45,
@@ -131,14 +165,16 @@ const entryStage = getEntryStage(score, strategy)
 export const targetStopInput: TargetStopInput = {
   currentPrice: 79_800,
   atr14: 2_930,
+  atrPct: (2_930 / 79_800) * 100,
+  supportPrice: 76_100,
+  ma20: 77_600,
+  recentLow20: 74_800,
+  marketScore: 60,
   rsi14: 47,
   finalScore: score,
-  structureScore: scoreInputs.structure,
   executionScore: scoreInputs.execution,
-  supportPrice: 76_100,
-  resistancePrice: 81_200,
-  recentHigh20: 81_500,
-  recentLow20: 74_800,
+  atrDistance: 2.8,
+  riskRewardRatio: 1.7,
   marketStatus: 'Neutral',
 }
 export const consensusAvgTargetPrice = 91_000
@@ -173,11 +209,30 @@ const valuationScore = calculateValuationScore({
   historicalPERPercentile,
 })
 const stopCalc = calculateStopPrice(targetStopInput)
-const targetsCalc = calculateTargetPrices(targetStopInput)
+const targetPriceDemoInput: TargetPriceInput = {
+  currentPrice: targetStopInput.currentPrice,
+  atr14: targetStopInput.atr14 ?? Math.round(targetStopInput.currentPrice * 0.018),
+  rsi14: targetStopInput.rsi14,
+  finalScore: score,
+  structureScore: scoreInputs.structure,
+  executionScore: scoreInputs.execution,
+  supplyScore: scoreInputs.supply,
+  sectorFlowScore: scoreInputs.sectorFlow,
+  valuationScore,
+  consensusScore,
+  momentumScore: scoreInputs.momentum,
+  marketScore: 60,
+  supportPrice: targetStopInput.supportPrice ?? Math.round(targetStopInput.currentPrice * 0.95),
+  consensusAvgTargetPrice,
+  consensusMaxTargetPrice,
+  marketStatus: targetStopInput.marketStatus,
+}
+const targetPriceDemoResult = calculateTargetPrices(targetPriceDemoInput)
 const rr = calculateRiskReward(
   targetStopInput.currentPrice,
   stopCalc.stopPrice,
-  targetsCalc.find((t) => t.horizon === '1M')?.targetPrice ?? targetStopInput.currentPrice,
+  targetPriceDemoResult.targets.find((t) => t.label === '1M')?.targetPrice ??
+    targetStopInput.currentPrice,
 )
 export const executionInput: ExecutionInput = {
   currentPrice: targetStopInput.currentPrice,
@@ -185,10 +240,16 @@ export const executionInput: ExecutionInput = {
   structureScore: scoreInputs.structure,
   executionScore: scoreInputs.execution,
   supplyScore: scoreInputs.supply,
+  sectorFlowScore: scoreInputs.sectorFlow,
+  valuationScore,
+  consensusScore,
   momentumScore: scoreInputs.momentum,
+  marketScore: 60,
   riskScore: 64,
   rsi14: targetStopInput.rsi14,
-  atr14: targetStopInput.atr14,
+  atr14: targetStopInput.atr14 ?? Math.round(targetStopInput.currentPrice * 0.018),
+  atrDistance: 2.8,
+  consecutiveRiseDays: 2,
   stopPrice: stopCalc.stopPrice,
   stopLossPct: stopCalc.stopLossPct,
   riskRewardRatio: rr.ratio,
@@ -197,7 +258,23 @@ export const executionInput: ExecutionInput = {
   entryStage: 'WATCH',
   accountSize: 50_000_000,
 }
-const executionPlan = calculateExecutionPlan(executionInput)
+
+export const mockThreeMonthStrategy: ThreeMonthStrategy = calculateThreeMonthStrategy({
+  currentPrice: targetStopInput.currentPrice,
+  finalScore: score,
+  executionScore: scoreInputs.execution,
+  supplyScore: scoreInputs.supply,
+  rsi14: targetStopInput.rsi14,
+  atrDistance: 2.8,
+  atr14: targetStopInput.atr14 ?? Math.round(targetStopInput.currentPrice * 0.018),
+  strategy: strategy as ExecutionInput['strategy'],
+  marketStatus: targetStopInput.marketStatus,
+  marketScore: 60,
+  riskRewardRatio: rr.ratio,
+  supportPrice: targetStopInput.supportPrice ?? Math.round(targetStopInput.currentPrice * 0.95),
+  consensusAvgTargetPrice: consensusAvgTargetPrice,
+  consensusMaxTargetPrice: consensusMaxTargetPrice,
+})
 
 export const stockInfo: StockInfo = {
   name: '삼성전자',
@@ -265,20 +342,33 @@ export const logicMetrics: LogicMetric[] = [
   { title: 'ATR 이격', value: '2.8 ATR', score: 56, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
   { title: '연속상승', value: '2일', score: 64, descriptionKey: 'consecutiveRise', icon: 'TrendingUp', tone: 'sky' },
   { title: '시장', value: 'Caution, KOSPI 2,640', score: 52, descriptionKey: 'market', icon: 'Globe2', tone: 'emerald' },
-  { title: '로테이션', value: 'Neutral', score: scoreInputs.rotation, descriptionKey: 'rotation', icon: 'RefreshCw', tone: 'indigo' },
+  {
+    title: '섹터 자금흐름',
+    value: sectorFlowMainTitle(mockSectorFlowSnapshot),
+    subValue: sectorFlowSubLines(mockSectorFlowSnapshot),
+    score: mockSectorFlowSnapshot.sectorFlowScore,
+    statusBadge: mockSectorFlowSnapshot.sectorFlowStatus,
+    descriptionKey: 'sectorFlow',
+    icon: 'Landmark',
+    tone: 'indigo',
+  },
   { title: '구조 상태', value: '상승장 유지 / 눌림 구간', score: 72, descriptionKey: 'structure', icon: 'Map', tone: 'orange' },
   {
     title: '수급',
-    value: `${formatKrwAmountToEok(foreignNetAmount + institutionNetAmount)}`,
+    value: `${formatKrwAmountToEok(foreignNetAmount3D + institutionNetAmount3D)}`,
     supplyDetails: {
-      foreignNetShares,
-      foreignNetAmount,
-      institutionNetShares,
-      institutionNetAmount,
-      retailNetShares,
-      retailNetAmount,
+      foreignNetShares3D,
+      foreignNetAmount3D,
+      institutionNetShares3D,
+      institutionNetAmount3D,
+      retailNetShares3D,
+      retailNetAmount3D,
+      foreignNetAmount5D,
+      institutionNetAmount5D,
+      retailNetAmount5D,
       supplyPeriod,
     },
+    tooltipSummary: '수급은 당일 실시간이 아니라 직전 3거래일 누적으로 판단합니다.',
     score: supplyScore,
     descriptionKey: 'supply',
     icon: 'Users',
@@ -311,25 +401,37 @@ export const logicMetrics: LogicMetric[] = [
 ]
 
 export const executionCards: ExecutionCard[] = [
-  { title: '추천 비중', value: `${executionPlan.recommendedPositionPct}%` },
+  { title: '진입 판단', value: mockThreeMonthStrategy.entryDecision },
+  { title: '추천 비중', value: `${mockThreeMonthStrategy.recommendedPositionPct}%` },
   {
-    title: '1R 손실금',
-    value: `${stopCalc.stopLossPct.toFixed(2)}%, ${Math.round(stopCalc.stopPrice - targetStopInput.currentPrice).toLocaleString('ko-KR')}원`,
-    hint: executionPlan.riskAmountWon
-      ? `계좌 리스크 ${executionPlan.riskAmountPct}% · ${executionPlan.riskAmountWon.toLocaleString('ko-KR')}원`
-      : `계좌 리스크 ${executionPlan.riskAmountPct}%`,
+    title: '손절',
+    value: `${mockThreeMonthStrategy.stopPrice.toLocaleString('ko-KR')}원 (${mockThreeMonthStrategy.stopLossPct}%)`,
+    hint: mockThreeMonthStrategy.stopReason,
   },
-  { title: '기본 실행', value: `${executionPlan.timeStop} / ${executionPlan.stopRule} / ${executionPlan.takeProfitRule}` },
-  { title: '최대 비중', value: `${executionPlan.maxPositionPct}% · R/R ${rr.ratio} (${rr.verdict})` },
+  {
+    title: '1차 익절',
+    value: `${mockThreeMonthStrategy.firstTakeProfitPrice.toLocaleString('ko-KR')}원 (+${mockThreeMonthStrategy.firstTakeProfitPct}%)`,
+    hint: `${mockThreeMonthStrategy.firstTakeProfitSellPct}% 매도`,
+  },
+  {
+    title: '최종 목표',
+    value: `${mockThreeMonthStrategy.finalTargetPrice.toLocaleString('ko-KR')}원 (+${mockThreeMonthStrategy.finalTargetPct}%)`,
+    hint: mockThreeMonthStrategy.consensusNote
+      ? `${mockThreeMonthStrategy.maxHoldingPeriod} · ${mockThreeMonthStrategy.consensusNote}`
+      : mockThreeMonthStrategy.maxHoldingPeriod,
+  },
+  { title: '타임스탑', value: mockThreeMonthStrategy.timeStopRule.replace(/\n/g, ' · ') },
+  { title: '추가매수', value: mockThreeMonthStrategy.addBuyRule },
+  { title: '요약', value: mockThreeMonthStrategy.summary },
 ]
-
-export const targets: TargetPrice[] = targetsCalc
 
 export const stopInfo: StopInfo = {
   stopPrice: stopCalc.stopPrice,
   stopLossPct: stopCalc.stopLossPct,
   method: stopCalc.method,
-  supportPrice: stopCalc.supportPrice,
+  reason: stopCalc.reason,
+  candidates: stopCalc.candidates,
+  warning: stopCalc.warning,
 }
 
-export const saveStatus = "Analysis saved to 'trade_log_20250531.csv'"
+export const saveStatus = '투자주의: 본 분석은 참고용이며 최종 투자 판단과 책임은 투자자 본인에게 있습니다.'

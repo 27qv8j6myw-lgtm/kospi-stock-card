@@ -56,6 +56,14 @@ function num(v) {
   return Number.isFinite(n) ? n : null
 }
 
+/** KIS 일부 API는 output 이 배열이 아니라 단일 객체로 올 수 있음 */
+function normalizeKisOutputRows(output) {
+  if (output == null) return []
+  if (Array.isArray(output)) return output
+  if (typeof output === 'object') return [output]
+  return []
+}
+
 function ymd(d) {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -259,6 +267,37 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
   }
 }
 
+// inquire-investor 의 *_tr_pbmn 은 원화가 아닌 축약 단위로 내려오므로 KRW로 보정
+const INVESTOR_AMOUNT_UNIT_KRW = 1_000_000
+
+/** rows[0]이 가장 최근 거래일이라고 가정하고 직전 n거래일 누적 합산 */
+function sumInvestorRows(rows, maxDays) {
+  const slice = Array.isArray(rows) ? rows.slice(0, Math.min(maxDays, rows.length)) : []
+  let foreignNetShares = 0
+  let foreignNetAmount = 0
+  let institutionNetShares = 0
+  let institutionNetAmount = 0
+  let personalNetShares = 0
+  let personalNetAmount = 0
+  for (const r of slice) {
+    foreignNetShares += num(r.frgn_ntby_qty) ?? 0
+    foreignNetAmount += (num(r.frgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW
+    institutionNetShares += num(r.orgn_ntby_qty) ?? 0
+    institutionNetAmount += (num(r.orgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW
+    personalNetShares += num(r.prsn_ntby_qty) ?? 0
+    personalNetAmount += (num(r.prsn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW
+  }
+  return {
+    foreignNetShares,
+    foreignNetAmount,
+    institutionNetShares,
+    institutionNetAmount,
+    personalNetShares,
+    personalNetAmount,
+    daysUsed: slice.length,
+  }
+}
+
 /** 국내 주식 현재가 투자자 [주식현재가 투자자] */
 export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
   const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
@@ -275,32 +314,42 @@ export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
     kind: 'KIS 투자자동향',
   })
 
-  const rows = Array.isArray(data.output) ? data.output : []
+  const rows = normalizeKisOutputRows(data.output)
   const latest = rows[0] || null
+  const emptyCumulative = () => ({
+    foreignNetShares: 0,
+    foreignNetAmount: 0,
+    institutionNetShares: 0,
+    institutionNetAmount: 0,
+    personalNetShares: 0,
+    personalNetAmount: 0,
+    daysUsed: 0,
+  })
+
   if (!latest) {
     return {
       code: iscd,
       latest: null,
       rows: [],
+      cumulative3d: emptyCumulative(),
+      cumulative5d: emptyCumulative(),
     }
   }
-
-  // inquire-investor 의 *_tr_pbmn 은 원화가 아닌 축약 단위로 내려오므로
-  // UI/계산에서 쓰는 KRW 기준으로 보정한다.
-  const AMOUNT_UNIT_KRW = 1_000_000
 
   return {
     code: iscd,
     latest: {
       date: latest.stck_bsop_date || null,
       personalNetShares: num(latest.prsn_ntby_qty) ?? 0,
-      personalNetAmount: (num(latest.prsn_ntby_tr_pbmn) ?? 0) * AMOUNT_UNIT_KRW,
+      personalNetAmount: (num(latest.prsn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
       foreignNetShares: num(latest.frgn_ntby_qty) ?? 0,
-      foreignNetAmount: (num(latest.frgn_ntby_tr_pbmn) ?? 0) * AMOUNT_UNIT_KRW,
+      foreignNetAmount: (num(latest.frgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
       institutionNetShares: num(latest.orgn_ntby_qty) ?? 0,
-      institutionNetAmount: (num(latest.orgn_ntby_tr_pbmn) ?? 0) * AMOUNT_UNIT_KRW,
+      institutionNetAmount: (num(latest.orgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
     },
     rows,
+    cumulative3d: sumInvestorRows(rows, 3),
+    cumulative5d: sumInvestorRows(rows, 5),
   }
 }
 

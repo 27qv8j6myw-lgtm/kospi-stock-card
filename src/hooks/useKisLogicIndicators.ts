@@ -24,18 +24,23 @@ export type KISLogicIndicators = {
   momentum?: string
   candle?: string
   supplyDetails?: {
-    foreignNetShares: number
-    foreignNetAmount: number
-    institutionNetShares: number
-    institutionNetAmount: number
-    retailNetShares: number
-    retailNetAmount: number
+    foreignNetShares3D: number
+    foreignNetAmount3D: number
+    institutionNetShares3D: number
+    institutionNetAmount3D: number
+    retailNetShares3D: number
+    retailNetAmount3D: number
+    foreignNetAmount5D?: number | null
+    institutionNetAmount5D?: number | null
+    retailNetAmount5D?: number | null
     supplyPeriod: string
   }
   consensusDetails?: {
     source: string
     avgTargetPrice: number
     maxTargetPrice: number
+    /** FnGuide 증권사별 목표가 중 최저(있을 때만) */
+    minTargetPrice?: number | null
     recommendationScore: number | null
     recommendationText: string | null
     analystCount: number | null

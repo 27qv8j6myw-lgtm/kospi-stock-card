@@ -985,8 +985,8 @@ export function StockCard({
         <div className="flex items-center gap-2">
           <FileSpreadsheet className="size-4 shrink-0 text-slate-400" strokeWidth={2} />
           <span>
-            Analysis saved to{' '}
-            <span className="font-medium text-slate-800">trade_log.csv</span>
+            <span className="font-medium text-red-700">투자주의:</span>{' '}
+            본 분석은 참고용이며 최종 투자 판단과 책임은 투자자 본인에게 있습니다.
           </span>
         </div>
         <button

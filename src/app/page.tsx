@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Info } from 'lucide-react'
+import type { DetailedBriefingInput, DetailedInvestmentMemoResult } from '../types/aiBriefing'
+import { Info, TrendingUp } from 'lucide-react'
+import { AIBriefingPanel } from '../components/AIBriefingPanel'
 import { ExecutionStrategy } from '../components/ExecutionStrategy'
 import { MainStockCard } from '../components/MainStockCard'
 import { MetricGrid } from '../components/MetricGrid'
@@ -13,8 +15,8 @@ import { useKisChart } from '../hooks/useKisChart'
 import { useKisLogicIndicators } from '../hooks/useKisLogicIndicators'
 import { useKisQuote } from '../hooks/useKisQuote'
 import {
-  executionCards,
   logicMetrics,
+  mockSectorFlowSnapshot,
   saveStatus,
   stockInfo,
   stopInfo as mockStopInfo,
@@ -22,20 +24,37 @@ import {
 import {
   calculateConsensusScore,
   calculateConsensusUpside,
-  calculateExecutionPlan,
   calculateRiskReward,
   calculateSupplyScore,
+  calculateThreeMonthStrategy,
   calculateValuationScore,
   formatKrwAmountToEok,
   calculateFinalScore,
   calculateStopPrice,
   calculateTargetPrices,
   getEntryStage,
+  getEntryStageCode,
   getFinalGrade,
   getStrategy,
+  parseAtrDistance,
+  parseConsecutiveRiseDays,
+  inferSectorFlowSnapshot,
+  parseMomentumScoreFromLogic,
+  sectorFlowMainTitle,
+  sectorFlowSubLines,
 } from '../lib/signalLogic'
+import { buildInvestmentMemoPromptForGPT, generateDetailedInvestmentMemo } from '../lib/aiBriefing'
+import { getMockNewsByStockCode } from '../lib/mockNews'
+import { fetchGPTBriefing } from '../lib/openai'
+import { sortNewsByDateDesc } from '../lib/newsAnalyzer'
 import { generateMetricSummary } from '../lib/summaryLogic'
-import type { ExecutionCard, ExecutionInput, LogicMetric, Timeframe } from '../types/stock'
+import type {
+  LogicMetric,
+  Strategy,
+  TargetPriceInput,
+  ThreeMonthStrategyInput,
+  Timeframe,
+} from '../types/stock'
 import type { TargetStopInput } from '../types/stock'
 
 export default function Page() {
@@ -79,8 +98,8 @@ export default function Page() {
   }, [quoteState, pickedName])
 
   const summaryInfo = useMemo(() => {
-    const structure = Number(logicState.data?.structure?.split('/')[0]?.trim() || 72)
-    const execution = Number(logicState.data?.execution?.split('/')[0]?.trim() || 10)
+    const structure = Number(logicState.data?.structure?.split('/')[0]?.trim() || 60)
+    const execution = Number(logicState.data?.execution?.split('/')[0]?.trim() || 50)
     const rsi = Number(logicState.data?.rsi?.replace(/[^\d.]/g, '') || 47)
     const market =
       logicState.data?.market?.includes('Caution')
@@ -101,14 +120,17 @@ export default function Page() {
         : 50
     const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
     const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
-    const foreignNetAmount = logicState.data?.supplyDetails?.foreignNetAmount ?? 0
-    const institutionNetAmount = logicState.data?.supplyDetails?.institutionNetAmount ?? 0
-    const retailNetAmount = logicState.data?.supplyDetails?.retailNetAmount ?? -(foreignNetAmount + institutionNetAmount)
+    const sdNav = logicState.data?.supplyDetails
+    const foreignNetAmount3D = sdNav?.foreignNetAmount3D ?? 0
+    const institutionNetAmount3D = sdNav?.institutionNetAmount3D ?? 0
+    const retailNetAmount3D = sdNav?.retailNetAmount3D ?? 0
     const supplyScore = calculateSupplyScore({
-      foreignNetAmount,
-      institutionNetAmount,
-      retailNetAmount,
-      volumeTrendScore: 62,
+      foreignNetAmount3D,
+      institutionNetAmount3D,
+      retailNetAmount3D,
+      foreignNetAmount5D: sdNav?.foreignNetAmount5D ?? null,
+      institutionNetAmount5D: sdNav?.institutionNetAmount5D ?? null,
+      retailNetAmount5D: sdNav?.retailNetAmount5D ?? null,
     })
     const valuationScore =
       hasPer
@@ -120,14 +142,25 @@ export default function Page() {
             historicalPERPercentile: 50,
           })
         : 50
+    const code6nav = String(queryCode).replace(/\D/g, '').padStart(6, '0')
+    const sectorSnapNav =
+      code6nav === stockInfo.code
+        ? mockSectorFlowSnapshot
+        : inferSectorFlowSnapshot({
+            sectorName: liveStock.sector || '해당 섹터',
+            supplyScore,
+            rotationLine: logicState.data?.rotation,
+            momentumLine: logicState.data?.momentum,
+          })
+    const momentumScoreNav = parseMomentumScoreFromLogic(logicState.data?.momentum, rsi)
     const score = calculateFinalScore({
       structure,
       execution,
       supply: supplyScore,
-      rotation: 58,
+      sectorFlow: sectorSnapNav.sectorFlowScore,
       consensus: consensusScore,
       valuation: valuationScore,
-      momentum: 45,
+      momentum: momentumScoreNav,
       market,
       news: 58,
     })
@@ -143,14 +176,14 @@ export default function Page() {
 
     if (supplyScore >= 60) {
       detailParts.push(
-        `수급은 외국인 ${formatKrwAmountToEok(foreignNetAmount)}, 기관 ${formatKrwAmountToEok(institutionNetAmount)}로 우호적입니다`,
+        `직전 3거래일 누적 수급은 외국인 ${formatKrwAmountToEok(foreignNetAmount3D)}, 기관 ${formatKrwAmountToEok(institutionNetAmount3D)}로 우호적입니다`,
       )
     } else if (supplyScore <= 45) {
       detailParts.push(
-        `수급은 외국인 ${formatKrwAmountToEok(foreignNetAmount)}, 기관 ${formatKrwAmountToEok(institutionNetAmount)}로 부담 구간입니다`,
+        `직전 3거래일 누적 수급은 외국인 ${formatKrwAmountToEok(foreignNetAmount3D)}, 기관 ${formatKrwAmountToEok(institutionNetAmount3D)}로 부담 구간입니다`,
       )
     } else {
-      detailParts.push('수급은 뚜렷한 방향성 없이 중립입니다')
+      detailParts.push('직전 3거래일 누적 수급은 중립에 가깝습니다')
     }
 
     if (consensusScore >= 60) detailParts.push('컨센서스 기준 기대수익 여지가 남아 있습니다')
@@ -168,23 +201,35 @@ export default function Page() {
       entryStage: getEntryStage(score, strategy),
       reason,
     }
-  }, [logicState.data, quoteState, liveStock.price])
+  }, [logicState.data, quoteState, liveStock.price, liveStock.sector, queryCode])
 
   const metricSummary = useMemo(() => {
     const d = logicState.data
     const structureScore = Number(d?.structure?.split('/')[0]?.trim() || 60)
     const executionScore = Number(d?.execution?.split('/')[0]?.trim() || 50)
     const supplyScore = Number(d?.flow?.match(/-?\d+(\.\d+)?/)?.[0] || 52)
-    const foreignNetAmount = d?.supplyDetails?.foreignNetAmount ?? 0
-    const institutionNetAmount = d?.supplyDetails?.institutionNetAmount ?? 0
-    const retailNetAmount = -(foreignNetAmount + institutionNetAmount)
+    const sdSum = d?.supplyDetails
+    const foreignNetAmount3D = sdSum?.foreignNetAmount3D ?? 0
+    const institutionNetAmount3D = sdSum?.institutionNetAmount3D ?? 0
+    const retailNetAmount3D = sdSum?.retailNetAmount3D ?? 0
     const computedSupplyScore = calculateSupplyScore({
-      foreignNetAmount,
-      institutionNetAmount,
-      retailNetAmount,
-      volumeTrendScore: 62,
+      foreignNetAmount3D,
+      institutionNetAmount3D,
+      retailNetAmount3D,
+      foreignNetAmount5D: sdSum?.foreignNetAmount5D ?? null,
+      institutionNetAmount5D: sdSum?.institutionNetAmount5D ?? null,
+      retailNetAmount5D: sdSum?.retailNetAmount5D ?? null,
     })
-    const rotationScore = Number(d?.rotation?.match(/-?\d+(\.\d+)?/)?.[0] || 58)
+    const code6sum = String(queryCode).replace(/\D/g, '').padStart(6, '0')
+    const sectorSnapSum =
+      code6sum === stockInfo.code
+        ? mockSectorFlowSnapshot
+        : inferSectorFlowSnapshot({
+            sectorName: liveStock.sector || '해당 섹터',
+            supplyScore: computedSupplyScore || supplyScore,
+            rotationLine: d?.rotation,
+            momentumLine: d?.momentum,
+          })
     const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
     const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
     const valuationScore =
@@ -215,43 +260,40 @@ export default function Page() {
             lastConsensusUpdateDays: consensus.lastUpdateDays ?? 7,
           })
         : 50
-    const finalScore =
-      summaryInfo.finalGrade === 'A'
-        ? 86
-        : summaryInfo.finalGrade === 'B+'
-          ? 78
-          : summaryInfo.finalGrade === 'B'
-            ? 68
-            : 58
     const rsi14 = Number(d?.rsi?.replace(/[^\d.]/g, '') || 50)
-    const atrDistance = Number(d?.atrGap?.replace(/[^\d.]/g, '') || 1.8)
-    const consecutiveRiseDays = Number(d?.streak?.replace(/[^\d]/g, '') || 0)
-    const strategy = (summaryInfo.strategy || 'HOLD') as
+    const momentumForFinal = parseMomentumScoreFromLogic(d?.momentum, rsi14)
+    const finalScore = calculateFinalScore({
+      structure: structureScore,
+      execution: executionScore,
+      supply: computedSupplyScore || supplyScore,
+      sectorFlow: sectorSnapSum.sectorFlowScore,
+      consensus: consensusScore,
+      valuation: valuationScore,
+      momentum: momentumForFinal,
+      market: marketScore,
+      news: 58,
+    })
+    const atrDistance = parseAtrDistance(d?.atrGap)
+    const consecutiveRiseDays = parseConsecutiveRiseDays(d?.streak)
+    const strategy = getStrategy(finalScore, rsi14, executionScore) as
       | 'BUY'
       | 'HOLD'
       | 'WATCH_ONLY'
       | 'TAKE_PROFIT'
       | 'REJECT'
-    const entryStage =
-      summaryInfo.entryStage === '신규진입'
-        ? 'ACCEPT'
-        : summaryInfo.entryStage === '관망'
-          ? 'WATCH'
-          : summaryInfo.entryStage === 'REJECT'
-            ? 'REJECT'
-            : 'CAUTION'
+    const entryStage = getEntryStageCode(strategy, finalScore, executionScore)
 
     return generateMetricSummary({
       finalScore,
       structureScore,
       executionScore,
       supplyScore: computedSupplyScore || supplyScore,
-      rotationScore,
+      sectorFlowScore: sectorSnapSum.sectorFlowScore,
       consensusScore,
       valuationScore,
-      foreignNetAmount,
-      institutionNetAmount,
-      retailNetAmount,
+      foreignNetAmount3D,
+      institutionNetAmount3D,
+      retailNetAmount3D,
       indicatorScore,
       candleQualityScore,
       marketScore,
@@ -261,17 +303,19 @@ export default function Page() {
       strategy,
       entryStage,
     })
-  }, [logicState.data, summaryInfo.finalGrade, summaryInfo.strategy, summaryInfo.entryStage, liveStock.price, quoteState])
+  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState])
 
   const liveMetrics: LogicMetric[] = useMemo(() => {
     const d = logicState.data
     if (!d) return logicMetrics
-    const foreignNetShares = d.supplyDetails?.foreignNetShares ?? 0
-    const institutionNetShares = d.supplyDetails?.institutionNetShares ?? 0
-    const retailNetShares = d.supplyDetails?.retailNetShares ?? -(foreignNetShares + institutionNetShares)
-    const foreignNetAmount = d.supplyDetails?.foreignNetAmount ?? 0
-    const institutionNetAmount = d.supplyDetails?.institutionNetAmount ?? 0
-    const retailNetAmount = d.supplyDetails?.retailNetAmount ?? -(foreignNetAmount + institutionNetAmount)
+    const sd = d.supplyDetails
+    const foreignNetShares3D = sd?.foreignNetShares3D ?? 0
+    const institutionNetShares3D = sd?.institutionNetShares3D ?? 0
+    const retailNetShares3D = sd?.retailNetShares3D ?? 0
+    const foreignNetAmount3D = sd?.foreignNetAmount3D ?? 0
+    const institutionNetAmount3D = sd?.institutionNetAmount3D ?? 0
+    const retailNetAmount3D = sd?.retailNetAmount3D ?? 0
+    const fi3Amt = foreignNetAmount3D + institutionNetAmount3D
     const structureScore = Number(d.structure?.split('/')[0]?.trim() || 60)
     const executionScore = Number(d.execution?.split('/')[0]?.trim() || 50)
     const indicatorScore = Number(d.rsi?.replace(/[^\d.]/g, '') || 55)
@@ -311,32 +355,58 @@ export default function Page() {
             historicalPERPercentile: 50,
           })
         : 50
+    const supplyScoreLive = calculateSupplyScore({
+      foreignNetAmount3D,
+      institutionNetAmount3D,
+      retailNetAmount3D,
+      foreignNetAmount5D: sd?.foreignNetAmount5D ?? null,
+      institutionNetAmount5D: sd?.institutionNetAmount5D ?? null,
+      retailNetAmount5D: sd?.retailNetAmount5D ?? null,
+    })
+    const code6m = String(queryCode).replace(/\D/g, '').padStart(6, '0')
+    const sectorSnapM =
+      code6m === stockInfo.code
+        ? mockSectorFlowSnapshot
+        : inferSectorFlowSnapshot({
+            sectorName: liveStock.sector || '해당 섹터',
+            supplyScore: supplyScoreLive,
+            rotationLine: d.rotation,
+            momentumLine: d.momentum,
+          })
     return [
       { title: '구조', value: d.structure || '데이터 없음', score: structureScore, descriptionKey: 'structure', icon: 'Layers', tone: 'blue' },
       { title: '실행', value: d.execution || '데이터 없음', score: executionScore, descriptionKey: 'execution', icon: 'Zap', tone: 'violet' },
       { title: 'ATR 이격', value: d.atrGap || '데이터 없음', score: 60, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
       { title: '연속상승', value: d.streak || '데이터 없음', score: 62, descriptionKey: 'consecutiveRise', icon: 'TrendingUp', tone: 'sky' },
       { title: '시장', value: d.market || '데이터 없음', score: marketScore, descriptionKey: 'market', icon: 'Globe2', tone: 'emerald' },
-      { title: '로테이션', value: d.rotation || '데이터 없음', score: 58, descriptionKey: 'rotation', icon: 'RefreshCw', tone: 'indigo' },
+      {
+        title: '섹터 자금흐름',
+        value: sectorFlowMainTitle(sectorSnapM),
+        subValue: sectorFlowSubLines(sectorSnapM),
+        score: sectorSnapM.sectorFlowScore,
+        statusBadge: sectorSnapM.sectorFlowStatus,
+        descriptionKey: 'sectorFlow',
+        icon: 'Landmark',
+        tone: 'indigo',
+      },
       { title: '구조 상태', value: d.structureState || '데이터 없음', score: structureScore, descriptionKey: 'structure', icon: 'Map', tone: 'orange' },
       {
         title: '수급',
-        value: `${formatKrwAmountToEok(foreignNetAmount + institutionNetAmount)}`,
+        value: `${formatKrwAmountToEok(fi3Amt)}`,
         supplyDetails: {
-          foreignNetShares,
-          foreignNetAmount,
-          institutionNetShares,
-          institutionNetAmount,
-          retailNetShares,
-          retailNetAmount,
-          supplyPeriod: '금일 실시간',
+          foreignNetShares3D,
+          foreignNetAmount3D,
+          institutionNetShares3D,
+          institutionNetAmount3D,
+          retailNetShares3D,
+          retailNetAmount3D,
+          foreignNetAmount5D: sd?.foreignNetAmount5D ?? null,
+          institutionNetAmount5D: sd?.institutionNetAmount5D ?? null,
+          retailNetAmount5D: sd?.retailNetAmount5D ?? null,
+          supplyPeriod: sd?.supplyPeriod ?? '직전 3거래일 누적',
         },
-        score: calculateSupplyScore({
-          foreignNetAmount,
-          institutionNetAmount,
-          retailNetAmount,
-          volumeTrendScore: 62,
-        }),
+        tooltipSummary: '수급은 당일 실시간이 아니라 직전 3거래일 누적으로 판단합니다.',
+        score: supplyScoreLive,
         descriptionKey: 'supply',
         icon: 'Users',
         tone: 'cyan',
@@ -345,16 +415,30 @@ export default function Page() {
         title: '컨센서스',
         value:
           consensus?.avgTargetPrice && consensus?.maxTargetPrice
-            ? `평균 ${consensus.avgTargetPrice.toLocaleString('ko-KR')}원 / 최고 ${consensus.maxTargetPrice.toLocaleString('ko-KR')}원`
+            ? (() => {
+                const avg = consensus.avgTargetPrice.toLocaleString('ko-KR')
+                const hi = consensus.maxTargetPrice.toLocaleString('ko-KR')
+                const lo =
+                  typeof consensus.minTargetPrice === 'number' &&
+                  consensus.minTargetPrice > 0 &&
+                  consensus.minTargetPrice < consensus.maxTargetPrice
+                    ? consensus.minTargetPrice.toLocaleString('ko-KR')
+                    : null
+                return lo
+                  ? `평균 ${avg}원 / 최고 ${hi}원 / 최저 ${lo}원`
+                  : `평균 ${avg}원 / 최고 ${hi}원`
+              })()
             : '데이터 없음',
         subValue:
           consensusUpside != null
             ? `평균 ${consensusUpside.avgUpsidePct >= 0 ? '+' : ''}${consensusUpside.avgUpsidePct.toFixed(1)}% / 최고 ${consensusUpside.maxUpsidePct >= 0 ? '+' : ''}${consensusUpside.maxUpsidePct.toFixed(1)}%`
             : '외부 컨센서스 데이터 미수신',
-        meta:
-          consensus?.recommendationScore != null || consensus?.recommendationText
-            ? `투자의견 ${consensus.recommendationScore?.toFixed(2) ?? '-'} (${consensus.recommendationText ?? '-'}) · 출처 네이버 금융`
-            : '출처 네이버 금융',
+        meta: (() => {
+          if (consensus?.recommendationScore != null || consensus?.recommendationText) {
+            return `투자의견 ${consensus.recommendationScore?.toFixed(2) ?? '-'} (${consensus.recommendationText ?? '-'})`
+          }
+          return undefined
+        })(),
         score: consensusScore,
         descriptionKey: 'consensus',
         icon: 'SlidersHorizontal',
@@ -376,7 +460,7 @@ export default function Page() {
       { title: '특이', value: d.unusual || '데이터 없음', score: 60, descriptionKey: 'special', icon: 'CircleAlert', tone: 'red' },
       { title: '통계', value: d.stats || '데이터 없음', score: 55, descriptionKey: 'statistics', icon: 'Percent', tone: 'slate' },
     ]
-  }, [logicState.data, liveStock.price])
+  }, [logicState.data, liveStock.price, liveStock.sector, queryCode])
 
   const logicSubtitle = useMemo(() => {
     const statusLabel =
@@ -390,125 +474,299 @@ export default function Page() {
     return `기준 종목코드 ${queryCode} · 상태 ${statusLabel}`
   }, [logicState.status, queryCode])
 
-  const executionData: ExecutionCard[] = useMemo(() => {
-    const score = summaryInfo.finalGrade === 'A' ? 86 : summaryInfo.finalGrade === 'B+' ? 78 : 68
-    const input: TargetStopInput = {
-      currentPrice: liveStock.price,
-      atr14: Math.max(1, liveStock.price * 0.018),
-      rsi14: Number(logicState.data?.rsi?.replace(/[^\d.]/g, '') || 50),
-      finalScore: score,
-      structureScore: Number(logicState.data?.structure?.split('/')[0]?.trim() || 70),
-      executionScore: Number(logicState.data?.execution?.split('/')[0]?.trim() || 40),
-      supportPrice: quoteState.status === 'ok' ? (quoteState.data.low ?? liveStock.price * 0.95) : liveStock.price * 0.95,
-      resistancePrice: quoteState.status === 'ok' ? (quoteState.data.high ?? liveStock.price * 1.02) : liveStock.price * 1.02,
-      recentHigh20: quoteState.status === 'ok' ? (quoteState.data.high ?? liveStock.price * 1.03) : liveStock.price * 1.03,
-      recentLow20: quoteState.status === 'ok' ? (quoteState.data.low ?? liveStock.price * 0.94) : liveStock.price * 0.94,
-      marketStatus:
-        logicState.data?.market?.includes('Caution')
-          ? 'Caution'
-          : logicState.data?.market?.includes('Risk-On')
-            ? 'RiskOn'
-            : 'Neutral',
+  const logicDerived = useMemo(() => {
+    const d = logicState.data
+    const price = liveStock.price
+    if (!Number.isFinite(price) || price <= 0) return null
+
+    const structureScore = Number(d?.structure?.split('/')[0]?.trim() ?? 60)
+    const executionScore = Number(d?.execution?.split('/')[0]?.trim() ?? 50)
+    const rsi14 = Number(d?.rsi?.replace(/[^\d.]/g, '') ?? 50)
+
+    const sd3 = d?.supplyDetails
+    const foreignNetAmount3D = sd3?.foreignNetAmount3D ?? 0
+    const institutionNetAmount3D = sd3?.institutionNetAmount3D ?? 0
+    const retailNetAmount3D = sd3?.retailNetAmount3D ?? 0
+
+    const supplyScore = calculateSupplyScore({
+      foreignNetAmount3D,
+      institutionNetAmount3D,
+      retailNetAmount3D,
+      foreignNetAmount5D: sd3?.foreignNetAmount5D ?? null,
+      institutionNetAmount5D: sd3?.institutionNetAmount5D ?? null,
+      retailNetAmount5D: sd3?.retailNetAmount5D ?? null,
+    })
+
+    const code6 = String(queryCode).replace(/\D/g, '').padStart(6, '0')
+    const sectorSnap =
+      code6 === stockInfo.code
+        ? mockSectorFlowSnapshot
+        : inferSectorFlowSnapshot({
+            sectorName: liveStock.sector || '해당 섹터',
+            supplyScore,
+            rotationLine: d?.rotation,
+            momentumLine: d?.momentum,
+          })
+    const sectorFlowScore = sectorSnap.sectorFlowScore
+    const momentumScore = parseMomentumScoreFromLogic(d?.momentum, rsi14)
+    const marketScore = d?.market?.includes('Caution')
+      ? 42
+      : d?.market?.includes('Risk-On')
+        ? 78
+        : 60
+
+    const consensus = d?.consensusDetails
+    const consensusScore =
+      consensus?.avgTargetPrice && consensus?.maxTargetPrice
+        ? calculateConsensusScore({
+            currentPrice: price,
+            avgTargetPrice: consensus.avgTargetPrice,
+            maxTargetPrice: consensus.maxTargetPrice,
+            analystCount: consensus.analystCount ?? 1,
+            lastConsensusUpdateDays: consensus.lastUpdateDays ?? 7,
+          })
+        : 50
+
+    const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
+    const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
+    const valuationScore = hasPer
+      ? calculateValuationScore({
+          trailingPER,
+          forwardPER: trailingPER,
+          forwardEPSGrowthPct: 0,
+          sectorAveragePER: trailingPER,
+          historicalPERPercentile: 50,
+        })
+      : 50
+
+    const finalScore = calculateFinalScore({
+      structure: structureScore,
+      execution: executionScore,
+      supply: supplyScore,
+      sectorFlow: sectorFlowScore,
+      consensus: consensusScore,
+      valuation: valuationScore,
+      momentum: momentumScore,
+      market: marketScore,
+      news: 58,
+    })
+
+    const marketStatus =
+      d?.market?.includes('Caution')
+        ? 'Caution'
+        : d?.market?.includes('Risk-On')
+          ? 'RiskOn'
+          : 'Neutral'
+
+    const supportPrice =
+      quoteState.status === 'ok' ? (quoteState.data.low ?? price * 0.95) : price * 0.95
+    const resistancePrice =
+      quoteState.status === 'ok' ? (quoteState.data.high ?? price * 1.02) : price * 1.02
+    const recentHigh20 =
+      quoteState.status === 'ok' ? (quoteState.data.high ?? price * 1.03) : price * 1.03
+    const recentLow20 =
+      quoteState.status === 'ok' ? (quoteState.data.low ?? price * 0.94) : price * 0.94
+
+    const atr14 = Math.max(1, price * 0.018)
+    const atrDistance = parseAtrDistance(d?.atrGap)
+    const ma20 = price * 0.975
+
+    const targetStopInput: TargetStopInput = {
+      currentPrice: price,
+      atr14,
+      atrPct: (atr14 / price) * 100,
+      supportPrice,
+      ma20,
+      recentLow20,
+      marketScore,
+      rsi14,
+      finalScore,
+      executionScore,
+      atrDistance,
+      marketStatus,
     }
-    const stop = calculateStopPrice(input)
-    const targets = calculateTargetPrices(input)
-    const oneMonth = targets.find((t) => t.horizon === '1M')?.targetPrice ?? input.currentPrice
-    const rr = calculateRiskReward(input.currentPrice, stop.stopPrice, oneMonth)
-    const strategy = (summaryInfo.strategy || 'HOLD') as ExecutionInput['strategy']
-    const entryStage: ExecutionInput['entryStage'] =
-      summaryInfo.entryStage === '신규진입'
-        ? 'ACCEPT'
-        : summaryInfo.entryStage === '관망'
-          ? 'WATCH'
-          : summaryInfo.entryStage === 'REJECT'
-            ? 'REJECT'
-            : summaryInfo.entryStage === '보유'
-              ? 'CAUTION'
-              : 'WATCH'
-    const plan = calculateExecutionPlan({
-      currentPrice: input.currentPrice,
-      finalScore: score,
-      structureScore: input.structureScore,
-      executionScore: input.executionScore,
-      supplyScore: 42,
-      momentumScore: 45,
-      riskScore: 64,
-      rsi14: input.rsi14,
-      atr14: input.atr14,
-      stopPrice: stop.stopPrice,
-      stopLossPct: stop.stopLossPct,
-      riskRewardRatio: rr.ratio,
-      marketStatus: input.marketStatus,
+
+    const stop = calculateStopPrice(targetStopInput)
+
+    const targetPriceInput: TargetPriceInput = {
+      currentPrice: price,
+      atr14,
+      rsi14,
+      finalScore,
+      structureScore,
+      executionScore,
+      supplyScore,
+      sectorFlowScore,
+      valuationScore,
+      consensusScore,
+      momentumScore,
+      marketScore,
+      resistancePrice,
+      supportPrice,
+      recentHigh20,
+      consensusAvgTargetPrice: consensus?.avgTargetPrice,
+      consensusMaxTargetPrice: consensus?.maxTargetPrice,
+      marketStatus,
+    }
+
+    const targetPriceResult = calculateTargetPrices(targetPriceInput)
+    const oneMonthTarget =
+      targetPriceResult.targets.find((t) => t.label === '1M')?.targetPrice ?? price
+    const rr = calculateRiskReward(price, stop.stopPrice, oneMonthTarget)
+
+    const strategy = getStrategy(finalScore, rsi14, executionScore) as Strategy
+
+    const threeMonthInput: ThreeMonthStrategyInput = {
+      currentPrice: price,
+      finalScore,
+      executionScore,
+      supplyScore,
+      rsi14,
+      atrDistance,
+      atr14,
+      strategy,
+      marketStatus,
+      marketScore,
+      riskRewardRatio: Number.isFinite(rr.ratio) ? rr.ratio : 0,
+      supportPrice,
+      consensusAvgTargetPrice: consensus?.avgTargetPrice ?? null,
+      consensusMaxTargetPrice: consensus?.maxTargetPrice ?? null,
+    }
+    const threeMonth = calculateThreeMonthStrategy(threeMonthInput)
+
+    const entryStage = getEntryStageCode(strategy, finalScore, executionScore)
+
+    const briefingInput = {
+      structureScore,
+      executionScore,
+      supplyScore,
+      consensusScore,
+      valuationScore,
+      rsi14,
+      atrDistance,
+      marketStatus,
+      marketLabel: d?.market ?? '',
       strategy,
       entryStage,
-      accountSize: 50_000_000,
-    })
-    return [
-      { title: '추천 비중', value: `${plan.recommendedPositionPct}%`, hint: plan.action },
-      {
-        title: '1R 손실금',
-        value: `${stop.stopLossPct.toFixed(2)}%, ${(stop.stopPrice - input.currentPrice).toLocaleString('ko-KR')}원`,
-        hint: plan.riskAmountWon
-          ? `계좌 리스크 ${plan.riskAmountPct}% · ${plan.riskAmountWon.toLocaleString('ko-KR')}원`
-          : `계좌 리스크 ${plan.riskAmountPct}%`,
-      },
-      { title: '기본 실행', value: `${plan.timeStop} / ${plan.stopRule} / ${plan.takeProfitRule}` },
-      { title: '최대 비중', value: `${plan.maxPositionPct}% · R/R ${rr.ratio} (${rr.verdict})`, hint: plan.summary },
-    ]
-  }, [summaryInfo.finalGrade, liveStock.price, logicState.data, quoteState])
-
-  const targets = useMemo(() => {
-    const score = summaryInfo.finalGrade === 'A' ? 86 : summaryInfo.finalGrade === 'B+' ? 78 : 68
-    const input: TargetStopInput = {
-      currentPrice: liveStock.price,
-      atr14: Math.max(1, liveStock.price * 0.018),
-      rsi14: Number(logicState.data?.rsi?.replace(/[^\d.]/g, '') || 50),
-      finalScore: score,
-      structureScore: Number(logicState.data?.structure?.split('/')[0]?.trim() || 70),
-      executionScore: Number(logicState.data?.execution?.split('/')[0]?.trim() || 40),
-      supportPrice: quoteState.status === 'ok' ? (quoteState.data.low ?? liveStock.price * 0.95) : liveStock.price * 0.95,
-      resistancePrice: quoteState.status === 'ok' ? (quoteState.data.high ?? liveStock.price * 1.02) : liveStock.price * 1.02,
-      recentHigh20: quoteState.status === 'ok' ? (quoteState.data.high ?? liveStock.price * 1.03) : liveStock.price * 1.03,
-      recentLow20: quoteState.status === 'ok' ? (quoteState.data.low ?? liveStock.price * 0.94) : liveStock.price * 0.94,
-      marketStatus:
-        logicState.data?.market?.includes('Caution')
-          ? 'Caution'
-          : logicState.data?.market?.includes('Risk-On')
-            ? 'RiskOn'
-            : 'Neutral',
+      threeMonthEntry: threeMonth.entryDecision,
+      finalScore,
     }
-    return calculateTargetPrices(input)
-  }, [liveStock.price, summaryInfo.finalGrade, logicState.data, quoteState])
+
+    return {
+      targetPriceResult,
+      stop,
+      rr,
+      threeMonth,
+      briefingInput,
+    }
+  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState])
+
+  const mockNewsSorted = useMemo(
+    () => sortNewsByDateDesc(getMockNewsByStockCode(queryCode)),
+    [queryCode],
+  )
+
+  const briefingBundle = useMemo(() => {
+    const d = logicState.data
+    const price = liveStock.price
+    const code6 = String(queryCode).replace(/\D/g, '').padStart(6, '0')
+    const consensus = d?.consensusDetails
+    let consensusUpsideAvgPct: number | undefined
+    let consensusUpsideMaxPct: number | undefined
+    if (consensus?.avgTargetPrice && consensus?.maxTargetPrice && price > 0) {
+      const u = calculateConsensusUpside(price, consensus.avgTargetPrice, consensus.maxTargetPrice)
+      consensusUpsideAvgPct = u.avgUpsidePct
+      consensusUpsideMaxPct = u.maxUpsidePct
+    }
+
+    const bi = logicDerived?.briefingInput
+    const entryDecision = logicDerived?.threeMonth.entryDecision ?? '관망'
+    const sd = d?.supplyDetails
+
+    const trailingPER = quoteState.status === 'ok' ? quoteState.data.per ?? undefined : undefined
+
+    const detailedBriefingInput: DetailedBriefingInput = {
+      stockName: liveStock.name,
+      stockCode: code6,
+      currentPrice: price,
+      previousClose:
+        quoteState.status === 'ok' &&
+        Number.isFinite(quoteState.data.price) &&
+        Number.isFinite(quoteState.data.change)
+          ? quoteState.data.price - quoteState.data.change
+          : undefined,
+      changePct: liveStock.changePercent,
+      intradayHigh: quoteState.status === 'ok' ? (quoteState.data.high ?? undefined) : undefined,
+      intradayLow: quoteState.status === 'ok' ? (quoteState.data.low ?? undefined) : undefined,
+      high52w: undefined,
+      isNear52wHigh: false,
+      consensusAvgTargetPrice: consensus?.avgTargetPrice,
+      consensusMaxTargetPrice: consensus?.maxTargetPrice,
+      consensusUpsideAvgPct,
+      consensusUpsideMaxPct,
+      foreignNetAmount3D: sd?.foreignNetAmount3D,
+      institutionNetAmount3D: sd?.institutionNetAmount3D,
+      retailNetAmount3D: sd?.retailNetAmount3D,
+      rsi14: bi?.rsi14 ?? 50,
+      atrDistance: bi?.atrDistance ?? 2,
+      trailingPER: trailingPER ?? undefined,
+      forwardPER: undefined,
+      forwardEPSGrowthPct: undefined,
+      finalScore: bi?.finalScore ?? 60,
+      executionScore: bi?.executionScore ?? 50,
+      supplyScore: bi?.supplyScore ?? 55,
+      valuationScore: bi?.valuationScore ?? 55,
+      strategy: bi?.strategy ?? 'HOLD',
+      entryDecision,
+      news: mockNewsSorted,
+    }
+
+    const localMemo = generateDetailedInvestmentMemo(detailedBriefingInput)
+    const prompt = buildInvestmentMemoPromptForGPT(detailedBriefingInput)
+    return { localMemo, prompt }
+  }, [liveStock, queryCode, logicDerived, logicState.data, mockNewsSorted, quoteState])
+
+  const [gptBriefing, setGptBriefing] = useState<DetailedInvestmentMemoResult | null>(null)
+  const [gptBriefingLoading, setGptBriefingLoading] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const { prompt } = briefingBundle
+    setGptBriefingLoading(true)
+    setGptBriefing(null)
+    fetchGPTBriefing(prompt)
+      .then((b) => {
+        if (!cancelled) setGptBriefing(b)
+      })
+      .catch(() => {
+        if (!cancelled) setGptBriefing(null)
+      })
+      .finally(() => {
+        if (!cancelled) setGptBriefingLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [briefingBundle.prompt])
+
+  const displayMemo = gptBriefingLoading
+    ? null
+    : (gptBriefing ?? briefingBundle.localMemo)
+  const briefingSource: 'gpt' | 'local' = gptBriefing ? 'gpt' : 'local'
+
+  const targetPricePanelResult = logicDerived?.targetPriceResult ?? null
 
   const stopInfo = useMemo(() => {
-    if (quoteState.status !== 'ok') return mockStopInfo
-    const score = summaryInfo.finalGrade === 'A' ? 86 : summaryInfo.finalGrade === 'B+' ? 78 : 68
-    const input: TargetStopInput = {
-      currentPrice: quoteState.data.price,
-      atr14: Math.max(1, quoteState.data.price * 0.018),
-      rsi14: Number(logicState.data?.rsi?.replace(/[^\d.]/g, '') || 50),
-      finalScore: score,
-      structureScore: Number(logicState.data?.structure?.split('/')[0]?.trim() || 70),
-      executionScore: Number(logicState.data?.execution?.split('/')[0]?.trim() || 40),
-      supportPrice: quoteState.data.low ?? quoteState.data.price * 0.95,
-      resistancePrice: quoteState.data.high ?? quoteState.data.price * 1.02,
-      recentHigh20: quoteState.data.high ?? quoteState.data.price * 1.03,
-      recentLow20: quoteState.data.low ?? quoteState.data.price * 0.94,
-      marketStatus:
-        logicState.data?.market?.includes('Caution')
-          ? 'Caution'
-          : logicState.data?.market?.includes('Risk-On')
-            ? 'RiskOn'
-            : 'Neutral',
-    }
-    const stop = calculateStopPrice(input)
+    if (!logicDerived) return mockStopInfo
     return {
-      stopPrice: stop.stopPrice,
-      stopLossPct: stop.stopLossPct,
-      method: stop.method,
-      supportPrice: stop.supportPrice,
+      stopPrice: logicDerived.stop.stopPrice,
+      stopLossPct: logicDerived.stop.stopLossPct,
+      method: logicDerived.stop.method,
+      reason: logicDerived.stop.reason,
+      candidates: logicDerived.stop.candidates,
+      warning: logicDerived.stop.warning,
     }
-  }, [quoteState, summaryInfo.finalGrade, logicState.data])
+  }, [logicDerived])
 
   const chartData = useMemo(() => {
     return chartState.points.length
@@ -520,9 +778,14 @@ export default function Page() {
     <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       <article className="overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
         <StockHeader
-          title="Signal15"
+          title="Signal15 🇰🇷"
           subtitle=""
           asOfDate={liveStock.asOfDate}
+          leading={
+            <span className="flex size-11 items-center justify-center rounded-xl border border-red-200 bg-red-50 sm:size-12">
+              <TrendingUp className="size-6 text-red-600 sm:size-7" strokeWidth={2.25} aria-hidden />
+            </span>
+          }
         />
         <div className="border-b border-slate-200 px-6 py-3 sm:px-8">
           <StockNameSearch
@@ -538,8 +801,13 @@ export default function Page() {
         </div>
         <MainStockCard stock={liveStock} />
 
-        <div className="grid grid-cols-1 md:grid-cols-2">
-          <SummaryPanel summary={summaryInfo} metricSummary={metricSummary} />
+        <div className="grid grid-cols-1 md:grid-cols-2 md:items-stretch">
+          <SummaryPanel
+            summary={summaryInfo}
+            metricSummary={metricSummary}
+            investmentMemo={displayMemo}
+            aiLoading={gptBriefingLoading}
+          />
           <PriceChart
             timeframe={tf}
             onTimeframeChange={setTf}
@@ -551,6 +819,13 @@ export default function Page() {
           />
         </div>
 
+        <AIBriefingPanel
+          memo={displayMemo}
+          news={mockNewsSorted}
+          loading={gptBriefingLoading}
+          briefingSource={briefingSource}
+        />
+
         {logicState.status === 'loading' ? (
           <p className="px-6 pt-4 text-xs text-slate-500 sm:px-8">로직 지표 계산 중...</p>
         ) : null}
@@ -558,8 +833,15 @@ export default function Page() {
           <p className="px-6 pt-4 text-xs text-amber-700 sm:px-8">로직 지표 오류: {logicState.message}</p>
         ) : null}
         <MetricGrid metrics={liveMetrics} subtitle={logicSubtitle} />
-        <ExecutionStrategy cards={executionData.length ? executionData : executionCards} />
-        <TargetPricePanel targets={targets} />
+        <ExecutionStrategy
+          strategy={logicDerived?.threeMonth ?? null}
+          riskReward={logicDerived?.rr ?? { ratio: 0, verdict: '애매' }}
+          loading={logicState.status === 'loading'}
+        />
+        <TargetPricePanel
+          result={targetPricePanelResult}
+          loading={logicState.status === 'loading' && !targetPricePanelResult}
+        />
         <StopPanel stop={stopInfo} />
 
         <footer className="border-t border-slate-200 px-6 py-4 sm:px-8">

@@ -35,17 +35,17 @@ export const metricGuides = {
     ],
     note: '국내주식 단기 모멘텀에서는 수급 점수를 중요하게 봅니다.',
   },
-  rotation: {
-    title: '로테이션',
+  sectorFlow: {
+    title: '섹터 자금흐름',
     unit: '점',
     ranges: [
-      { min: 85, max: 100, label: '주도 섹터', meaning: '시장 자금이 강하게 유입되는 핵심 주도 섹터.' },
-      { min: 70, max: 84, label: '긍정', meaning: '섹터 순환매 흐름이 긍정적.' },
-      { min: 55, max: 69, label: '중립', meaning: '섹터 흐름은 무난하지만 강한 주도력은 부족.' },
-      { min: 40, max: 54, label: '약화', meaning: '섹터 순환매 강도가 약해지는 구간.' },
-      { min: 0, max: 39, label: '소외', meaning: '시장 자금이 다른 섹터로 이동 중.' },
+      { min: 85, max: 100, label: '주도섹터', meaning: '섹터 5일 수익이 시장을 크게 웃돌고 상대강도도 상위권에 가깝습니다.' },
+      { min: 70, max: 84, label: '관심섹터', meaning: '시장 대비 양호한 자금 유입·상대강도로 모멘텀을 받쳐줄 여지가 있습니다.' },
+      { min: 55, max: 69, label: '중립', meaning: '섹터와 시장이 비슷한 속도로 움직이는 무난한 구간입니다.' },
+      { min: 40, max: 54, label: '약화', meaning: '시장 대비 섹터 추세가 약해지는 구간입니다.' },
+      { min: 0, max: 39, label: '소외', meaning: '자금이 다른 섹터로 기울어 이 업종은 상대적으로 소외되기 쉽습니다.' },
     ],
-    note: '1개월 수익률 전략에서는 섹터 로테이션이 후보 우선순위에 큰 영향을 줍니다.',
+    note: '1개월 8~15% 전략에서는 개별 종목보다 섹터가 주도인지가 중요합니다.',
   },
   consensus: {
     title: '컨센서스',

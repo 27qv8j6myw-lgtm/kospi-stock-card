@@ -1,6 +1,12 @@
-import { useRef, useState } from 'react'
+import { useRef } from 'react'
 import { Info } from 'lucide-react'
-import { metricGuides } from '../lib/metricGuide'
+import {
+  metricEducation,
+  parseClvFromMetricValue,
+  formatClvSigned,
+  type MetricEducationBlock,
+  type MetricInterpretationRow,
+} from '../lib/metricEducation'
 import type { LogicMetric } from '../types/stock'
 
 type MetricInfoTooltipProps = {
@@ -9,6 +15,162 @@ type MetricInfoTooltipProps = {
   onOpen: () => void
   onClose: () => void
   onToggle: () => void
+  /** 왼쪽 열: start(패널은 오른쪽으로 펼침). 오른쪽 열: end(패널은 왼쪽으로 펼침). */
+  tooltipSide: 'start' | 'end'
+}
+
+const sectionLabelClass =
+  'text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500'
+
+function signedNumberClass(n: number): string {
+  if (n > 0) return 'font-semibold text-rose-600'
+  if (n < 0) return 'font-semibold text-sky-600'
+  return 'font-semibold text-slate-700'
+}
+
+function highlightSignedNumbers(text: string) {
+  const parts = text.split(/([+-]?\d+(?:\.\d+)?)/g)
+  return parts.map((part, i) => {
+    if (/^[+-]?\d+(?:\.\d+)?$/.test(part)) {
+      const v = Number(part)
+      return (
+        <span key={i} className={signedNumberClass(v)}>
+          {part}
+        </span>
+      )
+    }
+    return <span key={i}>{part}</span>
+  })
+}
+
+function SectionCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-3.5 sm:px-4 sm:py-4">
+      {children}
+    </div>
+  )
+}
+
+function InterpretationList({
+  rows,
+  title,
+}: {
+  rows: MetricInterpretationRow[]
+  title: string
+}) {
+  return (
+    <SectionCard>
+      <p className={sectionLabelClass}>{title}</p>
+      <ul className="mt-3 space-y-3">
+        {rows.map((row) => (
+          <li key={row.label} className="text-xs leading-relaxed text-slate-700">
+            <span className="font-semibold text-slate-900">{highlightSignedNumbers(row.label)}</span>
+            <span className="text-slate-400"> — </span>
+            <span>{highlightSignedNumbers(row.meaning)}</span>
+          </li>
+        ))}
+      </ul>
+    </SectionCard>
+  )
+}
+
+function CandleQualityTooltipBody({
+  metric,
+  edu,
+}: {
+  metric: LogicMetric
+  edu: MetricEducationBlock
+}) {
+  const { clv5, clv10 } = parseClvFromMetricValue(metric.value)
+
+  return (
+    <div className="space-y-5 sm:space-y-4">
+      <div>
+        <h4 className="text-sm font-semibold leading-snug text-slate-900">{edu.title}</h4>
+        {edu.tooltipTagline ? (
+          <p className="mt-2 text-[11px] leading-relaxed text-slate-600">{edu.tooltipTagline}</p>
+        ) : null}
+      </div>
+
+      {clv5 != null || clv10 != null ? (
+        <SectionCard>
+          <p className={sectionLabelClass}>현재 값</p>
+          <div className="mt-2 space-y-1.5 text-xs tabular-nums">
+            {clv5 != null ? (
+              <p className="leading-relaxed">
+                <span className="text-slate-600">CLV5 </span>
+                <span className={signedNumberClass(clv5)}>{formatClvSigned(clv5)}</span>
+              </p>
+            ) : null}
+            {clv10 != null ? (
+              <p className="leading-relaxed">
+                <span className="text-slate-600">CLV10 </span>
+                <span className={signedNumberClass(clv10)}>{formatClvSigned(clv10)}</span>
+              </p>
+            ) : null}
+          </div>
+        </SectionCard>
+      ) : null}
+
+      <SectionCard>
+        <p className={sectionLabelClass}>쉬운 설명</p>
+        <p className="mt-2 text-xs leading-relaxed text-slate-700">{edu.simple}</p>
+      </SectionCard>
+
+      <SectionCard>
+        <p className={sectionLabelClass}>왜 중요한가</p>
+        <p className="mt-2 text-xs leading-relaxed text-slate-700">{edu.why}</p>
+      </SectionCard>
+
+      {edu.concepts?.length ? (
+        <SectionCard>
+          <p className={sectionLabelClass}>CLV란?</p>
+          <ul className="mt-3 space-y-3">
+            {edu.concepts.map((c) => (
+              <li key={c.name} className="text-xs leading-relaxed text-slate-700">
+                <span className="font-semibold text-slate-900">{c.name}</span>
+                <span className="text-slate-400"> — </span>
+                {c.description}
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      ) : null}
+
+      <InterpretationList rows={edu.interpretation} title="숫자·구간 읽는 법" />
+
+      {edu.additionalMetrics?.length ? (
+        <SectionCard>
+          <p className={sectionLabelClass}>CLV5 · CLV10</p>
+          <ul className="mt-3 space-y-3">
+            {edu.additionalMetrics.map((m) => (
+              <li key={m.name} className="text-xs leading-relaxed text-slate-700">
+                <span className="font-semibold text-slate-900">{m.name}</span>
+                <span className="text-slate-400"> — </span>
+                {m.description}
+              </li>
+            ))}
+          </ul>
+        </SectionCard>
+      ) : null}
+
+      {edu.howToRead?.length ? (
+        <InterpretationList rows={edu.howToRead} title="둘을 같이 읽는 법" />
+      ) : null}
+
+      <SectionCard>
+        <p className={sectionLabelClass}>예시</p>
+        <p className="mt-2 text-xs leading-relaxed text-slate-700">
+          {highlightSignedNumbers(edu.example)}
+        </p>
+      </SectionCard>
+
+      <SectionCard>
+        <p className={sectionLabelClass}>핵심 요약</p>
+        <p className="mt-2 text-xs font-medium leading-relaxed text-slate-800">{edu.takeaway}</p>
+      </SectionCard>
+    </div>
+  )
 }
 
 export function MetricInfoTooltip({
@@ -17,39 +179,18 @@ export function MetricInfoTooltip({
   onOpen,
   onClose,
   onToggle,
+  tooltipSide,
 }: MetricInfoTooltipProps) {
   const wrapRef = useRef<HTMLDivElement>(null)
-  const [align, setAlign] = useState<'left' | 'right'>('left')
-  const guide = metricGuides[metric.descriptionKey]
-
-  const parsedValue = (() => {
-    if (typeof metric.score === 'number' && Number.isFinite(metric.score)) return metric.score
-    const m = String(metric.value).match(/-?\d+(\.\d+)?/)
-    if (!m) return null
-    const n = Number(m[0])
-    return Number.isFinite(n) ? n : null
-  })()
-
-  const activeRange =
-    parsedValue == null
-      ? null
-      : guide.ranges.find((r) => parsedValue >= r.min && parsedValue <= r.max) ?? null
-
-  const syncAlign = () => {
-    const el = wrapRef.current
-    if (!el || typeof window === 'undefined') return
-    const rect = el.getBoundingClientRect()
-    const tooltipWidth = 288 // w-72
-    const spaceRight = window.innerWidth - rect.left
-    setAlign(spaceRight >= tooltipWidth + 24 ? 'left' : 'right')
-  }
+  const edu = metricEducation[metric.descriptionKey]
+  const isCandleQuality = metric.descriptionKey === 'candleQuality'
+  const alignClass = tooltipSide === 'start' ? 'left-0' : 'right-0'
 
   return (
     <div
       ref={wrapRef}
       className="relative ml-1 shrink-0"
       onMouseEnter={() => {
-        syncAlign()
         onOpen()
       }}
       onMouseLeave={onClose}
@@ -57,54 +198,83 @@ export function MetricInfoTooltip({
       <button
         type="button"
         onClick={() => {
-          syncAlign()
           onToggle()
         }}
-        aria-label={`${guide.title} 점수 기준 보기`}
+        aria-label={`${edu.title} 지표 설명 보기`}
         className="rounded-full p-0.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-300"
       >
         <Info className="size-3.5" />
       </button>
       <div
-        className={`absolute top-6 z-[80] w-72 rounded-lg border border-slate-700 bg-slate-900/95 p-3 text-xs text-slate-100 shadow-2xl backdrop-blur transition-all duration-150 ${
-          align === 'left' ? 'left-0' : 'right-0'
-        } ${
+        className={`absolute top-6 z-[80] ${
+          isCandleQuality
+            ? 'w-[min(22.5rem,calc(100vw-1.25rem))]'
+            : 'w-[min(20.5rem,calc(100vw-1.25rem))]'
+        } max-h-[min(78vh,32rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 text-left shadow-xl sm:p-5 transition-all duration-150 ${alignClass} ${
           open
             ? 'pointer-events-auto translate-y-0 opacity-100'
             : 'pointer-events-none -translate-y-1 opacity-0'
         }`}
       >
-        <div className="flex items-center justify-between gap-2">
-          <p className="font-semibold text-slate-100">{guide.title} 기준</p>
-          <span className="rounded-full border border-slate-600 bg-slate-800 px-2 py-0.5 text-[10px] font-semibold text-slate-200">
-            현재 {parsedValue == null ? 'N/A' : `${parsedValue}${guide.unit}`}
-          </span>
-        </div>
-        <div className="mt-2 space-y-1.5">
-          {guide.ranges.map((r) => {
-            const isActive = activeRange?.min === r.min && activeRange?.max === r.max
-            return (
-              <div
-                key={`${r.min}-${r.max}-${r.label}`}
-                className={`rounded-md border px-2.5 py-2 ${
-                  isActive
-                    ? 'border-blue-400/60 bg-blue-500/20'
-                    : 'border-slate-700 bg-slate-800/50'
-                }`}
-              >
-                <p className={`font-semibold ${isActive ? 'text-blue-200' : 'text-slate-200'}`}>
-                  {r.min}~{r.max}
-                  {guide.unit}: {r.label}
+        {isCandleQuality ? (
+          <CandleQualityTooltipBody metric={metric} edu={edu} />
+        ) : (
+          <>
+            <h4 className="text-sm font-semibold leading-snug text-slate-900">{edu.title}</h4>
+            <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
+              이 카드 표시: <span className="font-medium text-slate-700">{metric.value}</span>
+              {metric.subValue ? (
+                <>
+                  {' '}
+                  <span className="text-slate-400">·</span> {metric.subValue}
+                </>
+              ) : null}
+            </p>
+
+            <hr className="my-3 border-slate-200" />
+
+            <p className={sectionLabelClass}>쉬운 설명</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-700">{edu.simple}</p>
+
+            <hr className="my-3 border-slate-200" />
+
+            <p className={sectionLabelClass}>왜 중요한가</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-700">{edu.why}</p>
+
+            <hr className="my-3 border-slate-200" />
+
+            <p className={sectionLabelClass}>숫자·표현 읽는 법</p>
+            <ul className="mt-2 space-y-2.5">
+              {edu.interpretation.map((row) => (
+                <li key={row.label} className="text-xs leading-relaxed text-slate-700">
+                  <span className="font-semibold text-slate-900">{row.label}</span>
+                  <span className="text-slate-400"> — </span>
+                  {row.meaning}
+                </li>
+              ))}
+            </ul>
+
+            <hr className="my-3 border-slate-200" />
+
+            <p className={sectionLabelClass}>예시</p>
+            <p className="mt-1.5 text-xs leading-relaxed text-slate-700">{edu.example}</p>
+
+            <hr className="my-3 border-slate-200" />
+
+            <p className={sectionLabelClass}>핵심 요약</p>
+            <p className="mt-1.5 text-xs font-medium leading-relaxed text-slate-800">{edu.takeaway}</p>
+
+            {metric.descriptionKey === 'supply' && metric.tooltipSummary ? (
+              <>
+                <hr className="my-3 border-slate-200" />
+                <p className={sectionLabelClass}>이 종목 수급 요약</p>
+                <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed text-slate-700">
+                  {metric.tooltipSummary}
                 </p>
-                <p className="mt-0.5 text-slate-300">{r.meaning}</p>
-              </div>
-            )
-          })}
-        </div>
-        <p className="mt-2 text-slate-300">{guide.note}</p>
-        {metric.descriptionKey === 'supply' && metric.tooltipSummary ? (
-          <p className="mt-2 border-t border-slate-700 pt-2 text-slate-300">{metric.tooltipSummary}</p>
-        ) : null}
+              </>
+            ) : null}
+          </>
+        )}
       </div>
     </div>
   )
