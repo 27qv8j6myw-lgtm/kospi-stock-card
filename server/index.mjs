@@ -5,6 +5,13 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
 import { inquireChartByTimeframe, inquireDomesticPrice, inquireInvestorByStock } from './kisClient.mjs'
+import { completeJsonChat, getAiConfig } from './aiClient.mjs'
+import {
+  buildSourceList,
+  generateMarketBriefingWithAi,
+  searchBrokerReports,
+  searchLatestNews,
+} from './marketBriefing.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** `server/` 의 부모 = 프로젝트 루트 (실행 cwd 와 무관) */
@@ -377,7 +384,7 @@ app.use(
 
 app.use(express.json({ limit: '512kb' }))
 
-async function generateAIFill({ openaiApiKey, model, payload }) {
+async function generateAIFill({ payload }) {
   const system = [
     '너는 한국 주식 카드 데이터 생성기다.',
     '입력 데이터를 바탕으로 과장 없이 보수적으로 요약한다.',
@@ -439,97 +446,21 @@ async function generateAIFill({ openaiApiKey, model, payload }) {
     },
   }
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openaiApiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: JSON.stringify(user) },
-      ],
-    }),
-  })
-
-  const text = await res.text()
-  let data = null
-  try {
-    data = JSON.parse(text)
-  } catch {
-    throw new Error(`OpenAI 응답 파싱 실패: ${text.slice(0, 200)}`)
-  }
-  if (!res.ok) {
-    throw new Error(data?.error?.message || `OpenAI 오류 (${res.status})`)
-  }
-
-  const content = data?.choices?.[0]?.message?.content
-  if (!content || typeof content !== 'string') {
-    throw new Error('OpenAI 응답에 content가 없습니다.')
-  }
-
-  let json = null
-  try {
-    json = JSON.parse(content)
-  } catch {
-    throw new Error('OpenAI content JSON 파싱 실패')
-  }
-
-  return json
+  return completeJsonChat({ system, user: JSON.stringify(user) })
 }
 
-/** AI 투자 메모 — 클라이언트 프롬프트(종목·숫자·뉴스 JSON)를 받아 OpenAI JSON 응답 */
-async function generateOpenAiBriefingJson({ openaiApiKey, model, prompt }) {
+/** AI 투자 메모 — 클라이언트 프롬프트(종목·숫자·뉴스 JSON)를 받아 JSON 응답 */
+async function generateAiBriefingJson({ prompt }) {
   const system = [
     '너는 한국 주식 애널리스트다. 입력 프롬프트의 규칙·금지사항·문단 순서를 그대로 따른다.',
     '숫자(원, %, PER, 억)를 빼먹지 말고, 추상 표현만으로 채우지 말 것.',
     '매수·매도를 단정하지 말고 가능성·조건부 표현을 쓴다.',
     '반드시 아래 키만 가진 JSON 객체 하나만 반환한다 (다른 텍스트 금지).',
-    '키: title(string), paragraphs(string[] 정확히 5개 — 가격/트리거/펀더멘털/수급리스크/전략 순),',
-    'keyPoints(string[] 4~7), risks(string[] 2~5), strategyComment(string), tone은 "bullish"|"neutral"|"caution" 중 하나.',
+    '키: title(string), paragraphs(string[] 정확히 6개 — 가격/트리거/펀더멘털/수급리스크/카탈리스트/전략 순),',
+    'keyPoints(string[] 4~7), risks(string[] 2~5), strategyComment(string), strategyPlan(object), tone은 "bullish"|"neutral"|"caution" 중 하나.',
   ].join(' ')
 
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${openaiApiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: prompt },
-      ],
-    }),
-  })
-
-  const text = await res.text()
-  let data = null
-  try {
-    data = JSON.parse(text)
-  } catch {
-    throw new Error(`OpenAI 응답 파싱 실패: ${text.slice(0, 200)}`)
-  }
-  if (!res.ok) {
-    throw new Error(data?.error?.message || `OpenAI 오류 (${res.status})`)
-  }
-
-  const content = data?.choices?.[0]?.message?.content
-  if (!content || typeof content !== 'string') {
-    throw new Error('OpenAI 응답에 content가 없습니다.')
-  }
-
-  let json = null
-  try {
-    json = JSON.parse(content)
-  } catch {
-    throw new Error('OpenAI content JSON 파싱 실패')
-  }
+  const json = await completeJsonChat({ system, user: prompt })
 
   const strArr = (v, max = 8) =>
     Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).slice(0, max).map((x) => x.trim()) : []
@@ -538,13 +469,32 @@ async function generateOpenAiBriefingJson({ openaiApiKey, model, prompt }) {
   const toneRaw = str(json.tone, 'neutral').toLowerCase()
   const tone = ['bullish', 'neutral', 'caution'].includes(toneRaw) ? toneRaw : 'neutral'
 
-  let paragraphs = strArr(json.paragraphs, 8)
+  let paragraphs = strArr(json.paragraphs, 10)
   const pad = '이 문단은 생성되지 않았습니다.'
-  while (paragraphs.length < 5) paragraphs.push(pad)
-  paragraphs = paragraphs.slice(0, 5)
+  while (paragraphs.length < 6) paragraphs.push(pad)
+  paragraphs = paragraphs.slice(0, 6)
 
   const keyPoints = strArr(json.keyPoints, 10)
   const risks = strArr(json.risks, 10)
+  const toNum = (v) => {
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  const strategyPlanRaw = json?.strategyPlan && typeof json.strategyPlan === 'object'
+    ? json.strategyPlan
+    : null
+  const strategyPlan = strategyPlanRaw
+    ? {
+        title: str(strategyPlanRaw.title, '지금 전략'),
+        marketView: str(strategyPlanRaw.marketView, ''),
+        timingView: str(strategyPlanRaw.timingView, ''),
+        positioningView: str(strategyPlanRaw.positioningView, ''),
+        riskView: str(strategyPlanRaw.riskView, ''),
+        strategyMemo: str(strategyPlanRaw.strategyMemo, ''),
+        evidence: strArr(strategyPlanRaw.evidence, 8),
+        confidence: clamp(toNum(strategyPlanRaw.confidence) ?? 50, 0, 100),
+      }
+    : null
 
   return {
     title: str(json.title, '투자 메모'),
@@ -552,16 +502,18 @@ async function generateOpenAiBriefingJson({ openaiApiKey, model, prompt }) {
     keyPoints: keyPoints.length ? keyPoints : ['핵심 포인트를 생성하지 못했습니다.'],
     risks: risks.length ? risks : ['리스크를 생성하지 못했습니다.'],
     strategyComment: str(json.strategyComment, ''),
+    strategyPlan: strategyPlan || undefined,
+    confidence: strategyPlan?.confidence ?? undefined,
     tone,
   }
 }
 
 app.post('/api/ai-briefing', async (req, res) => {
-  const openaiApiKey = cleanEnvSecret(process.env.OPENAI_API_KEY)
-  if (!openaiApiKey) {
+  const aiCfg = getAiConfig()
+  if (!aiCfg) {
     res.status(503).json({
       error:
-        'OPENAI_API_KEY가 비어 있습니다. Vercel Project → Settings → Environment Variables에 OPENAI_API_KEY를 추가한 뒤 재배포하세요.',
+        'AI API 키가 없습니다. Vercel Project → Settings → Environment Variables에 ANTHROPIC_API_KEY를 추가한 뒤 재배포하세요.',
       stage: 'config',
     })
     return
@@ -577,38 +529,140 @@ app.post('/api/ai-briefing', async (req, res) => {
     return
   }
 
-  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'
-
   try {
-    const briefing = await generateOpenAiBriefingJson({ openaiApiKey, model, prompt })
+    const briefing = await generateAiBriefingJson({ prompt })
     res.json(briefing)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.error('[api/ai-briefing]', message)
-    res.status(502).json({ error: message, stage: 'openai' })
+    res.status(502).json({ error: message, stage: 'llm' })
   }
 })
+
+const handleScreenerBriefing = async (req, res) => {
+  const stockName = String(req.body?.stockName || '').trim()
+  const stockCode = String(req.body?.stockCode || '').replace(/\D/g, '').padStart(6, '0')
+  const mode = String(req.body?.mode || '')
+  if (!stockName || !stockCode) {
+    res.status(400).json({ error: 'stockName, stockCode가 필요합니다.' })
+    return
+  }
+
+  const [news, reports] = await Promise.all([
+    searchLatestNews(stockName, stockCode).catch(() => []),
+    searchBrokerReports(stockName, stockCode).catch(() => []),
+  ])
+
+  if (mode === 'news-only') {
+    res.json({ news, reports: [], sources: buildSourceList(news, []), updatedAt: new Date().toISOString() })
+    return
+  }
+  if (mode === 'reports-only') {
+    res.json({ news: [], reports, sources: buildSourceList([], reports), updatedAt: new Date().toISOString() })
+    return
+  }
+
+  const metrics = typeof req.body?.metrics === 'object' && req.body.metrics ? req.body.metrics : {}
+  const strategy = typeof req.body?.strategy === 'object' && req.body.strategy ? req.body.strategy : {}
+
+  const aiCfg = getAiConfig()
+
+  const sources = buildSourceList(news, reports)
+
+  if (!aiCfg) {
+    res.json({
+      briefing: {
+        title: `${stockName} 투자 브리핑`,
+        paragraphs: [
+          '최신 뉴스 데이터가 부족해 차트·수급 중심으로 판단합니다.',
+          '증권사 목표가/의견은 확인 가능한 범위에서만 반영했습니다.',
+          '실적·수주·정책 이슈는 제목 기준으로 추출되어 세부 검증이 필요합니다.',
+          '단기 과열 구간 여부(RSI/ATR)는 점검 후 추격보다 눌림 대응이 유리할 수 있습니다.',
+          '1개월 +15% 전략은 변동성 관리(손절 -5~-7%, +10% 분할익절)를 우선하시기 바랍니다.',
+        ],
+        keyPoints: ['ANTHROPIC_API_KEY가 없어 로컬 요약으로 표시됩니다.'],
+        risks: ['목표가 수치는 확인된 리포트에서만 반영합니다.'],
+        strategyComment: '데이터 제한으로 보수적으로 대응하시기 바랍니다.',
+        tone: 'neutral',
+      },
+      news,
+      reports,
+      sources,
+      updatedAt: new Date().toISOString(),
+    })
+    return
+  }
+
+  try {
+    const briefing = await generateMarketBriefingWithAi({
+      stockName,
+      stockCode,
+      metrics,
+      strategy,
+      news,
+      reports,
+    })
+    res.json({
+      briefing,
+      news,
+      reports,
+      sources,
+      updatedAt: new Date().toISOString(),
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    res.json({
+      briefing: {
+        title: `${stockName} 투자 브리핑`,
+        paragraphs: [
+          '최신 뉴스/리포트 해석 중 오류가 발생해 차트·수급 중심으로 판단합니다.',
+          '뉴스 트리거와 리포트 수치는 링크 원문 확인 후 재검증이 필요합니다.',
+          '증권사 리포트가 30일 이상 경과하면 참고 가중치를 낮춰 해석하시기 바랍니다.',
+          'RSI/ATR 과열 여부를 체크해 추격 매수보다 눌림 대응을 우선하십시오.',
+          '단기 트리거와 펀더멘털을 분리해 1개월/3개월 전략을 각각 점검하시기 바랍니다.',
+        ],
+        keyPoints: ['AI 분석 실패 시 안전 폴백이 적용됩니다.'],
+        risks: [message.slice(0, 160)],
+        strategyComment: '데이터 확인 가능한 범위에서만 보수적으로 대응하시기 바랍니다.',
+        tone: 'caution',
+      },
+      news,
+      reports,
+      sources,
+      updatedAt: new Date().toISOString(),
+      warning: message,
+    })
+  }
+}
+
+app.post('/api/screener-briefing', handleScreenerBriefing)
+// Backward-compatible alias
+app.post('/api/market-briefing', handleScreenerBriefing)
 
 app.get('/api/health', (_req, res) => {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
   const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
-  const openaiKey = cleanEnvSecret(process.env.OPENAI_API_KEY)
+  const anthropicKey = cleanEnvSecret(process.env.ANTHROPIC_API_KEY)
+  const aiCfg = getAiConfig()
   const hasKis = Boolean(appKey && appSecret)
   const envFileExists = fs.existsSync(ENV_PATH)
   res.json({
     ok: true,
     kisConfigured: hasKis,
-    openaiConfigured: Boolean(openaiKey),
-    aiBriefingPost: Boolean(openaiKey),
+    anthropicConfigured: Boolean(anthropicKey),
+    aiConfigured: Boolean(aiCfg),
+    aiProvider: aiCfg ? 'anthropic' : null,
+    aiBriefingPost: Boolean(aiCfg),
     kisEnv: process.env.KIS_ENV || 'vps',
-    openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+    anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
+    aiModel: aiCfg?.model ?? null,
     /** 비밀값은 절대 내려주지 않음 — 파일/변수만 점검용 */
     check: {
       envPath: ENV_PATH,
       envFileExists,
       appKeyPresent: Boolean(appKey),
       appSecretPresent: Boolean(appSecret),
-      openaiKeyPresent: Boolean(openaiKey),
+      anthropicKeyPresent: Boolean(anthropicKey),
     },
   })
 })
@@ -697,12 +751,12 @@ app.get('/api/chart', async (req, res) => {
 app.get('/api/ai-fill', async (req, res) => {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
   const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
-  const openaiApiKey = cleanEnvSecret(process.env.OPENAI_API_KEY)
+  const aiCfg = getAiConfig()
 
-  if (!openaiApiKey) {
+  if (!aiCfg) {
     res.status(503).json({
       error:
-        'OPENAI_API_KEY가 비어 있습니다. 프로젝트 루트 .env 에 키를 넣고 프록시 서버(npm run dev 또는 npm run dev:server)를 재시작하세요.',
+        'AI API 키가 없습니다. 프로젝트 루트 .env 에 ANTHROPIC_API_KEY 를 넣고 프록시 서버(npm run dev 또는 npm run dev:server)를 재시작하세요.',
       stage: 'config',
     })
     return
@@ -710,7 +764,7 @@ app.get('/api/ai-fill', async (req, res) => {
 
   const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
   const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
-  const model = process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'
+  const model = aiCfg.model
 
   let payload
   if (appKey && appSecret) {
@@ -740,7 +794,7 @@ app.get('/api/ai-fill', async (req, res) => {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[api/ai-fill] stage=kis', message)
       res.status(502).json({
-        error: `KIS 조회 실패(시세·차트). OpenAI 이전 단계에서 중단되었습니다: ${message}`,
+        error: `KIS 조회 실패(시세·차트). AI 호출 이전 단계에서 중단되었습니다: ${message}`,
         stage: 'kis',
         hint: '모의투자 호출 한도·토큰 만료·종목코드를 확인하거나, KIS 없이 테스트하려면 .env 에서 KIS_APP_KEY/SECRET 을 비워 두면 됩니다.',
       })
@@ -757,22 +811,22 @@ app.get('/api/ai-fill', async (req, res) => {
   }
 
   try {
-    const ai = await generateAIFill({ openaiApiKey, model, payload })
+    const ai = await generateAIFill({ payload })
     res.json({
       code,
       ai,
       model,
+      aiProvider: 'anthropic',
       kisDataAvailable: payload.kisDataAvailable === true,
       fetchedAt: new Date().toISOString(),
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
-    console.error('[api/ai-fill] stage=openai', message)
+    console.error('[api/ai-fill] stage=llm', message)
     res.status(502).json({
       error: message,
-      stage: 'openai',
-      hint:
-        '모델 이름을 확인하세요(.env 의 OPENAI_MODEL). 계정에서 쓸 수 있는 모델(예: gpt-4o-mini)로 바꿔 보세요.',
+      stage: 'llm',
+      hint: 'ANTHROPIC_MODEL 이 Anthropic 콘솔에서 허용된 모델 ID인지 확인하세요.',
     })
   }
 })
@@ -888,9 +942,12 @@ if (!process.env.VERCEL) {
   app.listen(PORT, () => {
     const exists = fs.existsSync(ENV_PATH)
     const kisOk = Boolean(cleanEnvSecret(process.env.KIS_APP_KEY) && cleanEnvSecret(process.env.KIS_APP_SECRET))
-    const oaOk = Boolean(cleanEnvSecret(process.env.OPENAI_API_KEY))
+    const aiCfg = getAiConfig()
+    const antOk = Boolean(cleanEnvSecret(process.env.ANTHROPIC_API_KEY))
     console.log(`KIS proxy listening on http://127.0.0.1:${PORT}`)
     console.log(`[dotenv] ${ENV_PATH} exists=${exists}`)
-    console.log(`[ai-fill] KIS=${kisOk ? 'on' : 'off'} OpenAI=${oaOk ? 'on' : 'off'} model=${process.env.OPENAI_MODEL?.trim() || 'gpt-4o-mini'}`)
+    console.log(
+      `[ai-fill] KIS=${kisOk ? 'on' : 'off'} Claude=${aiCfg ? aiCfg.model : 'off'} (anthropic_key=${antOk ? 'on' : 'off'})`,
+    )
   })
 }

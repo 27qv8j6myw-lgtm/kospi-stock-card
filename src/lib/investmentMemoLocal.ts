@@ -112,7 +112,7 @@ function buildParagraph1(input: DetailedBriefingInput, ups: ReturnType<typeof re
     } else if (ups.avgPct < 8) {
       parts.push('컨센서스 기준 상승여력은 크지 않아 단기 모멘텀 중심으로 봐야 합니다.')
     } else if (ups.avgPct < 15) {
-      parts.push('중석님 전략 기준으로는 목표 구간에 근접한 상승여력이 남아 있습니다.')
+      parts.push('1개월 +15% 목표 전략 기준으로는 목표 구간에 근접한 상승여력이 남아 있습니다.')
     } else {
       parts.push('컨센서스 기준으로도 15% 이상 여력이 남아 있어 중기 기대감은 유지됩니다.')
     }

@@ -22,8 +22,8 @@ Add these keys:
 - `KIS_APP_KEY`
 - `KIS_APP_SECRET`
 - `KIS_ENV` = `prod`
-- `OPENAI_API_KEY` (optional)
-- `OPENAI_MODEL` = `gpt-4o-mini` (optional)
+- `ANTHROPIC_API_KEY` (optional — AI 브리핑·스크리너 요약에 사용)
+- `ANTHROPIC_MODEL` (optional, 기본 `claude-opus-4-7`)
 - `CORS_ORIGINS` = your production URL(s), comma-separated
 
 Then click **Redeploy**.
@@ -35,6 +35,7 @@ After deploy, test:
 Expected:
 - JSON with `ok: true`
 - `kisConfigured: true` (if KIS keys are set)
+- `anthropicConfigured: true` (if `ANTHROPIC_API_KEY` is set)
 
 ## 5) If You Prefer CLI
 Run in project root:

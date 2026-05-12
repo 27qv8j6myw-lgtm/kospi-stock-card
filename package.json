@@ -21,7 +21,8 @@
     "lucide-react": "^1.14.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "recharts": "^3.8.1"
+    "recharts": "^3.8.1",
+    "rss-parser": "^3.13.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

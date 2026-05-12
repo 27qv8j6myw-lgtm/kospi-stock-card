@@ -36,7 +36,7 @@ export function extractBriefingThemes(news: NewsItem[], max = 4): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   for (const n of sorted) {
-    const line = n.summary.trim() || n.title.trim()
+    const line = n.summary?.trim() || n.title.trim()
     if (!line || seen.has(line)) continue
     seen.add(line)
     out.push(line)

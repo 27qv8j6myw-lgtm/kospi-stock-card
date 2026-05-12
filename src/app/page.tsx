@@ -11,6 +11,7 @@ import { StockHeader } from '../components/StockHeader'
 import { StopPanel } from '../components/StopPanel'
 import { SummaryPanel } from '../components/SummaryPanel'
 import { TargetPricePanel } from '../components/TargetPricePanel'
+import { SectorScreenerTab } from '../components/SectorScreenerTab'
 import { useKisChart } from '../hooks/useKisChart'
 import { useKisLogicIndicators } from '../hooks/useKisLogicIndicators'
 import { useKisQuote } from '../hooks/useKisQuote'
@@ -43,9 +44,9 @@ import {
   sectorFlowMainTitle,
   sectorFlowSubLines,
 } from '../lib/signalLogic'
-import { buildInvestmentMemoPromptForGPT, generateDetailedInvestmentMemo } from '../lib/aiBriefing'
+import { buildInvestmentMemoPrompt, generateDetailedInvestmentMemo } from '../lib/aiBriefing'
 import { getMockNewsByStockCode } from '../lib/mockNews'
-import { fetchGPTBriefing } from '../lib/openai'
+import { fetchAiBriefing } from '../lib/aiBriefingApi'
 import { sortNewsByDateDesc } from '../lib/newsAnalyzer'
 import { generateMetricSummary } from '../lib/summaryLogic'
 import type {
@@ -58,6 +59,7 @@ import type {
 import type { TargetStopInput } from '../types/stock'
 
 export default function Page() {
+  const [activeMainTab, setActiveMainTab] = useState<'analysis' | 'screener'>('analysis')
   const [queryCode, setQueryCode] = useState(stockInfo.code)
   const [searchDisplay, setSearchDisplay] = useState(`${stockInfo.name} (${stockInfo.code})`)
   const [pickedName, setPickedName] = useState<string | null>(null)
@@ -722,37 +724,37 @@ export default function Page() {
     }
 
     const localMemo = generateDetailedInvestmentMemo(detailedBriefingInput)
-    const prompt = buildInvestmentMemoPromptForGPT(detailedBriefingInput)
+    const prompt = buildInvestmentMemoPrompt(detailedBriefingInput)
     return { localMemo, prompt }
   }, [liveStock, queryCode, logicDerived, logicState.data, mockNewsSorted, quoteState])
 
-  const [gptBriefing, setGptBriefing] = useState<DetailedInvestmentMemoResult | null>(null)
-  const [gptBriefingLoading, setGptBriefingLoading] = useState(false)
+  const [aiBriefing, setAiBriefing] = useState<DetailedInvestmentMemoResult | null>(null)
+  const [aiBriefingLoading, setAiBriefingLoading] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     const { prompt } = briefingBundle
-    setGptBriefingLoading(true)
-    setGptBriefing(null)
-    fetchGPTBriefing(prompt)
+    setAiBriefingLoading(true)
+    setAiBriefing(null)
+    fetchAiBriefing(prompt)
       .then((b) => {
-        if (!cancelled) setGptBriefing(b)
+        if (!cancelled) setAiBriefing(b)
       })
       .catch(() => {
-        if (!cancelled) setGptBriefing(null)
+        if (!cancelled) setAiBriefing(null)
       })
       .finally(() => {
-        if (!cancelled) setGptBriefingLoading(false)
+        if (!cancelled) setAiBriefingLoading(false)
       })
     return () => {
       cancelled = true
     }
   }, [briefingBundle.prompt])
 
-  const displayMemo = gptBriefingLoading
+  const displayMemo = aiBriefingLoading
     ? null
-    : (gptBriefing ?? briefingBundle.localMemo)
-  const briefingSource: 'gpt' | 'local' = gptBriefing ? 'gpt' : 'local'
+    : (aiBriefing ?? briefingBundle.localMemo)
+  const briefingSource: 'claude' | 'local' = aiBriefing ? 'claude' : 'local'
 
   const targetPricePanelResult = logicDerived?.targetPriceResult ?? null
 
@@ -776,81 +778,106 @@ export default function Page() {
 
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
-      <article className="overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
-        <StockHeader
-          title="Signal15 🇰🇷"
-          subtitle=""
-          asOfDate={liveStock.asOfDate}
-          leading={
-            <span className="flex size-11 items-center justify-center rounded-xl border border-red-200 bg-red-50 sm:size-12">
-              <TrendingUp className="size-6 text-red-600 sm:size-7" strokeWidth={2.25} aria-hidden />
-            </span>
-          }
-        />
-        <div className="border-b border-slate-200 px-6 py-3 sm:px-8">
-          <StockNameSearch
-            compact
-            value={searchDisplay}
-            onChange={setSearchDisplay}
-            onPick={(code, nameKr) => {
-              setQueryCode(code)
-              setPickedName(nameKr)
-              setSearchDisplay(`${nameKr} (${code})`)
-            }}
+      <div className="mb-4 inline-flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setActiveMainTab('analysis')}
+          className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+            activeMainTab === 'analysis' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          종목 분석
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveMainTab('screener')}
+          className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+            activeMainTab === 'screener' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          시장 스크리너
+        </button>
+      </div>
+
+      {activeMainTab === 'analysis' ? (
+        <article className="overflow-visible rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <StockHeader
+            title="Signal15 🇰🇷"
+            subtitle=""
+            asOfDate={liveStock.asOfDate}
+            leading={
+              <span className="flex size-11 items-center justify-center rounded-xl border border-red-200 bg-red-50 sm:size-12">
+                <TrendingUp className="size-6 text-red-600 sm:size-7" strokeWidth={2.25} aria-hidden />
+              </span>
+            }
           />
-        </div>
-        <MainStockCard stock={liveStock} />
+          <div className="border-b border-slate-200 px-6 py-3 sm:px-8">
+            <StockNameSearch
+              compact
+              value={searchDisplay}
+              onChange={setSearchDisplay}
+              onPick={(code, nameKr) => {
+                setQueryCode(code)
+                setPickedName(nameKr)
+                setSearchDisplay(`${nameKr} (${code})`)
+              }}
+            />
+          </div>
+          <MainStockCard stock={liveStock} />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 md:items-stretch">
-          <SummaryPanel
-            summary={summaryInfo}
-            metricSummary={metricSummary}
-            investmentMemo={displayMemo}
-            aiLoading={gptBriefingLoading}
+          <div className="grid grid-cols-1 md:grid-cols-2 md:items-stretch">
+            <SummaryPanel
+              summary={summaryInfo}
+              metricSummary={metricSummary}
+              investmentMemo={displayMemo}
+              aiLoading={aiBriefingLoading}
+            />
+            <PriceChart
+              timeframe={tf}
+              onTimeframeChange={setTf}
+              data={chartData}
+              currentPrice={liveStock.price}
+              dayChange={liveStock.change}
+              status={chartState.status}
+              errorMessage={chartState.status === 'error' ? chartState.message : undefined}
+            />
+          </div>
+
+          <AIBriefingPanel
+            memo={displayMemo}
+            news={mockNewsSorted}
+            loading={aiBriefingLoading}
+            briefingSource={briefingSource}
           />
-          <PriceChart
-            timeframe={tf}
-            onTimeframeChange={setTf}
-            data={chartData}
-            currentPrice={liveStock.price}
-            dayChange={liveStock.change}
-            status={chartState.status}
-            errorMessage={chartState.status === 'error' ? chartState.message : undefined}
+
+          {logicState.status === 'loading' ? (
+            <p className="px-6 pt-4 text-xs text-slate-500 sm:px-8">로직 지표 계산 중...</p>
+          ) : null}
+          {logicState.status === 'error' ? (
+            <p className="px-6 pt-4 text-xs text-amber-700 sm:px-8">로직 지표 오류: {logicState.message}</p>
+          ) : null}
+          <MetricGrid metrics={liveMetrics} subtitle={logicSubtitle} />
+          <ExecutionStrategy
+            strategy={logicDerived?.threeMonth ?? null}
+            riskReward={logicDerived?.rr ?? { ratio: 0, verdict: '애매' }}
+            loading={logicState.status === 'loading'}
           />
-        </div>
+          <TargetPricePanel
+            result={targetPricePanelResult}
+            loading={logicState.status === 'loading' && !targetPricePanelResult}
+          />
+          <StopPanel stop={stopInfo} />
 
-        <AIBriefingPanel
-          memo={displayMemo}
-          news={mockNewsSorted}
-          loading={gptBriefingLoading}
-          briefingSource={briefingSource}
-        />
-
-        {logicState.status === 'loading' ? (
-          <p className="px-6 pt-4 text-xs text-slate-500 sm:px-8">로직 지표 계산 중...</p>
-        ) : null}
-        {logicState.status === 'error' ? (
-          <p className="px-6 pt-4 text-xs text-amber-700 sm:px-8">로직 지표 오류: {logicState.message}</p>
-        ) : null}
-        <MetricGrid metrics={liveMetrics} subtitle={logicSubtitle} />
-        <ExecutionStrategy
-          strategy={logicDerived?.threeMonth ?? null}
-          riskReward={logicDerived?.rr ?? { ratio: 0, verdict: '애매' }}
-          loading={logicState.status === 'loading'}
-        />
-        <TargetPricePanel
-          result={targetPricePanelResult}
-          loading={logicState.status === 'loading' && !targetPricePanelResult}
-        />
-        <StopPanel stop={stopInfo} />
-
-        <footer className="border-t border-slate-200 px-6 py-4 sm:px-8">
-          <p className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
-            <Info className="size-3.5" />
-            {saveStatus}
-          </p>
-        </footer>
-      </article>
+          <footer className="border-t border-slate-200 px-6 py-4 sm:px-8">
+            <p className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-600">
+              <Info className="size-3.5" />
+              {saveStatus}
+            </p>
+          </footer>
+        </article>
+      ) : (
+        <SectorScreenerTab />
+      )}
     </main>
   )
 }

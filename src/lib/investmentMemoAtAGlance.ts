@@ -53,7 +53,7 @@ function summaryLineWithoutTicker(memo: DetailedInvestmentMemoResult): string {
 }
 
 function conciseStrategyLine(memo: DetailedInvestmentMemoResult): string {
-  // OpenAI가 생성한 5번 문단(지금 전략) 첫 문장을 최우선 사용
+  // Claude가 생성한 5번 문단(지금 전략) 첫 문장을 최우선 사용
   const strategyPara = memo.paragraphs?.[4]
   if (strategyPara && strategyPara.trim()) {
     const s = firstSentenceFull(strategyPara)

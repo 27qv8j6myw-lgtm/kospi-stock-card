@@ -1,12 +1,21 @@
 import { Sparkles } from 'lucide-react'
-import type { DetailedInvestmentMemoResult, NewsItem, NewsSentiment } from '../types/aiBriefing'
-import { sortNewsByDateDesc } from '../lib/newsAnalyzer'
+import type { DetailedInvestmentMemoResult, NewsSentiment } from '../types/aiBriefing'
+
+type PanelNewsItem = {
+  title: string
+  summary?: string
+  sentiment: NewsSentiment
+  category: string
+  publishedAt: string
+  source: string
+  link?: string
+}
 
 type AIBriefingPanelProps = {
   memo: DetailedInvestmentMemoResult | null
-  news: NewsItem[]
+  news: PanelNewsItem[]
   loading?: boolean
-  briefingSource?: 'gpt' | 'local'
+  briefingSource?: 'claude' | 'local'
 }
 
 function sentimentBadgeClass(s: NewsSentiment) {
@@ -24,10 +33,14 @@ function sentimentLabel(s: NewsSentiment) {
 const categoryLabel: Record<string, string> = {
   earnings: '실적',
   target: '목표가',
+  target_price: '목표가',
   order: '수주',
+  capacity: '증설',
   macro: '매크로',
   supply: '수급',
   sector: '섹터',
+  risk: '리스크',
+  other: '기타',
   valuation: '밸류',
 }
 
@@ -48,12 +61,19 @@ const sectionLabels = [
   '2. 최근 주가 트리거',
   '3. 펀더멘털·컨센서스',
   '4. 수급·리스크',
-  '5. 지금 전략',
+  '5. 카탈리스트',
+  '6. 지금 전략',
 ]
 
-export function AIBriefingPanel({ memo, news, loading, briefingSource }: AIBriefingPanelProps) {
-  const sorted = sortNewsByDateDesc(news)
+export function AIBriefingPanel({
+  memo,
+  news,
+  loading,
+  briefingSource,
+}: AIBriefingPanelProps) {
+  const sorted = [...news].sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt)))
   const tone = memo?.tone ?? 'neutral'
+  const strategyPlan = memo?.strategyPlan
   const loadingDots = (
     <span className="inline-flex items-center gap-1">
       <span>로딩중</span>
@@ -74,11 +94,11 @@ export function AIBriefingPanel({ memo, news, loading, briefingSource }: AIBrief
             <h3 className="text-[15px] font-bold tracking-tight text-slate-900 sm:text-base">AI 투자 메모</h3>
             <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
               숫자·수급·컨센서스를 반영한 요약입니다.{' '}
-              {briefingSource === 'gpt'
-                ? 'OpenAI(GPT)로 생성되었습니다.'
+              {briefingSource === 'claude'
+                ? 'Anthropic Claude로 생성되었습니다.'
                 : briefingSource === 'local'
-                  ? '로컬 규칙으로 생성되었으며, GPT 연결 시에도 동일한 형식을 사용합니다.'
-                  : '로컬 또는 GPT로 제공됩니다.'}
+                  ? '로컬 규칙으로 생성되었으며, Claude 연결 시에도 동일한 형식을 사용합니다.'
+                  : '로컬 또는 Claude로 제공됩니다.'}
             </p>
           </div>
         </div>
@@ -101,14 +121,47 @@ export function AIBriefingPanel({ memo, news, loading, briefingSource }: AIBrief
           </div>
         </div>
 
-        {(memo?.paragraphs ?? []).map((p, i) => (
+        {(memo?.paragraphs ?? []).map((p, i) => {
+          if (i === 5) return null
+          return (
           <div key={i} className={i > 0 ? 'border-t border-slate-200 pt-4' : ''}>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               {sectionLabels[i] ?? `문단 ${i + 1}`}
             </p>
             <p className="mt-2 whitespace-pre-line text-[13px] leading-[1.65] text-slate-800">{p}</p>
           </div>
-        ))}
+          )
+        })}
+
+        <div className="border-t border-slate-200 pt-4">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">6. 지금 전략</p>
+          <div className="mt-2 rounded-xl border border-slate-200 bg-white p-3.5">
+            <p className="text-sm font-bold text-slate-900">
+              {strategyPlan?.title || '시장 기대와 선반영 수준을 함께 보는 전략'}
+            </p>
+            <div className="mt-2 space-y-1.5 text-[13px] leading-relaxed text-slate-700">
+              <p>{strategyPlan?.marketView || memo?.paragraphs?.[5] || '최신 외부 데이터 기반 전략 문구를 생성 중입니다.'}</p>
+              {strategyPlan?.timingView ? <p>{strategyPlan.timingView}</p> : null}
+              {strategyPlan?.positioningView ? <p>{strategyPlan.positioningView}</p> : null}
+              {strategyPlan?.riskView ? <p>{strategyPlan.riskView}</p> : null}
+              <p className="font-medium text-slate-800">
+                {strategyPlan?.strategyMemo || memo?.strategyComment || '추격보다 눌림 확인 중심의 보수적 접근이 유리할 수 있습니다.'}
+              </p>
+            </div>
+            {strategyPlan?.evidence?.length ? (
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {strategyPlan.evidence.slice(0, 6).map((e) => (
+                  <span key={e} className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">
+                    {e}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <p className="mt-3 text-xs font-semibold text-slate-500">
+              신뢰도 {Math.round(strategyPlan?.confidence ?? memo?.confidence ?? 50)} / 100
+            </p>
+          </div>
+        </div>
         {!memo ? (
           <div className="rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-500">
             {loadingDots}
@@ -168,6 +221,7 @@ export function AIBriefingPanel({ memo, news, loading, briefingSource }: AIBrief
             ))}
           </div>
         </div>
+
       </div>
     </section>
   )
