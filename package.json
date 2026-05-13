@@ -4,28 +4,36 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev:server": "node server/index.mjs",
-    "dev:client": "wait-on tcp:127.0.0.1:8787 && vite",
+    "dev:server": "node --import tsx/esm server/index.mjs",
+    "dev:client": "wait-on tcp:127.0.0.1:8787 && next dev",
     "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
-    "build": "tsc -b && vite build",
+    "build": "node scripts/bundle-indicators.mjs && next build",
+    "build:vercel": "node scripts/bundle-indicators.mjs && vite build",
+    "start": "next start",
+    "test": "vitest run",
     "lint": "eslint .",
-    "preview": "vite preview",
+    "preview": "next start",
     "build:stocks": "node scripts/build-kr-stocks.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.2",
+    "@radix-ui/react-tooltip": "^1.2.8",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "framer-motion": "^12.38.0",
     "fuse.js": "^7.3.0",
     "lucide-react": "^1.14.0",
+    "next": "^15.5.18",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "recharts": "^3.8.1",
-    "rss-parser": "^3.13.0"
+    "rss-parser": "^3.13.0",
+    "swr": "^2.4.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@tailwindcss/postcss": "^4.3.0",
     "@tailwindcss/vite": "^4.2.4",
     "@types/node": "^24.12.2",
     "@types/react": "^19.2.14",
@@ -33,6 +41,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "adm-zip": "^0.5.17",
     "concurrently": "^9.2.1",
+    "esbuild": "^0.28.0",
     "eslint": "^10.2.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
@@ -40,9 +49,11 @@
     "hangul-romanization": "^1.0.1",
     "iconv-lite": "^0.7.2",
     "tailwindcss": "^4.2.4",
+    "tsx": "^4.21.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",
+    "vitest": "^3.2.4",
     "wait-on": "^9.0.5"
   }
 }
