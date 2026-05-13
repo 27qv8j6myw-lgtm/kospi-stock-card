@@ -121,7 +121,15 @@ function mdLabel(yyyymmdd) {
 }
 
 function toTfCount(tf) {
-  return tf === '3D' ? 3 : tf === '1W' ? 7 : tf === '1M' ? 22 : tf === '3M' ? 66 : 252
+  return tf === '5D'
+    ? 5
+    : tf === '1M'
+      ? 22
+      : tf === '3M'
+        ? 66
+        : tf === '1Y'
+          ? 252
+          : 252
 }
 
 function parseJsonOrThrow(res, text, kind) {
@@ -245,6 +253,30 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
   const price = num(o?.stck_prpr)
   if (price === null) throw new Error('현재가(stck_prpr) 파싱 실패')
 
+  const epsN = num(o?.eps)
+  const bpsN = num(o?.bps)
+  const roeTtmApprox =
+    epsN != null && bpsN != null && Number.isFinite(epsN) && Number.isFinite(bpsN) && bpsN !== 0
+      ? (epsN / bpsN) * 100
+      : null
+
+  /** 응답 필드명이 종목·TR마다 다를 수 있어 키워드 스캔(있을 때만) */
+  const skipKey = /prdy|stck|prpr|vrss|ctrt|vol|hour|date|time|iscd|cntg|acml|frgn|orgn|prsn|fid|nmix|kospi/i
+  function firstRatioByKeyHint(obj, hintRe) {
+    if (!obj || typeof obj !== 'object') return null
+    for (const [k, v] of Object.entries(obj)) {
+      if (skipKey.test(k)) continue
+      if (!hintRe.test(k)) continue
+      const n = num(v)
+      if (n == null || !Number.isFinite(n)) continue
+      return n
+    }
+    return null
+  }
+
+  const operatingMarginTtm = firstRatioByKeyHint(o, /(oprt|oper|bsop|prfi).*mrgn|margin|margn|이익률/i)
+  const debtRatio = firstRatioByKeyHint(o, /debt|lblt|liab|부채|tot_lblt|borr|gearing/i)
+
   return {
     code: iscd,
     nameKr: o?.hts_kor_isnm || o?.hts_kor_isnm1 || o?.prdt_name || null,
@@ -261,8 +293,11 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
     low: num(o?.stck_lwpr),
     per: num(o?.per),
     pbr: num(o?.pbr),
-    eps: num(o?.eps),
-    bps: num(o?.bps),
+    eps: epsN,
+    bps: bpsN,
+    roeTtmApprox,
+    operatingMarginTtm,
+    debtRatio,
     raw: o,
   }
 }
@@ -333,6 +368,7 @@ export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
       rows: [],
       cumulative3d: emptyCumulative(),
       cumulative5d: emptyCumulative(),
+      cumulative20d: emptyCumulative(),
     }
   }
 
@@ -350,10 +386,20 @@ export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
     rows,
     cumulative3d: sumInvestorRows(rows, 3),
     cumulative5d: sumInvestorRows(rows, 5),
+    cumulative20d: sumInvestorRows(rows, 20),
   }
 }
 
 async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
+  const bars = await inquireDailyBars(appKey, appSecret, env, code6, Math.max(toTfCount(tf), 5))
+  return bars.slice(-toTfCount(tf))
+}
+
+/**
+ * 일봉 종가 시계열 (최근 maxBars개, 오름차순 ts).
+ * [국내주식] 기간별시세(일) — FHKST03010100
+ */
+export async function inquireDailyBars(appKey, appSecret, env, code6, maxBars = 60) {
   const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
   const today = new Date()
   const start = new Date(today)
@@ -382,9 +428,17 @@ async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
       const date = r.stck_bsop_date || r.biz_day || r.bstp_nmix_prpr || ''
       const close = num(r.stck_clpr) ?? num(r.stck_prpr) ?? num(r.clpr)
       if (!date || close === null) return null
+      const open = num(r.stck_oprc) ?? close
+      const high = num(r.stck_hgpr) ?? close
+      const low = num(r.stck_lwpr) ?? close
+      const volume = num(r.acml_vol) ?? num(r.ft_vol) ?? 0
       return {
         label: mdLabel(date),
         price: Math.round(close),
+        open: Math.round(open),
+        high: Math.round(high),
+        low: Math.round(low),
+        volume: Math.max(0, Math.round(volume)),
         ts: date,
       }
     })
@@ -392,10 +446,15 @@ async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
 
   parsed.sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
 
-  return parsed.slice(-toTfCount(tf)).map(({ label, price, ts }) => ({
+  const n = Math.max(5, Math.min(Number(maxBars) || 60, parsed.length))
+  return parsed.slice(-n).map(({ label, price, ts, open, high, low, volume }) => ({
     label,
     price,
     ts,
+    open,
+    high,
+    low,
+    volume,
   }))
 }
 
@@ -520,4 +579,19 @@ async function inquireIntradayChart(appKey, appSecret, env, code6) {
 
 export async function inquireChartByTimeframe(appKey, appSecret, env, code6, tf) {
   return inquireDailyChart(appKey, appSecret, env, code6, tf)
+}
+
+/** 5거래일 차트 포인트 기준 누적 수익률(%) — 첫 종가 대비 마지막 종가 */
+export function chartPointsToReturnPct(points) {
+  if (!Array.isArray(points) || points.length < 2) return 0
+  const first = points[0]?.price
+  const last = points[points.length - 1]?.price
+  if (first == null || last == null || !Number.isFinite(first) || first === 0) return 0
+  return ((last - first) / first) * 100
+}
+
+/** KOSPI 지수(069500) 5영업일 누적 수익률(%) */
+export async function inquireKospiReturn5D(appKey, appSecret, env) {
+  const pts = await inquireChartByTimeframe(appKey, appSecret, env, '069500', '5D')
+  return chartPointsToReturnPct(pts)
 }

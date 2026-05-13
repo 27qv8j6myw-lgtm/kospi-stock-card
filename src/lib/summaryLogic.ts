@@ -15,7 +15,7 @@ export type MetricSummaryInput = {
   rsi14: number
   atrDistance: number
   consecutiveRiseDays: number
-  strategy: 'BUY' | 'HOLD' | 'WATCH_ONLY' | 'TAKE_PROFIT' | 'REJECT'
+  strategy: 'BUY' | 'BUY_AGGRESSIVE' | 'HOLD' | 'WATCH_ONLY' | 'TAKE_PROFIT' | 'REJECT'
   entryStage: 'ACCEPT' | 'CAUTION' | 'REJECT' | 'WATCH'
 }
 

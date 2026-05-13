@@ -29,3 +29,4 @@ dist-ssr
 *.sw?
 .tmp-kis-token.json
 .vercel
+.data

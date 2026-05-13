@@ -14,6 +14,7 @@ import {
 } from './signalLogic'
 import { getCurrentPrice } from './kis'
 import { calculateScreeningScore } from './screenerRanking'
+import { resolveSectorFundBench } from './fundamentalCards'
 import { sectorDefinitions, type ScreenerSectorKey } from './sectorDefinitions'
 import { sectorUniverse, type SectorStock } from './sectorUniverse'
 import type { Strategy } from '../types/stock'
@@ -230,10 +231,12 @@ async function buildStock(
       consensusAvgTargetPrice: consensus?.avgTargetPrice || undefined,
       consensusMaxTargetPrice: consensus?.maxTargetPrice || undefined,
       marketStatus: marketScore >= 70 ? 'RiskOn' : marketScore <= 45 ? 'Caution' : 'Neutral',
+      stopPrice: Math.round(q.price * 0.94),
     })
     const oneMonth = targets.targets.find((r) => r.label === '1M') ?? targets.targets[1]
     const tm = calculateThreeMonthStrategy({
       currentPrice: q.price,
+      structureScore,
       finalScore,
       executionScore,
       supplyScore,
@@ -247,6 +250,9 @@ async function buildStock(
       supportPrice: Math.round(q.price * 0.95),
       consensusAvgTargetPrice: consensus?.avgTargetPrice ?? null,
       consensusMaxTargetPrice: consensus?.maxTargetPrice ?? null,
+      sectorName: sectorLabel,
+      fiveYearAvgPer: resolveSectorFundBench(sectorLabel).per5y,
+      trailingPer: q.per,
     })
     const screeningScore = calculateScreeningScore({
       finalScore,

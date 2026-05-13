@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { ChartMountShell } from './chart/ChartMountShell'
 import {
   Area,
   AreaChart,
@@ -13,7 +14,7 @@ import {
 } from 'recharts'
 import type { ChartPoint, Timeframe } from '../types/stock'
 
-const tabs: Timeframe[] = ['3D', '1W', '1M', '3M', '1Y']
+const tabs: Timeframe[] = ['1D', '5D', '1M', '3M', '1Y']
 
 export function formatKrwPrice(value: number): string {
   if (!Number.isFinite(value)) return '—'
@@ -31,9 +32,9 @@ export function formatPercentDiff(percentageDiff: number): string {
 
 function percentDiffColorClass(percentageDiff: number): string {
   if (!Number.isFinite(percentageDiff) || Math.abs(percentageDiff) < 1e-9) {
-    return 'text-slate-400'
+    return 'text-tertiary'
   }
-  return percentageDiff > 0 ? 'text-red-400' : 'text-blue-400'
+  return percentageDiff > 0 ? 'text-price-up' : 'text-price-down'
 }
 
 type CustomTooltipProps = {
@@ -66,8 +67,8 @@ function CustomTooltip({ active, payload, label, currentPrice }: CustomTooltipPr
   }
 
   return (
-    <div className="rounded-md border border-slate-700 bg-slate-900/95 px-3 py-2 text-xs text-slate-100 shadow-lg">
-      <p className="text-slate-300">{label}</p>
+    <div className="rounded-md border border-medium bg-primary/95 px-3 py-2 text-xs text-card shadow-lg">
+      <p className="text-tertiary">{label}</p>
       <p className="mt-1 font-semibold">가격 {formatKrwPrice(pointPrice)}</p>
       {showCompare ? (
         <p className={`mt-1 font-medium ${percentDiffColorClass(percentageDiff)}`}>
@@ -112,7 +113,7 @@ export function PriceChart({
   }, [currentPrice, lastPoint])
 
   const domain = useMemo(() => {
-    if (timeframe === '3D') {
+    if (timeframe === '5D') {
       const pad = Math.max(resolvedRefPrice * 0.015, 1)
       return [resolvedRefPrice - pad * 1.1, resolvedRefPrice + pad * 1.1] as [number, number]
     }
@@ -127,7 +128,7 @@ export function PriceChart({
   }, [data, timeframe, resolvedRefPrice])
 
   return (
-    <section className="flex h-full flex-col border-l border-slate-200 bg-white p-6 text-slate-900 sm:p-8">
+    <section className="flex min-h-0 flex-col border-l border-default bg-card p-6 text-primary sm:p-8">
       <div className="flex gap-1">
         {tabs.map((tab) => (
           <button
@@ -136,15 +137,15 @@ export function PriceChart({
             onClick={() => onTimeframeChange(tab)}
             className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
               timeframe === tab
-                ? 'border-slate-300 bg-slate-100 text-slate-900'
-                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                ? 'border-medium bg-app text-primary'
+                : 'border-default bg-card text-secondary hover:bg-neutral-bg'
             }`}
           >
             {tab}
           </button>
         ))}
       </div>
-      <div className="mt-4 w-full flex-1 min-h-[240px]">
+      <div className="mt-4 w-full min-w-0 shrink-0">
         <AnimatePresence mode="wait">
           <motion.div
             key={timeframe}
@@ -152,9 +153,10 @@ export function PriceChart({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.22, ease: 'easeOut' }}
-            className="h-full w-full"
+            className="w-full min-w-0"
           >
-            <ResponsiveContainer width="100%" height="100%">
+            <ChartMountShell height={280}>
+              <ResponsiveContainer width="100%" height={280} minHeight={280} minWidth={0}>
               <AreaChart data={data} margin={{ top: 6, right: 24, left: 14, bottom: 20 }}>
                 <defs>
                   <linearGradient id="price-grad" x1="0" y1="0" x2="0" y2="1">
@@ -218,12 +220,13 @@ export function PriceChart({
                   />
                 ) : null}
               </AreaChart>
-            </ResponsiveContainer>
+              </ResponsiveContainer>
+            </ChartMountShell>
           </motion.div>
         </AnimatePresence>
       </div>
       {status === 'loading' ? (
-        <p className="mt-2 text-xs text-slate-500">차트 불러오는 중...</p>
+        <p className="mt-2 text-xs text-secondary">차트 불러오는 중...</p>
       ) : null}
       {status === 'error' ? (
         <p className="mt-2 text-xs text-amber-700">차트 오류: {errorMessage}</p>

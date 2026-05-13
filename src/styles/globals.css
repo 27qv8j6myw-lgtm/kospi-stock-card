@@ -1,0 +1,62 @@
+/**
+ * Global base styles (토큰은 tokens.css :root).
+ * 다크모드: v2에서 tokens + @theme 확장 예정.
+ */
+
+html {
+  color-scheme: light;
+  overflow-x: hidden;
+  width: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  overflow-x: hidden;
+  width: 100%;
+  font-family: var(--family-sans-kr);
+  font-size: 0.875rem; /* 14px — text-base */
+  font-weight: 400;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  background-color: var(--bg-app);
+  color: var(--fg-primary);
+}
+
+::selection {
+  background: var(--info-bg);
+  color: var(--fg-primary);
+}
+
+/** 영문·숫자만 Inter (가격 등에 span.font-sans-en 으로 감싸기) */
+.font-sans-en {
+  font-family: var(--family-sans-en);
+  font-feature-settings: 'tnum' 1, 'lnum' 1;
+}
+
+.tabular-nums-strong {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/** 카드 기본 그림자 (유틸과 병행) */
+.shadow-surface-card {
+  box-shadow: var(--shadow-card);
+}
+
+.shadow-surface-elevated {
+  box-shadow: var(--shadow-card-elevated);
+}
+
+/** 가로 오버플로·캐러셀: 스크롤바 숨김 (Tailwind `scrollbar-none` 보조) */
+.scrollbar-none {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.snap-x::-webkit-scrollbar {
+  display: none;
+}

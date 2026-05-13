@@ -5,13 +5,19 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
 import { inquireChartByTimeframe, inquireDomesticPrice, inquireInvestorByStock } from './kisClient.mjs'
+import { getIntradayChart, krxMarketStatus } from './yahooIntraday.mjs'
 import { completeJsonChat, getAiConfig } from './aiClient.mjs'
+import { runResearchStock } from './researchStock.mjs'
 import {
   buildSourceList,
   generateMarketBriefingWithAi,
   searchBrokerReports,
   searchLatestNews,
 } from './marketBriefing.mjs'
+import { computeLogicIndicatorsPack } from './indicators/logicBundle.mjs'
+import { buildEarningsIntel, extractSpecialAlertsFromKisRaw } from './earningsIntel.mjs'
+import { runScreeningSimple } from './screening/runScreeningSimple.mjs'
+import { getCompareStockPayload } from './screening/compareStock.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** `server/` 의 부모 = 프로젝트 루트 (실행 cwd 와 무관) */
@@ -49,11 +55,17 @@ function cleanEnvSecret(v) {
 /** 차트 요청 캐시/중복제거 (모의투자 호출 제한 보호) */
 const chartCache = new Map()
 const chartInflight = new Map()
+const intradayCache = new Map()
+const intradayInflight = new Map()
 const logicCache = new Map()
 const logicInflight = new Map()
 
 function chartTtlMs(tf) {
-  return tf === '3D' ? 5_000 : 10 * 60_000
+  return tf === '5D' ? 5_000 : 10 * 60_000
+}
+
+function intradayChartTtlMs() {
+  return krxMarketStatus() === 'open' ? 5 * 60_000 : 24 * 60 * 60_000
 }
 
 function logicTtlMs() {
@@ -99,6 +111,90 @@ function parseNumberText(v) {
   return Number.isFinite(n) ? n : null
 }
 
+const MS_DAY = 86_400_000
+/** 서울일 기준 평균 목표가 스냅샷(메모리). 재시작 시 초기화되어 4·12주 추세는 누적 후 표시됩니다. */
+const consensusDaySnapshots = new Map()
+
+function seoulDayKey(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d)
+}
+
+function dayKeyToUtcMs(dayKey) {
+  return new Date(`${String(dayKey)}T06:00:00+09:00`).getTime()
+}
+
+function recordConsensusSnapshot(code6, avg, min, max) {
+  if (!avg || avg <= 0) return
+  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const day = seoulDayKey()
+  let rows = consensusDaySnapshots.get(code) || []
+  const last = rows[rows.length - 1]
+  if (last && last.day === day) {
+    last.avg = avg
+    last.min = min
+    last.max = max
+  } else {
+    rows = [...rows, { day, avg, min, max }].slice(-420)
+  }
+  consensusDaySnapshots.set(code, rows)
+}
+
+function consensusTrendPctFromHistory(code6, currentAvg, lookbackDays) {
+  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const rows = consensusDaySnapshots.get(code) || []
+  if (!rows.length || !currentAvg || currentAvg <= 0) return null
+  const cutoff = Date.now() - lookbackDays * MS_DAY
+  let best = null
+  for (const r of rows) {
+    const t = dayKeyToUtcMs(r.day)
+    if (t > cutoff) continue
+    if (!best || t > dayKeyToUtcMs(best.day)) best = r
+  }
+  if (!best?.avg || best.avg <= 0) return null
+  return ((currentAvg / best.avg) - 1) * 100
+}
+
+function parseFnGuideEstDate(s) {
+  const raw = String(s || '').trim().replace(/\//g, '-')
+  if (!raw) return null
+  const d = new Date(`${raw}T12:00:00+09:00`)
+  return Number.isFinite(d.getTime()) ? d : null
+}
+
+function countBrokerTargetRevisions7d(comp) {
+  const rows = Array.isArray(comp) ? comp : []
+  const now = Date.now()
+  let up = 0
+  let down = 0
+  let flat = 0
+  let reports = 0
+  for (const row of rows) {
+    const est = parseFnGuideEstDate(row.EST_DT)
+    if (!est) continue
+    if (now - est.getTime() > 7 * MS_DAY) continue
+    const cur = parseNumberText(row.TARGET_PRC)
+    const bf = parseNumberText(row.TARGET_PRC_BF)
+    if (cur == null || bf == null) continue
+    reports += 1
+    if (cur > bf) up += 1
+    else if (cur < bf) down += 1
+    else flat += 1
+  }
+  return { up, down, flat, reports }
+}
+
+function dispersionLabelFromWidth(widthPct) {
+  if (widthPct == null || !Number.isFinite(widthPct)) return '분포 미산출'
+  if (widthPct <= 20) return '컨센서스 수렴'
+  if (widthPct >= 55) return '컨센서스 분기'
+  return '컨센서스 분포 보통'
+}
+
 /** FnGuide 컨센서스 JSON — 증권사별 목표가(TARGET_PRC) + 평균(AVG_PRC) */
 async function fetchFnGuideConsensus(code6) {
   const code = String(code6).replace(/\D/g, '').padStart(6, '0')
@@ -140,16 +236,27 @@ async function fetchFnGuideConsensus(code6) {
   const safeMin = Math.min(minTargetPrice, avgTargetPrice)
 
   const avgRecomCd = parseNumberText(comp[0].AVG_RECOM_CD)
+  const avgBf = parseNumberText(comp[0].AVG_PRC_BF)
+  const avgVsBfPct =
+    avgBf != null && avgBf > 0 && avgTargetPrice > 0 ? ((avgTargetPrice - avgBf) / avgBf) * 100 : null
+
+  const dispersionWidthPct =
+    avgTargetPrice > 0 ? ((safeMax - safeMin) / avgTargetPrice) * 100 : null
+  const dispersionHighSkewPct =
+    avgTargetPrice > 0 ? ((safeMax - avgTargetPrice) / avgTargetPrice) * 100 : null
+  const dispersionLowSkewPct =
+    avgTargetPrice > 0 ? ((avgTargetPrice - safeMin) / avgTargetPrice) * 100 : null
+  const dispersionLabelKo = dispersionLabelFromWidth(dispersionWidthPct)
+
+  const rev = countBrokerTargetRevisions7d(comp)
 
   let latestEst = 0
   for (const row of comp) {
-    const raw = String(row.EST_DT || '').trim()
-    const normalized = raw.replace(/\//g, '-')
-    const ts = Date.parse(normalized)
-    if (Number.isFinite(ts) && ts > latestEst) latestEst = ts
+    const d = parseFnGuideEstDate(row.EST_DT)
+    if (d && d.getTime() > latestEst) latestEst = d.getTime()
   }
   const lastUpdateDays =
-    latestEst > 0 ? Math.max(0, Math.floor((Date.now() - latestEst) / 86_400_000)) : null
+    latestEst > 0 ? Math.max(0, Math.floor((Date.now() - latestEst) / MS_DAY)) : null
 
   return {
     avgTargetPrice,
@@ -158,6 +265,16 @@ async function fetchFnGuideConsensus(code6) {
     analystCount: comp.length,
     lastUpdateDays,
     avgRecomCd,
+    avgTargetPriceBf: avgBf,
+    avgVsBfPct,
+    dispersionWidthPct,
+    dispersionHighSkewPct,
+    dispersionLowSkewPct,
+    dispersionLabelKo,
+    revision7dUp: rev.up,
+    revision7dDown: rev.down,
+    revision7dFlat: rev.flat,
+    revision7dReports: rev.reports,
   }
 }
 
@@ -205,12 +322,23 @@ async function fetchNaverConsensus(code6) {
 
 /** FnGuide 우선(증권사별 목표가 분포), 실패 시 네이버 단일 목표가 */
 async function fetchConsensusDetails(code6) {
+  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
   const [fg, nv] = await Promise.all([
-    fetchFnGuideConsensus(code6).catch(() => null),
-    fetchNaverConsensus(code6).catch(() => null),
+    fetchFnGuideConsensus(code).catch(() => null),
+    fetchNaverConsensus(code).catch(() => null),
   ])
 
+  const emptyRevision = { revision7dUp: 0, revision7dDown: 0, revision7dFlat: 0, revision7dReports: 0 }
+
   if (fg) {
+    recordConsensusSnapshot(code, fg.avgTargetPrice, fg.minTargetPrice, fg.maxTargetPrice)
+    const trend4w = consensusTrendPctFromHistory(code, fg.avgTargetPrice, 28)
+    const trend12w = consensusTrendPctFromHistory(code, fg.avgTargetPrice, 84)
+    const rows = consensusDaySnapshots.get(code) || []
+    const trendNote =
+      trend4w == null && trend12w == null
+        ? `4·12주 평균 목표가 추세는 서버에 일별 스냅샷이 쌓이면 표시됩니다. (현재 ${rows.length}일치)`
+        : null
     return {
       source: 'fnguide',
       avgTargetPrice: fg.avgTargetPrice,
@@ -220,64 +348,105 @@ async function fetchConsensusDetails(code6) {
       recommendationText: nv?.recommendationText ?? recommendationLabelFromFnGuideScore(fg.avgRecomCd),
       analystCount: fg.analystCount,
       lastUpdateDays: fg.lastUpdateDays ?? nv?.lastUpdateDays ?? null,
+      avgTargetPriceBf: fg.avgTargetPriceBf,
+      avgVsBfPct: fg.avgVsBfPct,
+      dispersionWidthPct: fg.dispersionWidthPct,
+      dispersionHighSkewPct: fg.dispersionHighSkewPct,
+      dispersionLowSkewPct: fg.dispersionLowSkewPct,
+      dispersionLabelKo: fg.dispersionLabelKo,
+      revision7dUp: fg.revision7dUp,
+      revision7dDown: fg.revision7dDown,
+      revision7dFlat: fg.revision7dFlat,
+      revision7dReports: fg.revision7dReports,
+      consensusAvgTrend4wPct: trend4w,
+      consensusAvgTrend12wPct: trend12w,
+      consensusTrendNote: trendNote,
     }
   }
-  if (nv) return nv
+  if (nv) {
+    recordConsensusSnapshot(code, nv.avgTargetPrice, nv.avgTargetPrice, nv.maxTargetPrice ?? nv.avgTargetPrice)
+    const trend4w = consensusTrendPctFromHistory(code, nv.avgTargetPrice, 28)
+    const trend12w = consensusTrendPctFromHistory(code, nv.avgTargetPrice, 84)
+    const rows = consensusDaySnapshots.get(code) || []
+    const trendNote =
+      trend4w == null && trend12w == null
+        ? `4·12주 추세는 FnGuide 다증권 데이터 연동 시 정확해집니다. (스냅샷 ${rows.length}일치)`
+        : null
+    return {
+      ...nv,
+      minTargetPrice: nv.minTargetPrice ?? nv.avgTargetPrice,
+      ...emptyRevision,
+      avgTargetPriceBf: null,
+      avgVsBfPct: null,
+      dispersionWidthPct: 0,
+      dispersionHighSkewPct: 0,
+      dispersionLowSkewPct: 0,
+      dispersionLabelKo: '단일 출처(분산 미표시)',
+      consensusAvgTrend4wPct: trend4w,
+      consensusAvgTrend12wPct: trend12w,
+      consensusTrendNote: trendNote,
+    }
+  }
   return null
 }
 
-function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
-  const closes = chart1m.map((p) => Number(p.price)).filter((n) => Number.isFinite(n))
-  const last = closes.length ? closes[closes.length - 1] : quote.price
-  const prev = closes.length > 1 ? closes[closes.length - 2] : last
-  const sma20 = closes.length >= 20 ? mean(closes.slice(-20)) : mean(closes)
-  const rsi = computeRsi(closes, 14)
-  const mfiProxy = rsi == null ? null : clamp(rsi - 3, 0, 100)
+function barsFromKisChart(chart) {
+  if (!Array.isArray(chart)) return []
+  return chart.map((p) => ({
+    ts: String(p.ts ?? ''),
+    open: Number(p.open ?? p.price) || 0,
+    high: Number(p.high ?? p.price) || 0,
+    low: Number(p.low ?? p.price) || 0,
+    close: Number(p.price) || 0,
+    volume: Math.max(0, Number(p.volume ?? 0)),
+  }))
+}
 
-  let upStreak = 0
-  for (let i = closes.length - 1; i > 0; i--) {
-    if (closes[i] > closes[i - 1]) upStreak += 1
-    else break
-  }
-  let downStreak = 0
-  for (let i = closes.length - 1; i > 0; i--) {
-    if (closes[i] < closes[i - 1]) downStreak += 1
-    else break
-  }
-
+function indexVkospiProxyFromBars(indexBars) {
+  const closes = indexBars.map((b) => b.close).filter((n) => Number.isFinite(n) && n > 0)
   const rets = []
-  const diffs = []
   for (let i = 1; i < closes.length; i++) {
     if (closes[i - 1] > 0) rets.push((closes[i] - closes[i - 1]) / closes[i - 1])
-    diffs.push(Math.abs(closes[i] - closes[i - 1]))
   }
-  const volDaily = stddev(rets.slice(-20))
-  const volPct = volDaily * Math.sqrt(252) * 100
-  const atrProxy = diffs.length ? mean(diffs.slice(-14)) : 0
-  const atrGap = atrProxy > 0 ? Math.abs(last - sma20) / atrProxy : 0
+  if (rets.length >= 20) return stddev(rets.slice(-20)) * Math.sqrt(252) * 100
+  if (rets.length >= 5) return stddev(rets) * Math.sqrt(252) * 100
+  return null
+}
 
-  const m5Base = closes.length >= 6 ? closes[closes.length - 6] : prev
-  const m20Base = closes.length >= 21 ? closes[closes.length - 21] : prev
-  const m5 = m5Base > 0 ? ((last - m5Base) / m5Base) * 100 : 0
-  const m20 = m20Base > 0 ? ((last - m20Base) / m20Base) * 100 : 0
+async function computeKisLogicIndicators(quote, stockChart, investor, consensus, ctx = {}) {
+  const stockBars = barsFromKisChart(stockChart)
+  const indexBars = barsFromKisChart(Array.isArray(ctx.indexChart) ? ctx.indexChart : [])
+  const vk = indexVkospiProxyFromBars(indexBars)
+  const code6 = String(quote?.code || '').replace(/\D/g, '').padStart(6, '0') || '000000'
 
-  const trend = sma20 > 0 ? ((last - sma20) / sma20) * 100 : 0
-  const structureScore = Math.round(clamp(50 + trend * 6 + m20 * 1.2, 1, 99))
-  const executionScore = Math.round(
-    clamp(
-      55 +
-        (rsi == null ? 0 : (50 - Math.abs(50 - rsi)) * 0.5) -
-        volPct * 0.35 +
-        Math.abs(m5) * 0.8,
-      1,
-      99,
-    ),
+  const idxQuote = ctx.indexQuote
+  const idxChange =
+    idxQuote?.changePercent != null && Number.isFinite(Number(idxQuote.changePercent))
+      ? Number(idxQuote.changePercent)
+      : null
+
+  const pack = computeLogicIndicatorsPack(
+    {
+      quote: {
+        price: Number(quote?.price) || 0,
+        changePercent: Number(quote?.changePercent) || 0,
+        volume: Number(quote?.volume) || 0,
+        tradeValue: quote?.tradeValue != null ? Number(quote.tradeValue) : undefined,
+        per: quote?.per != null ? Number(quote.per) : null,
+      },
+      stockBars,
+      indexBars,
+      indexVkospiProxy: vk,
+      indexInvestor: ctx.indexInvestor ?? null,
+      indexQuote: idxChange != null ? { changePercent: idxChange } : null,
+    },
+    code6,
   )
 
-  const market =
-    Math.abs(quote.changePercent) >= 2.5
-      ? `Caution (일중 변동 ${quote.changePercent.toFixed(2)}%)`
-      : `Neutral (일중 변동 ${quote.changePercent.toFixed(2)}%)`
+  const closes = stockBars.map((b) => b.close)
+  const last = closes.length ? closes[closes.length - 1] : Number(quote?.price) || 0
+  const sma20c = closes.length >= 20 ? mean(closes.slice(-20)) : last
+  const rsi = computeRsi(closes, 14)
 
   const c3 = investor?.cumulative3d
   const c5 = investor?.cumulative5d
@@ -302,43 +471,87 @@ function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
     ? `기관(3거래일 누적) ${institutionNetShares3D >= 0 ? '순매수' : '순매도'} ${Math.abs(institutionNetShares3D).toLocaleString('ko-KR')}주`
     : '기관(3거래일 누적) 데이터 없음'
   const volume = `거래량 ${Number(quote.volume || 0).toLocaleString('ko-KR')}주`
+
+  const lastBar = stockBars.length ? stockBars[stockBars.length - 1] : null
+  const candle =
+    lastBar && lastBar.close >= lastBar.open
+      ? '양봉(종가 우위) · 단기 상승 압력'
+      : '음봉(종가 약세) · 단기 조정 압력'
+
+  const rets20 = []
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1] > 0) rets20.push((closes[i] - closes[i - 1]) / closes[i - 1])
+  }
+  const volDaily = rets20.length >= 20 ? stddev(rets20.slice(-20)) : stddev(rets20)
+  const volPct = (volDaily || 0) * Math.sqrt(252) * 100
   const volatility = `연환산 변동성 ${volPct.toFixed(1)}%`
-  const momentum = `5일 ${m5 >= 0 ? '+' : ''}${m5.toFixed(2)}% · 20일 ${m20 >= 0 ? '+' : ''}${m20.toFixed(2)}%`
-  const candle = quote.change >= 0 ? '양봉(종가 우위) · 단기 상승 압력' : '음봉(종가 약세) · 단기 조정 압력'
-  const stats = `20일 평균 ${Math.round(sma20).toLocaleString('ko-KR')}원 대비 ${trend >= 0 ? '+' : ''}${trend.toFixed(2)}%`
-  const rotation =
-    Math.abs(m20) >= 6 ? (m20 > 0 ? 'Risk-On' : 'Risk-Off') : 'Neutral'
-  const structureState =
-    trend >= 1.5 ? '상승장 유지 / 눌림 대기' : trend <= -1.5 ? '하락장 진행 / 반등 경계' : '횡보 / 방향성 약함'
-  const adjustment = `CMF20 ${(m5 / 10).toFixed(2)} / Flow20 ${(quote.changePercent / 5).toFixed(2)}x`
-  const candleQuality = `CLV5 ${(m5 / 20).toFixed(2)} / CLV10 ${(m20 / 20).toFixed(2)}`
-  const liquidity = `ADV20 ${(Number(quote.tradeValue || 0) / 1_0000_0000_0000).toFixed(2)}조 / RVOL20 ${(Number(quote.volume || 0) / 50_000_000).toFixed(2)}x`
-  const indicator = `RSI ${rsi == null ? 'N/A' : rsi.toFixed(0)} / MFI ${mfiProxy == null ? 'N/A' : mfiProxy.toFixed(0)}`
-  const unusual = upStreak >= 4 || downStreak >= 4 ? `연속 ${upStreak >= 4 ? '상승' : '하락'} ${Math.max(upStreak, downStreak)}일` : '특이사항 없음'
+
+  const specialAlerts = extractSpecialAlertsFromKisRaw(quote?.raw)
+  const earn = await buildEarningsIntel(code6, stockBars)
 
   return {
-    structure: `${structureScore} / 100`,
-    execution: `${executionScore} / 100`,
-    market,
+    structure: pack.structureLine,
+    structureSub: pack.structureSub,
+    execution: pack.executionLine,
+    executionSub: pack.executionSub,
+    market: pack.marketHeadline,
+    marketHeadline: pack.marketHeadline,
+    marketDetail: pack.marketDetail,
+    marketSubCompact: pack.marketSubCompact,
+    marketScore: pack.marketScore,
+    marketRegime: pack.marketRegime,
     flow,
-    technical: `RSI ${rsi == null ? 'N/A' : rsi.toFixed(1)} | SMA20 ${Math.round(sma20).toLocaleString('ko-KR')}`,
-    stats,
-    atrGap: `${atrGap.toFixed(1)} ATR`,
-    streak: upStreak > 0 ? `연속상승 ${upStreak}일` : downStreak > 0 ? `연속하락 ${downStreak}일` : '연속 없음',
-    rotation,
-    structureState,
-    adjustment,
-    candleQuality,
-    liquidity,
-    indicator,
-    unusual,
-    rsi: rsi == null ? 'RSI 데이터 부족' : `RSI ${rsi.toFixed(1)}`,
+    technical: `RSI ${rsi == null ? 'N/A' : rsi.toFixed(1)} | SMA20 ${Math.round(sma20c).toLocaleString('ko-KR')}`,
+    stats: pack.statsLine,
+    statsPrimary: pack.statsPrimary,
+    statsSub: pack.statsSub,
+    statsTrend20Pct: pack.statsTrend20Pct,
+    statsRiskStrip: pack.statsRiskStrip,
+    statsRiskBadge: pack.statsRiskBadge,
+    atrGap: pack.atrGapLine,
+    atrGapValue: pack.atrGapValue,
+    atrGapSub: pack.atrGapSub,
+    atrRiskStrip: pack.atrRiskStrip,
+    atrRiskBadge: pack.atrRiskBadge,
+    atr14Won: pack.atr14Won ?? null,
+    low20Min: pack.low20Min ?? null,
+    streak: pack.streakLine,
+    streakSub: pack.streakSub,
+    streakSeverity: pack.streakSeverity,
+    rotation: pack.rotationLine,
+    structureState: pack.structureStatePrimary,
+    structureStateSub: pack.structureStateSub,
+    adjustment: pack.adjustmentLine,
+    candleQuality: pack.candleQualityLine,
+    candleQualityPrimary: pack.candleQualityPrimary,
+    candleQualitySub: pack.candleQualitySub,
+    liquidity: pack.liquidityLine,
+    indicator: pack.indicatorLine,
+    indicatorPrimary: pack.indicatorPrimary,
+    indicatorSub: pack.indicatorSub,
+    indicatorRiskStrip: pack.indicatorRiskStrip,
+    indicatorRiskBadge: pack.indicatorRiskBadge,
+    indicatorShowRiskInfoIcon: pack.indicatorShowRiskInfoIcon,
+    rsi: pack.indicatorPrimary,
+    unusual: specialAlerts.length ? specialAlerts.join(' · ') : undefined,
+    specialAlerts,
     volume,
     volatility,
     foreign,
     institution,
-    momentum,
+    momentum: pack.momentumLine,
     candle,
+    valuationPrimary: pack.valuationPrimary,
+    valuationSub: pack.valuationSub,
+    earningsPrimary: earn.earningsPrimary,
+    earningsSub: earn.earningsSub,
+    earningsSeverity: earn.earningsSeverity,
+    earningsRiskStrip: earn.earningsRiskStrip,
+    earningsRiskBadge: earn.earningsRiskBadge,
+    earningsDetailForDrawer: earn.earningsDetailForDrawer,
+    earningsSparkline: earn.earningsSparkline,
+    earningsValueEmphasis: earn.earningsValueEmphasis,
+    earningsSubEmphasis: earn.earningsSubEmphasis,
     supplyDetails: {
       foreignNetShares3D,
       foreignNetAmount3D,
@@ -356,6 +569,7 @@ function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
       supplyPeriod: '직전 3거래일 누적',
     },
     consensusDetails: consensus || null,
+    logicUi: pack,
   }
 }
 
@@ -639,6 +853,31 @@ app.post('/api/screener-briefing', handleScreenerBriefing)
 // Backward-compatible alias
 app.post('/api/market-briefing', handleScreenerBriefing)
 
+/** AI 투자 메모 1단계 — 최근 기사·리포트 리서치 (Claude + web_search) */
+app.post('/api/research-stock', async (req, res) => {
+  const aiCfg = getAiConfig()
+  if (!aiCfg) {
+    res.status(503).json({ error: 'ANTHROPIC_API_KEY 가 필요합니다.', stage: 'config' })
+    return
+  }
+  const stockName = String(req.body?.stockName ?? req.body?.name ?? '').trim()
+  const stockCode = String(req.body?.stockCode ?? req.body?.code ?? '')
+    .replace(/\D/g, '')
+    .padStart(6, '0')
+  if (!stockName || stockCode === '000000') {
+    res.status(400).json({ error: 'stockName(또는 name)과 stockCode(또는 code)가 필요합니다.' })
+    return
+  }
+  try {
+    const result = await runResearchStock(stockName, stockCode)
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[api/research-stock]', message)
+    res.status(502).json({ error: message, stage: 'research' })
+  }
+})
+
 app.get('/api/health', (_req, res) => {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
   const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
@@ -655,6 +894,8 @@ app.get('/api/health', (_req, res) => {
     aiBriefingPost: Boolean(aiCfg),
     kisEnv: process.env.KIS_ENV || 'vps',
     anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
+    anthropicResearchModel: process.env.ANTHROPIC_RESEARCH_MODEL || 'claude-sonnet-4-5',
+    anthropicSummaryModel: process.env.ANTHROPIC_SUMMARY_MODEL || 'claude-sonnet-4-5',
     aiModel: aiCfg?.model ?? null,
     /** 비밀값은 절대 내려주지 않음 — 파일/변수만 점검용 */
     check: {
@@ -668,6 +909,39 @@ app.get('/api/health', (_req, res) => {
 })
 
 
+app.get('/api/intraday-chart', async (req, res) => {
+  const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
+  const intervalRaw = String(req.query.interval || '5m')
+  const interval = ['1m', '5m', '15m'].includes(intervalRaw) ? intervalRaw : '5m'
+  const suffix = String(req.query.suffix || 'KS').toUpperCase() === 'KQ' ? 'KQ' : 'KS'
+  const key = `intraday:${code}:${interval}:${suffix}`
+  const ttl = intradayChartTtlMs()
+  const now = Date.now()
+
+  const cached = intradayCache.get(key)
+  if (cached && now - cached.at < ttl) {
+    res.json({ ...cached.body, cached: true, fetchedAt: new Date(cached.at).toISOString() })
+    return
+  }
+
+  try {
+    let task = intradayInflight.get(key)
+    if (!task) {
+      task = getIntradayChart(code, interval, suffix)
+      intradayInflight.set(key, task)
+    }
+    const body = await task
+    intradayInflight.delete(key)
+    intradayCache.set(key, { body, at: Date.now() })
+    res.json({ ...body, cached: false, fetchedAt: new Date().toISOString() })
+  } catch (e) {
+    intradayInflight.delete(key)
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[api/intraday-chart]', message)
+    res.status(502).json({ error: message, stage: 'yahoo_intraday' })
+  }
+})
+
 app.get('/api/chart', async (req, res) => {
   const appKey = process.env.KIS_APP_KEY?.trim()
   const appSecret = process.env.KIS_APP_SECRET?.trim()
@@ -679,8 +953,8 @@ app.get('/api/chart', async (req, res) => {
   }
 
   const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
-  const tf = String(req.query.tf || '3D')
-  if (!['3D', '1W', '1M', '3M', '1Y'].includes(tf)) {
+  const tf = String(req.query.tf || '5D')
+  if (!['5D', '1M', '3M', '1Y'].includes(tf)) {
     res.status(400).json({ error: '지원하지 않는 timeframe 입니다.' })
     return
   }
@@ -770,7 +1044,7 @@ app.get('/api/ai-fill', async (req, res) => {
   if (appKey && appSecret) {
     try {
       const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
-      const chart1w = await inquireChartByTimeframe(appKey, appSecret, env, code, '1W')
+      const chart5d = await inquireChartByTimeframe(appKey, appSecret, env, code, '5D')
       const chart1m = await inquireChartByTimeframe(appKey, appSecret, env, code, '1M')
 
       payload = {
@@ -785,7 +1059,7 @@ app.get('/api/ai-fill', async (req, res) => {
           volume: quote.volume,
         },
         chart: {
-          w1Last7: chart1w.slice(-7),
+          d5: chart5d.slice(-5),
           m1Last22: chart1m.slice(-22),
         },
         timestamp: new Date().toISOString(),
@@ -805,7 +1079,7 @@ app.get('/api/ai-fill', async (req, res) => {
       code,
       kisDataAvailable: false,
       quote: null,
-      chart: { w1Last7: [], m1Last22: [] },
+      chart: { d5: [], m1Last22: [] },
       timestamp: new Date().toISOString(),
     }
   }
@@ -866,10 +1140,19 @@ app.get('/api/logic-indicators', async (req, res) => {
     if (!task) {
       task = (async () => {
         const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
-        const chart1m = await inquireChartByTimeframe(appKey, appSecret, env, code, '1M')
-        const investor = await inquireInvestorByStock(appKey, appSecret, env, code)
-        const consensus = await fetchConsensusDetails(code).catch(() => null)
-        return computeKisLogicIndicators(quote, chart1m, investor, consensus)
+        const [chart1y, indexChart, indexQuote, investor, indexInvestor, consensus] = await Promise.all([
+          inquireChartByTimeframe(appKey, appSecret, env, code, '1Y'),
+          inquireChartByTimeframe(appKey, appSecret, env, '069500', '1Y').catch(() => []),
+          inquireDomesticPrice(appKey, appSecret, env, '069500').catch(() => null),
+          inquireInvestorByStock(appKey, appSecret, env, code),
+          inquireInvestorByStock(appKey, appSecret, env, '069500').catch(() => null),
+          fetchConsensusDetails(code).catch(() => null),
+        ])
+        return await computeKisLogicIndicators(quote, chart1y, investor, consensus, {
+          indexChart,
+          indexQuote,
+          indexInvestor,
+        })
       })()
       logicInflight.set(key, task)
     }
@@ -927,6 +1210,72 @@ app.get('/api/quote', async (req, res) => {
     const { raw: _raw, ...rest } = q
     res.json({
       ...rest,
+      fetchedAt: new Date().toISOString(),
+      kisEnv: env,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    res.status(502).json({ error: message })
+  }
+})
+
+app.get('/api/screening', async (_req, res) => {
+  const appKey = process.env.KIS_APP_KEY?.trim()
+  const appSecret = process.env.KIS_APP_SECRET?.trim()
+  if (!appKey || !appSecret) {
+    res.status(503).json({
+      error:
+        '서버에 KIS_APP_KEY, KIS_APP_SECRET 이 설정되지 않았습니다. 프로젝트 루트 .env 경로를 확인하세요.',
+      check: {
+        envPath: ENV_PATH,
+        envFileExists: fs.existsSync(ENV_PATH),
+      },
+    })
+    return
+  }
+
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const out = await runScreeningSimple(appKey, appSecret, env)
+    res.json({
+      ...out,
+      fetchedAt: new Date().toISOString(),
+      kisEnv: env,
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    res.status(502).json({ error: message })
+  }
+})
+
+app.get('/api/compare-stock', async (req, res) => {
+  const appKey = process.env.KIS_APP_KEY?.trim()
+  const appSecret = process.env.KIS_APP_SECRET?.trim()
+  if (!appKey || !appSecret) {
+    res.status(503).json({
+      error:
+        '서버에 KIS_APP_KEY, KIS_APP_SECRET 이 설정되지 않았습니다. 프로젝트 루트 .env 경로를 확인하세요.',
+      check: {
+        envPath: ENV_PATH,
+        envFileExists: fs.existsSync(ENV_PATH),
+      },
+    })
+    return
+  }
+
+  const raw = req.query.code
+  if (raw == null || String(raw).trim() === '') {
+    res.status(400).json({ error: 'code 쿼리가 필요합니다.' })
+    return
+  }
+
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const out = await getCompareStockPayload(appKey, appSecret, env, String(raw))
+    res.json({
+      ...out,
       fetchedAt: new Date().toISOString(),
       kisEnv: env,
     })

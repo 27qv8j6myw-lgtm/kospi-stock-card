@@ -3,17 +3,33 @@ import type {
   EntryStage,
   ExecutionInput,
   ExecutionPlan,
+  ExecutionSummaryUi,
+  MarketStatus,
   RiskReward,
   ScoreInputs,
   SectorFlowSnapshot,
   SectorFlowStatusLabel,
   Strategy,
+  StrategyRiskRewardMetrics,
+  StrategyRiskRewardVerdict,
   TargetPriceInput,
   TargetPriceRow,
   TargetStopInput,
   ThreeMonthStrategy,
   ThreeMonthStrategyInput,
+  UnifiedEntryStageTier,
 } from '../types/stock'
+import { computeExecutionStrategy } from './strategy/computeExecutionStrategy'
+import { fromThreeMonthStrategyInput } from './strategy/mapFromThreeMonthInput'
+
+/** `/api/logic-indicators` 및 AI 보조 필드용 최소 형태 */
+export type LogicMarketSignals = {
+  marketScore?: number
+  marketHeadline?: string
+  market?: string
+  /** 시장 카드 서브 한 줄 (KOSPI 20MA, 외인 5D 등) */
+  marketSubCompact?: string
+}
 
 export function calculateFinalScore(inputs: ScoreInputs): number {
   const sectorFlowN = Number.isFinite(inputs.sectorFlow)
@@ -34,6 +50,7 @@ export function calculateFinalScore(inputs: ScoreInputs): number {
   return Math.round(weighted)
 }
 
+/** @deprecated Final Grade UI 폐지. 서버/AI 스키마 호환용으로만 유지 가능 */
 export function getFinalGrade(score: number): string {
   if (score >= 85) return 'A'
   if (score >= 75) return 'B+'
@@ -52,7 +69,7 @@ export function getStrategy(score: number, rsi: number, execution: number): stri
 }
 
 export function getEntryStage(score: number, strategy: string): string {
-  if (strategy === 'REJECT') return '관망'
+  if (strategy === 'REJECT') return '제외'
   if (strategy === 'TAKE_PROFIT') return '익절'
   if (strategy === 'WATCH_ONLY') return '관망'
   if (score >= 80) return '신규진입'
@@ -70,12 +87,106 @@ export function getEntryStageCode(
   if (strategy === 'WATCH_ONLY') return 'WATCH'
   if (strategy === 'TAKE_PROFIT') return 'CAUTION'
   if (strategy === 'HOLD') return 'CAUTION'
+  if (strategy === 'BUY_AGGRESSIVE') {
+    if (score >= 75 && executionScore >= 50) return 'ACCEPT'
+    return 'CAUTION'
+  }
   if (strategy === 'BUY') {
     if (score >= 80 && executionScore >= 55) return 'ACCEPT'
     if (score >= 65) return 'CAUTION'
     return 'WATCH'
   }
   return 'WATCH'
+}
+
+const ENTRY_TIER_COPY: Record<
+  UnifiedEntryStageTier,
+  { label: string; action: string }
+> = {
+  NEW_ENTRY: {
+    label: '신규 진입',
+    action: '손절·비중 한도를 정한 뒤, 시그널이 유지될 때 소액 신규 매수를 검토하세요.',
+  },
+  SCALE_IN: {
+    label: '분할 매수',
+    action: '한 번에 몰지 말고 지지·눌림에서 소액씩 나눠 매수하세요.',
+  },
+  HOLD_STEADY: {
+    label: '보유 유지',
+    action: '추가 매수나 급매도 없이 포지션을 유지하세요.',
+  },
+  SCALE_OUT: {
+    label: '분할 익절',
+    action: '과열·수익 구간이 겹치므로 일부 물량부터 차익 실현하세요.',
+  },
+  EXIT_ALL_OR_AVOID: {
+    label: '전량 익절 또는 회피',
+    action: '신규 진입은 피하고, 보유 시 손절·전량 청산 가능성을 검토하세요.',
+  },
+}
+
+export function summarizeExecutionUi(
+  strategy: Strategy,
+  entryCode: EntryStage,
+): ExecutionSummaryUi {
+  let tier: UnifiedEntryStageTier
+  if (strategy === 'REJECT' || entryCode === 'REJECT') tier = 'EXIT_ALL_OR_AVOID'
+  else if (strategy === 'TAKE_PROFIT') tier = 'SCALE_OUT'
+  else if (strategy === 'BUY_AGGRESSIVE') tier = entryCode === 'ACCEPT' ? 'NEW_ENTRY' : 'SCALE_IN'
+  else if (strategy === 'BUY') tier = entryCode === 'ACCEPT' ? 'NEW_ENTRY' : 'SCALE_IN'
+  else tier = 'HOLD_STEADY'
+
+  const strategyLabelKo =
+    strategy === 'BUY_AGGRESSIVE'
+      ? '적극 매수'
+      : strategy === 'BUY' && entryCode !== 'ACCEPT'
+      ? '추가 매수'
+      : strategy === 'BUY'
+        ? '신규 매수'
+        : strategy === 'HOLD'
+          ? '보유'
+          : strategy === 'WATCH_ONLY'
+            ? '관망'
+            : strategy === 'TAKE_PROFIT'
+              ? '익절'
+              : '회피'
+
+  const { label, action } = ENTRY_TIER_COPY[tier]
+  return {
+    tier,
+    strategyLabelKo,
+    entryStageLabel: label,
+    entryStageAction: action,
+  }
+}
+
+export function coerceStrategyFromAi(raw: string): Strategy {
+  const u = String(raw).toUpperCase().replace(/[^A-Z_]/g, '')
+  if (u.includes('TAKE_PROFIT') || u.includes('TAKEPROFIT')) return 'TAKE_PROFIT'
+  if (u.includes('WATCHONLY') || u === 'WATCH_ONLY') return 'WATCH_ONLY'
+  if (u === 'WATCH') return 'WATCH_ONLY'
+  if (u.includes('REJECT')) return 'REJECT'
+  if (u.includes('BUYAGGRESSIVE') || u.includes('AGGRESSIVE')) return 'BUY_AGGRESSIVE'
+  if (u === 'BUY') return 'BUY'
+  if (u.includes('HOLD')) return 'HOLD'
+  return 'HOLD'
+}
+
+export function coerceEntryStageFromAiLoose(raw: string, strategy: Strategy): EntryStage {
+  const t = String(raw).trim()
+  if (/REJECT|제외|거부/i.test(t)) return 'REJECT'
+  if (/익절/i.test(t) || /TAKE_PROFIT/i.test(t)) return 'CAUTION'
+  if (/관망|WATCH_ONLY|WATCHONLY/i.test(t)) return 'WATCH'
+  if (/신규\s*진입|신규진입|ACCEPT/i.test(t)) return 'ACCEPT'
+  if (/눌림|CAUTION|보수/i.test(t)) return 'CAUTION'
+  if (/보유|HOLD/i.test(t)) return strategy === 'HOLD' ? 'CAUTION' : 'CAUTION'
+  return getEntryStageCode(strategy, 72, 55)
+}
+
+export function executionUiFromAiLoose(strategyRaw: string, entryRaw: string): ExecutionSummaryUi {
+  const strategy = coerceStrategyFromAi(strategyRaw)
+  const code = coerceEntryStageFromAiLoose(entryRaw, strategy)
+  return summarizeExecutionUi(strategy, code)
 }
 
 export function calculatePositionSize(score: number): number {
@@ -222,7 +333,7 @@ export function parseAtrDistance(atrGap: string | undefined): number {
 }
 
 export function parseConsecutiveRiseDays(streak: string | undefined): number {
-  const m = streak?.match(/연속상승\s*(\d+)/)
+  const m = streak?.match(/(?:연속상승|양봉 연속)\s*(\d+)/)
   return m ? Number(m[1]) : 0
 }
 
@@ -607,6 +718,44 @@ function finalizeTargetRow(
   }
 }
 
+/** 표준정규 CDF Φ(x) — 손절 도달 휴리스틱용 */
+function normalCdf(x: number): number {
+  const a1 = 0.254829592
+  const a2 = -0.284496736
+  const a3 = 1.421413741
+  const a4 = -1.453152027
+  const a5 = 1.061405429
+  const p = 0.3275911
+  const sign = x < 0 ? -1 : 1
+  const ax = Math.abs(x)
+  const t = 1 / (1 + p * ax)
+  const y = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax)
+  return 0.5 * (1 + sign * y)
+}
+
+/**
+ * 동일 ATR(14일) 근사 변동성·로그정규 말기 가정 하 손절가 이하 도달 휴리스틱(%).
+ * GARCH 미적용 — UI 참고용.
+ */
+function stopHitProbabilityHeuristic(
+  input: TargetPriceInput,
+  currentPrice: number,
+  stopPrice: number,
+  horizonDays: number,
+): number {
+  if (!(currentPrice > 0) || !(stopPrice > 0) || stopPrice >= currentPrice) {
+    return 6
+  }
+  const relAtr =
+    typeof input.atr14 === 'number' && Number.isFinite(input.atr14) && input.atr14 > 0
+      ? input.atr14 / currentPrice
+      : resolveAtrPctForTargets(input) / 100
+  const sigmaT = relAtr * Math.sqrt(Math.max(1, horizonDays))
+  const z = Math.log(stopPrice / currentPrice) / Math.max(sigmaT, 1e-9)
+  const raw = normalCdf(z)
+  return Math.round(clamp(raw * 100, 2, 94))
+}
+
 /**
  * 기간별 목표가·기대수익률·달성확률 (실제 입력값 기반). 컨센서스는 경고/참고만.
  */
@@ -631,6 +780,15 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
 
   const warnings: string[] = []
   const notes: string[] = []
+
+  const resolvedStop =
+    typeof input.stopPrice === 'number' &&
+    Number.isFinite(input.stopPrice) &&
+    input.stopPrice > 0 &&
+    input.stopPrice < currentPrice
+      ? Math.round(input.stopPrice)
+      : Math.round(currentPrice * 0.94)
+  const stopLossPctCard = Number((((resolvedStop / currentPrice) - 1) * 100).toFixed(2))
 
   const atrPct = resolveAtrPctForTargets(input)
 
@@ -752,6 +910,9 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
   const f1m = finalizeTargetRow(currentPrice, expectedReturn1M)
   const f3m = finalizeTargetRow(currentPrice, expectedReturn3M)
 
+  const nCore = 120 + Math.round(((finalScore + structureScore) / 2 - 60) * 0.2)
+  const clampN = (n: number) => Math.max(100, Math.min(220, n))
+
   if (hasMax && f3m.targetPrice > (consensusMaxTargetPrice as number)) {
     warnings.push(
       '3M 목표가가 컨센서스 최고 목표가를 초과합니다. 강한 실적·수급 모멘텀이 필요합니다.',
@@ -763,18 +924,24 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
       label: '1D',
       ...f1,
       probability: targetProbability(input, '1D'),
+      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 1),
+      backtestSampleSize: clampN(nCore),
       method: 'ATR 단기 변동',
     },
     {
       label: '7D',
       ...f7,
       probability: targetProbability(input, '7D'),
+      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 7),
+      backtestSampleSize: clampN(nCore),
       method: 'ATR + 모멘텀',
     },
     {
       label: '1M',
       ...f1m,
       probability: targetProbability(input, '1M'),
+      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 21),
+      backtestSampleSize: clampN(nCore + 6),
       method: '점수 기반 1개월 목표',
       ...(resistanceNote1M3M ? { note: resistanceNote1M3M } : {}),
     },
@@ -782,12 +949,20 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
       label: '3M',
       ...f3m,
       probability: targetProbability(input, '3M'),
+      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 63),
+      backtestSampleSize: clampN(nCore + 21),
       method: '3개월 모멘텀 목표',
       ...(resistanceNote1M3M ? { note: resistanceNote1M3M } : {}),
     },
   ]
 
-  return { targets, warnings, notes }
+  return {
+    targets,
+    stopPrice: resolvedStop,
+    stopLossPct: stopLossPctCard,
+    warnings,
+    notes,
+  }
 }
 
 export function calculateRiskReward(
@@ -806,6 +981,73 @@ export function calculateRiskReward(
     ratio: Number(ratio.toFixed(2)),
     verdict,
   }
+}
+
+/** 손절·목표가(%) 기반 R/R 구간 평가 (순수·가중·기대 R/R 공통) */
+export function verdictForPctRiskReward(ratio: number): StrategyRiskRewardVerdict {
+  if (!Number.isFinite(ratio) || ratio <= 0) return '비효율'
+  if (ratio < 1.5) return '비효율'
+  if (ratio < 2.0) return '보통'
+  if (ratio < 3.0) return '양호'
+  return '우수'
+}
+
+/**
+ * 3개월 전략용 손익비 (모두 % / |손절%|).
+ * - 순수: 최종 목표%만
+ * - 가중: 1차 익절%×분할매도비율 + 최종%×잔여
+ * - 기대(확률): 1차%×(1M 달성확률/100) + 최종%×(3M 달성확률/100)
+ */
+export function computeStrategyRiskRewardMetrics(params: {
+  stopLossPct: number
+  firstTakeProfitPct: number
+  firstTakeProfitSellPct: number
+  finalTargetPct: number
+  prob1M: number
+  prob3M: number
+}): StrategyRiskRewardMetrics {
+  const d = Math.abs(params.stopLossPct)
+  if (!Number.isFinite(d) || d < 1e-6) {
+    const z: StrategyRiskRewardVerdict = '비효율'
+    return {
+      pureRatio: 0,
+      weightedRatio: 0,
+      expectedProbWeightedRatio: 0,
+      pureVerdict: z,
+      weightedVerdict: z,
+      expectedProbWeightedVerdict: z,
+    }
+  }
+  const sellFrac = Math.min(100, Math.max(0, params.firstTakeProfitSellPct)) / 100
+  const pureReward = params.finalTargetPct
+  const weightedReward =
+    params.firstTakeProfitPct * sellFrac + params.finalTargetPct * (1 - sellFrac)
+  const p1 = Math.min(100, Math.max(0, params.prob1M)) / 100
+  const p3 = Math.min(100, Math.max(0, params.prob3M)) / 100
+  const expectedReward =
+    params.firstTakeProfitPct * p1 + params.finalTargetPct * p3
+
+  const pureRatio = pureReward / d
+  const weightedRatio = weightedReward / d
+  const expectedProbWeightedRatio = expectedReward / d
+
+  return {
+    pureRatio: Number(pureRatio.toFixed(3)),
+    weightedRatio: Number(weightedRatio.toFixed(3)),
+    expectedProbWeightedRatio: Number(expectedProbWeightedRatio.toFixed(3)),
+    pureVerdict: verdictForPctRiskReward(pureRatio),
+    weightedVerdict: verdictForPctRiskReward(weightedRatio),
+    expectedProbWeightedVerdict: verdictForPctRiskReward(expectedProbWeightedRatio),
+  }
+}
+
+/** `calculateThreeMonthStrategy` 와 동일한 1차 익절 분할 비율 규칙 */
+export function resolveFirstTakeProfitSellPct(
+  _rsi14: number,
+  _finalScore: number,
+  _supplyScore: number,
+): number {
+  return 50
 }
 
 function maxPositionBase(strategy: Strategy): number {
@@ -851,6 +1093,7 @@ export function calculateMaxPosition(input: ExecutionInput): number {
   max = clamp(max, 0, 20)
 
   if (input.strategy === 'BUY' && input.rsi14 >= 80) max = Math.min(max, 5)
+  if (input.strategy === 'BUY_AGGRESSIVE' && input.rsi14 >= 85) max = Math.min(max, 8)
   if (input.riskRewardRatio < 1) max = Math.min(max, 3)
 
   return max
@@ -866,6 +1109,8 @@ function recommendedBase(strategy: Strategy): number {
       return 0
     case 'HOLD':
       return 8
+    case 'BUY_AGGRESSIVE':
+      return 15
     case 'BUY':
       return 12
     default:
@@ -924,6 +1169,7 @@ export function calculateRiskAmount(
 }
 
 export function getActionLabel(input: ExecutionInput): string {
+  if (input.strategy === 'BUY_AGGRESSIVE' && input.entryStage === 'ACCEPT') return '펀더멘털 강세 적극 진입 검토'
   if (input.rsi14 >= 80) return '과열권 익절 우선'
   if (input.atrDistance >= 3.5) return '추격매수 금지'
   if (input.riskRewardRatio < 1) return '손익비 부족'
@@ -963,224 +1209,9 @@ function buildSummary(recommendedPositionPct: number): string {
   return '조건은 보통 수준입니다. 비중은 최대 한도 안에서 조절하세요.'
 }
 
-const THREE_M_ALLOWED_PCT = [0, 5, 8, 10, 15, 20] as const
-
-function snapThreeMonthPositionPct(raw: number, cap: number): number {
-  const v = Math.max(0, Math.min(raw, cap))
-  let best = 0
-  for (const a of THREE_M_ALLOWED_PCT) {
-    if (a <= v && a >= best) best = a
-  }
-  return best
-}
-
-function resolveThreeMonthEntryDecision(input: ThreeMonthStrategyInput): string {
-  const { finalScore, executionScore, rsi14, atrDistance, strategy } = input
-
-  if (strategy === 'REJECT' || finalScore < 55) return '제외'
-  if (strategy === 'TAKE_PROFIT' || rsi14 >= 80) return '분할익절'
-  if (strategy === 'WATCH_ONLY') return '관망'
-  if (strategy === 'HOLD') return '보유 유지'
-  if (
-    finalScore >= 75 &&
-    executionScore >= 65 &&
-    rsi14 < 75 &&
-    atrDistance < 2.5
-  ) {
-    return '신규진입 가능'
-  }
-  if (finalScore >= 75 && executionScore < 65) return '눌림 대기'
-  if (finalScore >= 75) return '눌림 대기'
-  return '눌림 대기'
-}
-
-/** 3개월 +15% 실행 규칙 (현재가·지표 기반) */
+/** 3개월 +15% 실행 규칙 — `src/lib/strategy/` 단일 원천 */
 export function calculateThreeMonthStrategy(input: ThreeMonthStrategyInput): ThreeMonthStrategy {
-  const {
-    currentPrice: price,
-    finalScore,
-    executionScore,
-    supplyScore,
-    rsi14,
-    atrDistance,
-    atr14,
-    marketStatus,
-    marketScore,
-    riskRewardRatio,
-    supportPrice,
-    consensusAvgTargetPrice,
-    consensusMaxTargetPrice,
-  } = input
-
-  const warnings: string[] = []
-  const entryDecision = resolveThreeMonthEntryDecision(input)
-
-  const stopCalc = calculateStopPrice({
-    currentPrice: price,
-    atr14,
-    supportPrice,
-    recentLow20: Math.round(price * 0.94),
-    finalScore,
-    executionScore,
-    marketScore,
-    rsi14,
-    atrDistance,
-    riskRewardRatio,
-    marketStatus,
-  })
-  const stopPrice = stopCalc.stopPrice
-  const stopLossPct = stopCalc.stopLossPct
-  const stopReason = stopCalc.reason
-
-  let rec = 0
-  if (entryDecision === '제외' || entryDecision === '분할익절') {
-    rec = 0
-  } else if (entryDecision === '보유 유지') {
-    rec = 0
-  } else if (entryDecision === '관망') {
-    rec = 5
-  } else if (entryDecision === '눌림 대기') {
-    rec = 5
-  } else if (entryDecision === '신규진입 가능') {
-    rec = 10
-    if (finalScore >= 85 && supplyScore >= 75 && riskRewardRatio >= 2) rec = 15
-    if (finalScore >= 85 && marketStatus === 'RiskOn' && executionScore >= 80) rec = 20
-  }
-
-  let cap = 20
-  if (rsi14 >= 80) cap = 0
-  else if (rsi14 >= 75) cap = 8
-  if (marketStatus === 'Caution') cap = Math.min(cap, 10)
-  if (riskRewardRatio < 1.5) cap = Math.min(cap, 5)
-
-  if (stopLossPct < -6.5) {
-    cap = Math.min(cap, 10)
-    rec = Math.min(rec, 10)
-  }
-  if (stopLossPct < -6.85) {
-    cap = Math.min(cap, 5)
-    rec = Math.min(rec, 5)
-  }
-
-  const recommendedPositionPct = snapThreeMonthPositionPct(rec, cap)
-
-  const firstTakeProfitPrice = Math.round(price * 1.09)
-  const firstTakeProfitPct = 9
-  let firstTakeProfitSellPct = 30
-  if (rsi14 >= 75) firstTakeProfitSellPct = 50
-  else if (finalScore >= 85 && supplyScore >= 75) firstTakeProfitSellPct = 25
-
-  let finalTargetPrice = Math.round(price * 1.15)
-  if (finalTargetPrice <= price) {
-    finalTargetPrice = Math.ceil(price * 1.15)
-  }
-  const finalTargetPct = 15
-
-  const consensusMsgs: string[] = []
-  const hasAvg =
-    consensusAvgTargetPrice != null &&
-    consensusAvgTargetPrice > 0 &&
-    Number.isFinite(consensusAvgTargetPrice)
-  const hasMax =
-    consensusMaxTargetPrice != null &&
-    consensusMaxTargetPrice > 0 &&
-    Number.isFinite(consensusMaxTargetPrice)
-
-  if (hasAvg) {
-    const avg = consensusAvgTargetPrice as number
-    if (price > avg) {
-      consensusMsgs.push(
-        '현재가가 컨센서스 평균 목표가를 이미 초과했습니다. 목표가는 모멘텀 기준으로 보되, 밸류에이션 부담을 확인해야 합니다.',
-      )
-    } else if (avg > price) {
-      const consensusUpsidePct = ((avg / price) - 1) * 100
-      if (consensusUpsidePct < 8) {
-        consensusMsgs.push(
-          '컨센서스 기준 상승여력은 제한적입니다. 단기 모멘텀 중심으로 접근해야 합니다.',
-        )
-      }
-      if (consensusUpsidePct >= 15) {
-        consensusMsgs.push('컨센서스 기준으로도 15% 내외 상승여력이 남아 있습니다.')
-      }
-    }
-  }
-
-  if (hasMax && finalTargetPrice > (consensusMaxTargetPrice as number)) {
-    consensusMsgs.push(
-      '3개월 +15% 목표가가 컨센서스 최고 목표가를 초과합니다. 목표 달성에는 강한 실적·수급 모멘텀이 필요합니다.',
-    )
-  }
-
-  const consensusNote = consensusMsgs.join(' ')
-  for (const m of consensusMsgs) {
-    warnings.push(m)
-  }
-
-  if (rsi14 >= 80) {
-    warnings.push('RSI 80 이상 — 추격매수 금지.')
-  }
-  if (atrDistance >= 3.5) {
-    warnings.push('ATR 이격 3.5 이상 — 추격매수 금지.')
-  }
-  if (marketScore < 45) {
-    warnings.push('시장 점수가 낮습니다.')
-  }
-
-  let reviewDays = 20
-  if (marketStatus === 'Caution') reviewDays = 10
-  else if (finalScore >= 85 && executionScore >= 70) reviewDays = 30
-
-  const timeStopRule = [
-    `${reviewDays}거래일 내 +5% 미달 시 재평가`,
-    '60거래일 내 +15% 미달 시 정리 또는 재선정',
-  ].join('\n')
-
-  const addParts: string[] = []
-  if (rsi14 >= 75 || atrDistance >= 2.5) {
-    addParts.push('추가매수 금지(RSI·ATR 조건).')
-  } else if (entryDecision === '제외' || entryDecision === '분할익절') {
-    addParts.push('추가매수 금지.')
-  } else if (entryDecision === '눌림 대기') {
-    addParts.push('20일선·주요 지지선 근처에서만 추가매수.')
-  } else if (entryDecision === '신규진입 가능') {
-    addParts.push('수익 +3% 확인 후 거래량 증가·수급 유지 시 5% 추가 가능.')
-  } else {
-    addParts.push('추가매수는 조건 충족 시에만 검토.')
-  }
-  addParts.push('손실 중 물타기 금지.')
-  const addBuyRule = addParts.join(' ')
-
-  let summary: string
-  if (entryDecision === '제외') {
-    summary = '신규 진입 제외. 조건 개선 시 다시 확인하세요.'
-  } else if (entryDecision === '분할익절') {
-    summary = `과열·익절 구간 — ${firstTakeProfitSellPct}% 분할 매도를 우선 검토하세요.`
-  } else if (entryDecision === '관망') {
-    summary = `관망 위주 — 비중 ${recommendedPositionPct}% 이하로 제한하세요.`
-  } else if (entryDecision === '보유 유지') {
-    summary = `보유 유지 — 신규 비중 ${recommendedPositionPct}%, 손절 ${stopLossPct.toFixed(1)}%, +9%에서 ${firstTakeProfitSellPct}% 익절, 목표 +${finalTargetPct.toFixed(0)}%는 최대 3개월.`
-  } else {
-    summary = `${recommendedPositionPct}% 비중으로 진입, ${stopLossPct.toFixed(1)}% 손절, +9%에서 ${firstTakeProfitSellPct}% 익절, +${finalTargetPct.toFixed(0)}%는 3개월 내 목표.`
-  }
-
-  return {
-    entryDecision,
-    recommendedPositionPct,
-    stopPrice,
-    stopLossPct,
-    stopReason,
-    firstTakeProfitPrice,
-    firstTakeProfitPct,
-    firstTakeProfitSellPct,
-    finalTargetPrice,
-    finalTargetPct,
-    maxHoldingPeriod: '최대 3개월(약 60거래일)',
-    timeStopRule,
-    addBuyRule,
-    summary,
-    consensusNote,
-    warnings,
-  }
+  return computeExecutionStrategy(fromThreeMonthStrategyInput(input))
 }
 
 export function calculateExecutionPlan(input: ExecutionInput): ExecutionPlan {
@@ -1242,4 +1273,31 @@ export function calculateExecutionPlan(input: ExecutionInput): ExecutionPlan {
     summary,
     warnings,
   }
+}
+
+export function marketScoreFromLogicIndicators(
+  d: LogicMarketSignals | null | undefined,
+): number {
+  const n = d?.marketScore
+  if (typeof n === 'number' && Number.isFinite(n)) {
+    return Math.round(Math.max(1, Math.min(99, n)))
+  }
+  const h = d?.marketHeadline || ''
+  if (h.includes('변동성 확대')) return 44
+  if (h.includes('약세장')) return 38
+  if (h.includes('조정장')) return 47
+  if (h.includes('강세장')) return 78
+  if (d?.market?.includes('Risk-On')) return 78
+  if (d?.market?.includes('Risk-Off')) return 40
+  if (d?.market?.includes('Caution')) return 42
+  return 60
+}
+
+export function marketStatusFromLogicIndicators(
+  d: LogicMarketSignals | null | undefined,
+): MarketStatus {
+  const s = marketScoreFromLogicIndicators(d)
+  if (s >= 72) return 'RiskOn'
+  if (s <= 44) return 'Caution'
+  return 'Neutral'
 }

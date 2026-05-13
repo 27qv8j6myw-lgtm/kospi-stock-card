@@ -34,7 +34,9 @@ function summaryLineWithoutTicker(memo: DetailedInvestmentMemoResult): string {
       .trim()
     if (cleaned) return cleaned
   }
-  const blob = [memo.paragraphs.join(' '), memo.keyPoints.join(' '), memo.strategyComment]
+  const paras = memo.paragraphs ?? []
+  const kps = memo.keyPoints ?? []
+  const blob = [paras.join(' '), kps.join(' '), memo.strategyComment ?? '']
     .join(' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -62,7 +64,9 @@ function conciseStrategyLine(memo: DetailedInvestmentMemoResult): string {
   if (memo.atAGlanceStrategy && memo.atAGlanceStrategy.trim()) {
     return firstSentence(memo.atAGlanceStrategy.replace(/^전략[:\s]*/u, '').trim(), 34)
   }
-  const sc = memo.strategyComment.replace(/\s+/g, ' ').trim()
+  const sc = String(memo.strategyComment ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
   if (!sc) return '핵심 지지 확인 후 대응'
   if (sc.includes('익절')) return '분할 익절 중심 대응'
   if (sc.includes('관망')) return '관망, 신호 확인 후 접근'

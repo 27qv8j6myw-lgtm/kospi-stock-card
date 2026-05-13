@@ -94,14 +94,14 @@ export function StockNameSearch({
         className={
           compact
             ? 'sr-only'
-            : 'mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500'
+            : 'mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-secondary'
         }
       >
         종목 검색
       </label>
       <div className="relative">
         <Search
-          className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-sky-500/70"
+          className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-info-text/70"
           strokeWidth={2}
         />
         <input
@@ -125,16 +125,16 @@ export function StockNameSearch({
             setOpen(true)
           }}
           onKeyDown={onKeyDown}
-          className="w-full rounded-xl border border-slate-200/95 bg-white/90 py-2.5 pl-11 pr-3.5 text-[15px] text-slate-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] outline-none ring-sky-400/20 placeholder:text-slate-400 focus:border-sky-400/55 focus:ring-2"
+          className="w-full rounded-xl border border-default/95 bg-card/90 py-2.5 pl-11 pr-3.5 text-[15px] text-primary shadow-[inset_0_1px_0_rgba(255,255,255,0.85)] outline-none ring-info-text/20 placeholder:text-tertiary focus:border-info-text/55 focus:ring-2"
         />
       </div>
-      {loadError ? <p className="mt-2 text-xs text-rose-600">{loadError}</p> : null}
+      {loadError ? <p className="mt-2 text-xs text-danger-text">{loadError}</p> : null}
 
       {open && value.trim() && results.length > 0 ? (
         <ul
           id={listId + '-listbox'}
           role="listbox"
-          className="absolute z-50 mt-2 max-h-72 w-full overflow-auto rounded-xl border border-slate-200/95 bg-white/95 py-1.5 shadow-[var(--shadow-signal-soft)] backdrop-blur-xl"
+          className="absolute z-50 mt-2 max-h-72 w-full overflow-auto rounded-xl border border-default/95 bg-card/95 py-1.5 shadow-[var(--shadow-signal-soft)] backdrop-blur-xl"
         >
           {results.map((row, i) => (
             <li key={row.c} role="presentation">
@@ -144,15 +144,15 @@ export function StockNameSearch({
                 aria-selected={i === active}
                 className={`flex w-full flex-col items-start gap-0.5 px-3.5 py-2.5 text-left text-sm transition-colors ${
                   i === active
-                    ? 'bg-sky-50 text-sky-950'
-                    : 'text-slate-800 hover:bg-slate-50'
+                    ? 'bg-info-bg text-primary'
+                    : 'text-primary hover:bg-neutral-bg'
                 }`}
                 onMouseEnter={() => setActive(i)}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => pick(row)}
               >
                 <span className="font-semibold tracking-tight">{row.n}</span>
-                <span className="font-mono text-xs tabular-nums text-slate-500">
+                <span className="font-mono text-xs tabular-nums text-secondary">
                   {row.c}
                 </span>
               </button>
@@ -162,7 +162,7 @@ export function StockNameSearch({
       ) : null}
 
       {open && value.trim() && !loadError && results.length === 0 ? (
-        <p className="absolute z-40 mt-2 w-full rounded-xl border border-slate-200/90 bg-white px-3.5 py-2.5 text-sm text-slate-500 shadow-md">
+        <p className="absolute z-40 mt-2 w-full rounded-xl border border-default/90 bg-card px-3.5 py-2.5 text-sm text-secondary shadow-md">
           일치하는 종목이 없습니다.
         </p>
       ) : null}

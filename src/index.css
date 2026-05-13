@@ -1,50 +1,113 @@
 @import 'tailwindcss';
 
-@font-face {
-  font-family: 'Pretendard';
-  font-weight: 45 920;
-  font-display: swap;
-  src: url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/woff2/PretendardVariable.woff2')
-    format('woff2-variations');
-}
+@import './styles/tokens.css';
+@import './styles/globals.css';
 
+@config '../tailwind.config.ts';
+
+/**
+ * Tailwind v4 @theme — utilities는 여기서 생성.
+ * 원시 값은 tokens.css :root (단일 출처).
+ */
 @theme {
-  --font-sans: 'Pretendard', ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --color-signal-bg: #f1f5f9;
-  --color-signal-surface: rgba(255, 255, 255, 0.82);
-  --color-signal-border: rgba(15, 23, 42, 0.08);
-  --shadow-signal-soft: 0 18px 48px -24px rgba(15, 23, 42, 0.14);
-  --shadow-signal-glow: 0 0 40px -12px rgba(14, 165, 233, 0.2);
+  /* —— Colors —— */
+  --color-app: var(--bg-app);
+  --color-card: var(--bg-card);
+  --color-card-elevated: var(--bg-card-elevated);
+
+  --color-primary: var(--fg-primary);
+  --color-secondary: var(--fg-secondary);
+  --color-tertiary: var(--fg-tertiary);
+
+  --color-success-bg: var(--success-bg);
+  --color-success-text: var(--success-text);
+  --color-warning-bg: var(--warning-bg);
+  --color-warning-text: var(--warning-text);
+  --color-danger-bg: var(--danger-bg);
+  --color-danger-text: var(--danger-text);
+  --color-info-bg: var(--info-bg);
+  --color-info-text: var(--info-text);
+  --color-neutral-bg: var(--neutral-bg);
+  --color-neutral-text: var(--neutral-text);
+
+  --color-icon-blue-bg: var(--icon-blue-bg);
+  --color-icon-blue: var(--icon-blue-fg);
+  --color-icon-green-bg: var(--icon-green-bg);
+  --color-icon-green: var(--icon-green-fg);
+  --color-icon-orange-bg: var(--icon-orange-bg);
+  --color-icon-orange: var(--icon-orange-fg);
+  --color-icon-purple-bg: var(--icon-purple-bg);
+  --color-icon-purple: var(--icon-purple-fg);
+  --color-icon-pink-bg: var(--icon-pink-bg);
+  --color-icon-pink: var(--icon-pink-fg);
+  --color-icon-yellow-bg: var(--icon-yellow-bg);
+  --color-icon-yellow: var(--icon-yellow-fg);
+  --color-icon-cyan-bg: var(--icon-cyan-bg);
+  --color-icon-cyan: var(--icon-cyan-fg);
+  --color-icon-rose-bg: var(--icon-rose-bg);
+  --color-icon-rose: var(--icon-rose-fg);
+
+  --color-price-up: var(--price-up);
+  --color-price-down: var(--price-down);
+
+  /* —— Fonts —— */
+  --font-sans: var(--family-sans-kr);
+  --font-sans-kr: var(--family-sans-kr);
+  --font-sans-en: var(--family-sans-en);
+  --font-mono: var(--family-mono);
+
+  /* —— Font sizes —— */
+  --text-xxs: 0.625rem;
+  --text-xxs--line-height: 1.35;
+  --text-xs: 0.6875rem;
+  --text-xs--line-height: 1.4;
+  --text-sm: 0.75rem;
+  --text-sm--line-height: 1.45;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.55;
+  --text-md: 0.9375rem;
+  --text-md--line-height: 1.5;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.45;
+  --text-xl: 1.375rem;
+  --text-xl--line-height: 1.35;
+  --text-2xl: 1.75rem;
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 2rem;
+  --text-3xl--line-height: 1.2;
+
+  /* —— Font weights —— */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* —— Spacing (named) —— */
+  --spacing-card-gap: var(--spacing-card-gap);
+  --spacing-section-gap: var(--spacing-section-gap);
+  --spacing-card-padding: var(--spacing-card-padding);
+
+  /* —— Radius —— */
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --radius-2xl: var(--radius-2xl);
+
+  /* —— Shadows —— */
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+  --shadow-card: var(--shadow-card);
+  --shadow-hover: var(--shadow-hover);
+  --shadow-card-elevated: var(--shadow-card-elevated);
+
+  /* —— Border colors —— */
+  --border-color-light: var(--border-light);
+  --border-color-default: var(--border-default);
+  --border-color-medium: var(--border-medium);
 }
 
 * {
   box-sizing: border-box;
-}
-
-html {
-  color-scheme: light;
-}
-
-body {
-  margin: 0;
-  min-height: 100svh;
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  background-color: var(--color-signal-bg);
-  color: #0f172a;
-}
-
-::selection {
-  background: rgba(14, 165, 233, 0.18);
-  color: #0f172a;
-}
-
-/* Reference: light grey page, white cards */
-.signal-backdrop {
-  background: #f3f4f6;
-}
-
-.tabular-nums-strong {
-  font-variant-numeric: tabular-nums lining-nums;
 }

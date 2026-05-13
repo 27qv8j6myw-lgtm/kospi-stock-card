@@ -250,13 +250,17 @@ function buildParagraph5(input: DetailedBriefingInput): string {
     '손절은 시스템이 제시한 스탑 구간을 먼저 확인하고, +9% 부근 분할익절·최종 +15% 목표는 규칙대로 분리해 관리하는 편이 맞습니다.',
   )
 
-  if (entryDecision === '신규진입 가능') {
+  if (entryDecision === '신규진입 가능' || entryDecision === '신규 매수') {
     parts.push('추격보다는 호가·거래량 확인 후 분할 매수를 염두에 두는 쪽이 리스크 대비 효율이 나을 수 있습니다.')
+  } else if (entryDecision === '적극 매수') {
+    parts.push('펀더멘털이 견조할 때는 단기 과열 구간에서도 비중 상한 내 분할 적극 진입을 검토할 수 있습니다.')
   } else if (entryDecision === '눌림 대기') {
     parts.push('지지·거래대금이 붙는 눌림이 나올 때까지 기다리는 시나리오가 전제에 가깝습니다.')
-  } else if (entryDecision === '관망') {
+  } else if (entryDecision === '분할 매수') {
+    parts.push('비중 절반·손절 타이트 전제로 지지 확인 후 분할 접근이 리스크 대비 균형에 맞습니다.')
+  } else if (entryDecision === '관망' || entryDecision === '관망 (과열)') {
     parts.push('신규 비중 확대보다는 이벤트·실적 확인 후 재평가 쪽이 메모 톤과 맞습니다.')
-  } else if (entryDecision === '분할익절') {
+  } else if (entryDecision === '분할익절' || entryDecision === '분할 익절' || entryDecision === '전량 익절') {
     parts.push('과열·익절 구간에 가깝다면 신규보다는 보유 비중 정리·분할 매도를 우선 점검할 만합니다.')
   } else if (entryDecision === '보유 유지') {
     parts.push('추가 매수보다는 기존 포지션의 손절·익절 규칙 준수가 중심이 됩니다.')
@@ -273,12 +277,16 @@ function deriveTone(input: DetailedBriefingInput): AIBriefingTone {
     rsi14 >= 75 ||
     atrDistance >= 3.5 ||
     entryDecision === '분할익절' ||
+    entryDecision === '분할 익절' ||
+    entryDecision === '전량 익절' ||
     entryDecision === '제외' ||
+    entryDecision === '회피' ||
+    entryDecision === '관망 (과열)' ||
     (entryDecision === '관망' && finalScore < 65)
   ) {
     return 'caution'
   }
-  if (finalScore >= 78 && rsi14 < 73 && (entryDecision === '신규진입 가능' || entryDecision === '보유 유지')) {
+  if (finalScore >= 78 && rsi14 < 73 && (entryDecision === '신규진입 가능' || entryDecision === '보유 유지' || entryDecision === '신규 매수' || entryDecision === '적극 매수')) {
     return 'bullish'
   }
   return 'neutral'
@@ -347,17 +355,21 @@ export function generateDetailedInvestmentMemo(
           ? '변동성 점검 구간'
           : '중립 흐름',
     atAGlanceStrategy:
-      input.entryDecision === '분할익절'
+      input.entryDecision === '분할익절' || input.entryDecision === '분할 익절' || input.entryDecision === '전량 익절'
         ? '분할 익절 중심 대응'
-        : input.entryDecision === '관망'
+        : input.entryDecision === '관망' || input.entryDecision === '관망 (과열)'
           ? '관망, 신호 확인 후 접근'
           : input.entryDecision === '보유 유지'
             ? '보유 유지, 이탈 시 정리'
-            : input.entryDecision === '신규진입 가능'
+            : input.entryDecision === '신규진입 가능' || input.entryDecision === '신규 매수'
               ? '눌림 확인 후 분할 진입'
-              : input.entryDecision === '제외'
-                ? '제외 관점 유지'
-                : '손절·익절 규칙 준수',
+              : input.entryDecision === '적극 매수'
+                ? '펀더 강세, 적극 분할 진입'
+                : input.entryDecision === '분할 매수'
+                ? '조건부 분할 진입'
+                : input.entryDecision === '제외' || input.entryDecision === '회피'
+                  ? '제외 관점 유지'
+                  : '손절·익절 규칙 준수',
     paragraphs,
     keyPoints: buildKeyPoints(input, ups),
     risks: buildRisks(input, ups),

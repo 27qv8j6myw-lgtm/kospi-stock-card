@@ -2,21 +2,49 @@ import {
   calculateConsensusScore,
   calculateConsensusUpside,
   calculateFinalScore,
-  calculateRiskReward,
   calculateSectorFlowScore,
   calculateSupplyScore,
-  calculateStopPrice,
-  calculateTargetPrices,
   calculateThreeMonthStrategy,
   calculateValuationScore,
-  formatKrwAmountToEok,
-  getEntryStage,
-  getFinalGrade,
+  computeStrategyRiskRewardMetrics,
+  calculateStopPrice,
+  calculateTargetPrices,
+  getEntryStageCode,
   getStrategy,
+  resolveFirstTakeProfitSellPct,
   sectorFlowMainTitle,
   sectorFlowStatusFromScore,
   sectorFlowSubLines,
+  summarizeExecutionUi,
 } from './signalLogic'
+import type { Strategy } from '../types/stock'
+import { buildValuationCardModel } from './valuationCard'
+import {
+  buildConsensusDrawerBody,
+} from './consensusPresentation'
+import { marketCardAccentFromHeadline, marketPrimaryKorean } from './marketCardPresentation'
+import {
+  buildSupplyDrawerBody,
+  supplyCardAccentFromFiSum,
+} from './supplyFlowTone'
+import {
+  parseAtrDistanceValue,
+  resolveAtrDistanceRiskVisual,
+  resolveIndicatorRiskVisual,
+  resolveStatsRiskVisual,
+} from './metricRiskVisual'
+import {
+  atrMaGapInterpretSub,
+  candleQualityInterpretSub,
+  consecutiveRiseInterpretSub,
+  executionInterpretSub,
+  indicatorRsiMfiInterpretSub,
+  sectorFiveDayVsMarketSub,
+  statisticsAvg20InterpretSub,
+  structureInterpretSub,
+  structureStateInterpretSub,
+  valuationPremiumInterpretSub,
+} from './indicatorInterpretSubs'
 import type {
   ChartPoint,
   ExecutionCard,
@@ -105,13 +133,13 @@ export function generateIntradaySeries(params: {
 }
 
 export const foreignNetShares3D = -380_000
-export const foreignNetAmount3D = -12_000_000_000
+export const foreignNetAmount3D = -4_800_000_000_000
 export const institutionNetShares3D = 280_000
-export const institutionNetAmount3D = 8_000_000_000
+export const institutionNetAmount3D = 743_200_000_000
 export const retailNetShares3D = 95_000
 export const retailNetAmount3D = 4_000_000_000
-export const foreignNetAmount5D = -11_000_000_000
-export const institutionNetAmount5D = 7_500_000_000
+export const foreignNetAmount5D = -4_900_000_000_000
+export const institutionNetAmount5D = 720_000_000_000
 export const retailNetAmount5D = 3_500_000_000
 export const supplyPeriod = '직전 3거래일 누적'
 const supplyScore = calculateSupplyScore({
@@ -159,9 +187,9 @@ const scoreInputs: ScoreInputs = {
 }
 
 const score = calculateFinalScore(scoreInputs)
-const grade = getFinalGrade(score)
-const strategy = getStrategy(score, 47, scoreInputs.execution)
-const entryStage = getEntryStage(score, strategy)
+const strategy = getStrategy(score, 47, scoreInputs.execution) as Strategy
+const entryStageCode = getEntryStageCode(strategy, score, scoreInputs.execution)
+const executionUi = summarizeExecutionUi(strategy, entryStageCode)
 export const targetStopInput: TargetStopInput = {
   currentPrice: 79_800,
   atr14: 2_930,
@@ -174,11 +202,11 @@ export const targetStopInput: TargetStopInput = {
   finalScore: score,
   executionScore: scoreInputs.execution,
   atrDistance: 2.8,
-  riskRewardRatio: 1.7,
   marketStatus: 'Neutral',
 }
 export const consensusAvgTargetPrice = 91_000
 export const consensusMaxTargetPrice = 105_000
+export const consensusMinTargetPrice = 84_000
 export const analystCount = 12
 export const lastConsensusUpdate = 12
 export const trailingPER = 24.8
@@ -192,8 +220,30 @@ const consensusUpside = calculateConsensusUpside(
   consensusAvgTargetPrice,
   consensusMaxTargetPrice,
 )
+const mockConsensusDispersionWidthPct =
+  consensusAvgTargetPrice > 0
+    ? ((consensusMaxTargetPrice - consensusMinTargetPrice) / consensusAvgTargetPrice) * 100
+    : 0
+const mockConsensusHighSkewPct =
+  consensusAvgTargetPrice > 0
+    ? ((consensusMaxTargetPrice - consensusAvgTargetPrice) / consensusAvgTargetPrice) * 100
+    : 0
+const mockConsensusLowSkewPct =
+  consensusAvgTargetPrice > 0
+    ? ((consensusAvgTargetPrice - consensusMinTargetPrice) / consensusAvgTargetPrice) * 100
+    : 0
 export const consensusUpsideAvgPct = consensusUpside.avgUpsidePct
 export const consensusUpsideMaxPct = consensusUpside.maxUpsidePct
+
+const mockValuationCardModel = buildValuationCardModel({
+  trailingPER,
+  price: targetStopInput.currentPrice,
+  eps: targetStopInput.currentPrice / trailingPER,
+  pbr: 1.35,
+  sectorName: '반도체',
+  consensusAvgUpsidePct: consensusUpside.avgUpsidePct,
+  fetchedAt: new Date(Date.now() - 12 * 86_400_000).toISOString(),
+})!
 const consensusScore = calculateConsensusScore({
   currentPrice: targetStopInput.currentPrice,
   avgTargetPrice: consensusAvgTargetPrice,
@@ -201,13 +251,7 @@ const consensusScore = calculateConsensusScore({
   analystCount,
   lastConsensusUpdateDays: lastConsensusUpdate,
 })
-const valuationScore = calculateValuationScore({
-  trailingPER,
-  forwardPER,
-  forwardEPSGrowthPct,
-  sectorAveragePER,
-  historicalPERPercentile,
-})
+const valuationScore = calculateValuationScore(mockValuationCardModel.valuationInputs)
 const stopCalc = calculateStopPrice(targetStopInput)
 const targetPriceDemoInput: TargetPriceInput = {
   currentPrice: targetStopInput.currentPrice,
@@ -226,14 +270,23 @@ const targetPriceDemoInput: TargetPriceInput = {
   consensusAvgTargetPrice,
   consensusMaxTargetPrice,
   marketStatus: targetStopInput.marketStatus,
+  stopPrice: stopCalc.stopPrice,
 }
 const targetPriceDemoResult = calculateTargetPrices(targetPriceDemoInput)
-const rr = calculateRiskReward(
-  targetStopInput.currentPrice,
-  stopCalc.stopPrice,
-  targetPriceDemoResult.targets.find((t) => t.label === '1M')?.targetPrice ??
-    targetStopInput.currentPrice,
-)
+const demoT1m = targetPriceDemoResult.targets.find((t) => t.label === '1M')
+const demoT3m = targetPriceDemoResult.targets.find((t) => t.label === '3M')
+const rrDemo = computeStrategyRiskRewardMetrics({
+  stopLossPct: stopCalc.stopLossPct,
+  firstTakeProfitPct: 9,
+  firstTakeProfitSellPct: resolveFirstTakeProfitSellPct(
+    targetStopInput.rsi14,
+    score,
+    scoreInputs.supply,
+  ),
+  finalTargetPct: 15,
+  prob1M: demoT1m?.probability ?? 0,
+  prob3M: demoT3m?.probability ?? 0,
+})
 export const executionInput: ExecutionInput = {
   currentPrice: targetStopInput.currentPrice,
   finalScore: score,
@@ -252,7 +305,7 @@ export const executionInput: ExecutionInput = {
   consecutiveRiseDays: 2,
   stopPrice: stopCalc.stopPrice,
   stopLossPct: stopCalc.stopLossPct,
-  riskRewardRatio: rr.ratio,
+  riskRewardRatio: rrDemo.weightedRatio,
   marketStatus: targetStopInput.marketStatus,
   strategy: strategy as ExecutionInput['strategy'],
   entryStage: 'WATCH',
@@ -261,6 +314,7 @@ export const executionInput: ExecutionInput = {
 
 export const mockThreeMonthStrategy: ThreeMonthStrategy = calculateThreeMonthStrategy({
   currentPrice: targetStopInput.currentPrice,
+  structureScore: scoreInputs.structure,
   finalScore: score,
   executionScore: scoreInputs.execution,
   supplyScore: scoreInputs.supply,
@@ -270,10 +324,16 @@ export const mockThreeMonthStrategy: ThreeMonthStrategy = calculateThreeMonthStr
   strategy: strategy as ExecutionInput['strategy'],
   marketStatus: targetStopInput.marketStatus,
   marketScore: 60,
-  riskRewardRatio: rr.ratio,
+  riskRewardRatio: rrDemo.weightedRatio,
   supportPrice: targetStopInput.supportPrice ?? Math.round(targetStopInput.currentPrice * 0.95),
   consensusAvgTargetPrice: consensusAvgTargetPrice,
   consensusMaxTargetPrice: consensusMaxTargetPrice,
+  sectorName: '반도체',
+  operatingMarginTtmPct: 20,
+  forwardPer: forwardPER,
+  fiveYearAvgPer: sectorAveragePER,
+  epsGrowthYoYPct: forwardEPSGrowthPct,
+  trailingPer: trailingPER,
 })
 
 export const stockInfo: StockInfo = {
@@ -284,30 +344,30 @@ export const stockInfo: StockInfo = {
   price: 79_800,
   change: 700,
   changePercent: 0.88,
-  investmentBadge: 'HOLD',
+  investmentBadge: executionUi.strategyLabelKo,
   asOfDate: '2025.05.31 기준',
 }
 
 export const summaryInfo: SummaryInfo = {
   title: '지금은 보유가 더 좋은 구간',
   description: '일부 점수는 유지되나 신규 진입 근거는 아직 부족',
-  finalGrade: grade,
-  strategy: 'HOLD',
-  entryStage,
+  strategy,
+  entryStageCode,
+  executionUi,
   reason: '일부 점수는 유지되나 진입 근거 부족',
 }
 
 export const chartByTimeframe: Record<Timeframe, ChartPoint[]> = {
-  '3D': [
-    { label: '09:00', value: 79_150 },
+  '1D': [
+    { label: '09:05', value: 79_150 },
     { label: '10:00', value: 79_280 },
     { label: '11:00', value: 79_100 },
     { label: '12:00', value: 79_260 },
     { label: '13:00', value: 79_380 },
     { label: '14:00', value: 79_600 },
-    { label: '15:00', value: 79_800 },
+    { label: '15:30', value: 79_800 },
   ],
-  '1W': [
+  '5D': [
     { label: '월', value: 78_300 },
     { label: '화', value: 78_900 },
     { label: '수', value: 79_200 },
@@ -336,26 +396,154 @@ export const chartByTimeframe: Record<Timeframe, ChartPoint[]> = {
   ],
 }
 
+const mockMarketHeadline = '박스권 (Sideways)'
+const mockMarketDetail = `KOSPI 20일 추세 +0.4%, 횡보 (KOSPI200 ETF 일봉)
+현재가 대비 20MA +0.2% · 60MA n/a
+외국인 누적(ETF 069500 프록시) 5일 +120.0억 · 20일 +85.0억`
+
+const mockConsensusDrawerSource = {
+  maxTargetPrice: consensusMaxTargetPrice,
+  minTargetPrice: consensusMinTargetPrice,
+  consensusAvgTrend12wPct: 22,
+  dispersionWidthPct: mockConsensusDispersionWidthPct,
+  dispersionHighSkewPct: mockConsensusHighSkewPct,
+  dispersionLowSkewPct: mockConsensusLowSkewPct,
+  dispersionLabelKo: mockConsensusDispersionWidthPct <= 20 ? '컨센서스 수렴' : '컨센서스 분포 보통',
+  revision7dUp: 4,
+  revision7dDown: 0,
+  consensusTrendNote: null as string | null,
+}
+
+const mockSupplyFiSum = foreignNetAmount3D + institutionNetAmount3D
+const mockSupplyRiskStrip: LogicMetric['riskStrip'] =
+  mockSupplyFiSum < -5000 * 100_000_000
+    ? 'orange'
+    : mockSupplyFiSum < -2000 * 100_000_000
+      ? 'warning'
+      : 'neutral'
+
+const mockConsensusGapPct = Math.round(
+  ((targetStopInput.currentPrice - consensusMaxTargetPrice) / consensusMaxTargetPrice) * 100,
+)
+const mockConsensusSubEm: LogicMetric['subValueEmphasis'] =
+  targetStopInput.currentPrice >= consensusMaxTargetPrice ? 'danger' : 'muted'
+
+const mockSupplyTooltipOverride: LogicMetric['indicatorTooltipOverride'] = {
+  title: '수급 (3D)',
+  description:
+    '직전 3거래일 외국인·기관 누적 순매수입니다. 외국인 매도 + 기관 매수가 동시에 클수록 매물 출회 위험이 있습니다.',
+  thresholds: '개인·5거래일 누적은 카드를 눌러 drawer에서 확인할 수 있습니다.',
+}
+
+const mockConsensusTooltipOverride: LogicMetric['indicatorTooltipOverride'] = {
+  title: '컨센서스',
+  description:
+    '증권사 애널리스트 평균 목표가와 최고 목표가입니다. 현재 투자의견 평균 4.04 (5점 만점, 4 이상 매수). 컨센서스는 후행 지표이므로 변화 추세를 함께 보세요.',
+  thresholds:
+    '4주 평균 목표가 변화·증권사 분산·최고·최저 갭은 카드를 눌러 drawer에서 확인할 수 있습니다.',
+}
+
 export const logicMetrics: LogicMetric[] = [
-  { title: '구조', value: '72 / 100', score: 72, descriptionKey: 'structure', icon: 'Layers', tone: 'blue' },
-  { title: '실행', value: '10 / 100', score: 10, descriptionKey: 'execution', icon: 'Zap', tone: 'violet' },
-  { title: 'ATR 이격', value: '2.8 ATR', score: 56, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
-  { title: '연속상승', value: '2일', score: 64, descriptionKey: 'consecutiveRise', icon: 'TrendingUp', tone: 'sky' },
-  { title: '시장', value: 'Caution, KOSPI 2,640', score: 52, descriptionKey: 'market', icon: 'Globe2', tone: 'emerald' },
+  {
+    title: '구조',
+    value: '99점',
+    subValue: structureInterpretSub(99),
+    detailForDrawer: '99 / 100',
+    score: 99,
+    descriptionKey: 'structure',
+    icon: 'Layers',
+    tone: 'blue',
+  },
+  {
+    title: '실행',
+    value: '62점',
+    subValue: executionInterpretSub(62),
+    detailForDrawer: '62 / 100',
+    score: 62,
+    descriptionKey: 'execution',
+    icon: 'Zap',
+    tone: 'violet',
+  },
+  {
+    title: 'ATR 이격',
+    value: '7.3',
+    subValue: atrMaGapInterpretSub(7.3),
+    detailForDrawer: '7.3 ATR',
+    ...resolveAtrDistanceRiskVisual(parseAtrDistanceValue('7.3 ATR')),
+    score: 56,
+    descriptionKey: 'atrDistance',
+    icon: 'Ruler',
+    tone: 'amber',
+  },
+  {
+    title: '연속상승',
+    value: '2일',
+    subValue: consecutiveRiseInterpretSub('2일'),
+    detailForDrawer: '연속상승 2일',
+    score: 64,
+    descriptionKey: 'consecutiveRise',
+    icon: 'TrendingUp',
+    tone: 'sky',
+  },
+  {
+    title: '시장',
+    value: marketPrimaryKorean(mockMarketHeadline),
+    subValue: mockMarketDetail.split('\n')[0]?.trim() ?? 'KOSPI 20일 추세',
+    detailForDrawer: mockMarketDetail,
+    cardAccent: marketCardAccentFromHeadline(mockMarketHeadline),
+    score: 60,
+    descriptionKey: 'market',
+    icon: 'Globe2',
+    tone: 'emerald',
+  },
   {
     title: '섹터 자금흐름',
     value: sectorFlowMainTitle(mockSectorFlowSnapshot),
-    subValue: sectorFlowSubLines(mockSectorFlowSnapshot),
+    subValue: sectorFiveDayVsMarketSub(mockSectorFlowSnapshot),
+    detailForDrawer: [`상태: ${mockSectorFlowSnapshot.sectorFlowStatus}`, sectorFlowSubLines(mockSectorFlowSnapshot)].join(
+      '\n\n',
+    ),
+    cardAccent:
+      mockSectorFlowSnapshot.sectorFlowStatus === '주도섹터' ||
+      mockSectorFlowSnapshot.sectorFlowStatus === '관심섹터'
+        ? 'info'
+        : mockSectorFlowSnapshot.sectorFlowStatus === '중립'
+          ? 'neutral'
+          : 'warning',
+    statusBadge: mockSectorFlowSnapshot.sectorFlowStatus === '관심섹터' ? '관심' : undefined,
     score: mockSectorFlowSnapshot.sectorFlowScore,
-    statusBadge: mockSectorFlowSnapshot.sectorFlowStatus,
     descriptionKey: 'sectorFlow',
     icon: 'Landmark',
     tone: 'indigo',
   },
-  { title: '구조 상태', value: '상승장 유지 / 눌림 구간', score: 72, descriptionKey: 'structure', icon: 'Map', tone: 'orange' },
   {
-    title: '수급',
-    value: `${formatKrwAmountToEok(foreignNetAmount3D + institutionNetAmount3D)}`,
+    title: '구조 상태',
+    value: '상승장 / 과열',
+    subValue: structureStateInterpretSub('상승장 / 과열'),
+    detailForDrawer: '상승장 유지 / 눌림 구간',
+    score: 72,
+    descriptionKey: 'structureState',
+    icon: 'Map',
+    tone: 'orange',
+  },
+  {
+    title: '수급 (3D)',
+    value: '\u00a0',
+    supplyForeignWon: foreignNetAmount3D,
+    supplyInstitutionWon: institutionNetAmount3D,
+    detailForDrawer: buildSupplyDrawerBody({
+      foreignNetShares3D,
+      foreignNetAmount3D,
+      institutionNetShares3D,
+      institutionNetAmount3D,
+      retailNetShares3D,
+      retailNetAmount3D,
+      foreignNetAmount5D,
+      institutionNetAmount5D,
+      retailNetAmount5D,
+      supplyPeriod,
+    }),
+    cardAccent: supplyCardAccentFromFiSum(mockSupplyFiSum),
     supplyDetails: {
       foreignNetShares3D,
       foreignNetAmount3D,
@@ -368,36 +556,123 @@ export const logicMetrics: LogicMetric[] = [
       retailNetAmount5D,
       supplyPeriod,
     },
-    tooltipSummary: '수급은 당일 실시간이 아니라 직전 3거래일 누적으로 판단합니다.',
     score: supplyScore,
+    riskStrip: mockSupplyRiskStrip,
+    indicatorTooltipOverride: mockSupplyTooltipOverride,
     descriptionKey: 'supply',
     icon: 'Users',
     tone: 'cyan',
   },
   {
     title: '컨센서스',
-    value: `평균 ${consensusAvgTargetPrice.toLocaleString('ko-KR')}원`,
-    subValue: `최고 ${consensusMaxTargetPrice.toLocaleString('ko-KR')}원 · 평균 ${consensusUpside.avgUpsidePct >= 0 ? '+' : ''}${consensusUpside.avgUpsidePct.toFixed(1)}% / 최고 ${consensusUpside.maxUpsidePct >= 0 ? '+' : ''}${consensusUpside.maxUpsidePct.toFixed(1)}%`,
-    meta: `애널리스트 ${analystCount}명 · 업데이트 ${lastConsensusUpdate}일 전`,
+    value: '\u00a0',
+    consensusAvgWon: consensusAvgTargetPrice,
+    consensusMaxWon: consensusMaxTargetPrice,
+    consensusSpotWon: targetStopInput.currentPrice,
+    consensusRecommendationScore: 4.04,
+    subValue: `최고 대비 ${mockConsensusGapPct >= 0 ? '+' : ''}${mockConsensusGapPct}%`,
+    subValueEmphasis: mockConsensusSubEm,
+    detailForDrawer: buildConsensusDrawerBody({
+      consensus: mockConsensusDrawerSource,
+      consensusUpside,
+    }),
+    indicatorTooltipOverride: mockConsensusTooltipOverride,
     score: consensusScore,
+    riskStrip: 'neutral',
     descriptionKey: 'consensus',
     icon: 'SlidersHorizontal',
     tone: 'teal',
   },
-  { title: '캔들질', value: 'CLV5 -0.12 / CLV10 -0.25', score: 50, descriptionKey: 'candleQuality', icon: 'CandlestickChart', tone: 'rose' },
+  {
+    title: '캔들질',
+    value: 'CLV5 +1.27 · CLV10 -0.45',
+    subValue: candleQualityInterpretSub('CLV5 +1.27 · CLV10 -0.45'),
+    detailForDrawer: 'CLV5 +1.27 · CLV10 -0.45',
+    score: 50,
+    descriptionKey: 'candleQuality',
+    icon: 'CandlestickChart',
+    tone: 'rose',
+  },
   {
     title: '밸류에이션',
-    value: `Trailing PER ${trailingPER.toFixed(1)}x`,
-    subValue: `Forward PER ${forwardPER.toFixed(1)}x · Forward EPS Growth +${forwardEPSGrowthPct}%`,
-    meta: `섹터 평균 ${sectorAveragePER.toFixed(1)}x · 역사적 PER 상위 ${historicalPERPercentile}% · ${valuationUpdatedAt}`,
+    value: `PER ${mockValuationCardModel.valuationInputs.trailingPER.toFixed(1)}x`,
+    subValue: valuationPremiumInterpretSub({
+      trailingPER: mockValuationCardModel.valuationInputs.trailingPER,
+      sectorName: '반도체',
+    }),
+    detailForDrawer: [mockValuationCardModel.value, mockValuationCardModel.subValue, mockValuationCardModel.meta]
+      .filter(Boolean)
+      .join('\n\n'),
+    riskStrip: mockValuationCardModel.riskStrip,
     score: valuationScore,
     descriptionKey: 'valuation',
     icon: 'Droplets',
     tone: 'slate',
   },
-  { title: '지표', value: 'RSI 47 / MFI 46', score: 57, descriptionKey: 'indicators', icon: 'Activity', tone: 'blue' },
-  { title: '특이', value: '특이사항 없음', score: 60, descriptionKey: 'special', icon: 'CircleAlert', tone: 'red' },
-  { title: '통계', value: '유사패턴 승률 54.3% / 참조수익률 +1.8% / N=67', score: 54, descriptionKey: 'statistics', icon: 'Percent', tone: 'slate' },
+  {
+    title: '지표',
+    value: 'RSI 84',
+    subValue: indicatorRsiMfiInterpretSub({ indicatorLine: 'RSI 84 / MFI 86', rsiNumeric: 84 }),
+    detailForDrawer: 'RSI 84 / MFI 86',
+    ...resolveIndicatorRiskVisual('RSI 84 / MFI 86'),
+    score: 57,
+    descriptionKey: 'indicators',
+    icon: 'Activity',
+    tone: 'blue',
+  },
+  {
+    title: '실적발표일',
+    value: 'D-12 (5/24)',
+    subValue: '직전 +12.4% 서프라이즈',
+    detailForDrawer: [
+      '로직 API 미연결 시 데모 표시입니다.',
+      '',
+      '【다음 분기 컨센서스 (참고)】',
+      '매출·영업이익·EPS는 FnGuide 연동 시 자동 표기됩니다.',
+      '',
+      '【직전 4분기 서프라이즈】',
+      '-2.1% → +5.4% → +3.0% → +8.2%',
+    ].join('\n'),
+    sparkline: [-2.1, 5.4, 3.0, 8.2],
+    valueEmphasis: 'muted',
+    subValueEmphasis: 'default',
+    riskStrip: 'neutral',
+    score: 60,
+    descriptionKey: 'earnings',
+    icon: 'CalendarDays',
+    tone: 'red',
+  },
+  {
+    title: '통계',
+    value: '+25.23%',
+    subValue: statisticsAvg20InterpretSub('20일 평균 76,800원 대비 +26.20%'),
+    detailForDrawer: '20일 평균 76,800원 대비 +26.20%',
+    ...resolveStatsRiskVisual('20일 평균 76,800원 대비 +26.20%'),
+    score: 54,
+    descriptionKey: 'statistics',
+    icon: 'Percent',
+    tone: 'slate',
+  },
+  {
+    title: 'ROE',
+    value: '18.4%',
+    subValue: '▲ 4분기 상승 추세 · 섹터 12.0%',
+    detailForDrawer: 'EPS/BPS 근사 ROE · 공시 대조 권장',
+    descriptionKey: 'roe',
+    icon: 'TrendingUp',
+    tone: 'emerald',
+    riskStrip: 'neutral',
+  },
+  {
+    title: 'EPS 성장률',
+    value: `YoY +${forwardEPSGrowthPct.toFixed(1)}%`,
+    subValue: `QoQ +${(forwardEPSGrowthPct * 0.28).toFixed(1)}% · 컨센서스 +${consensusUpsideAvgPct.toFixed(1)}% · 성장 가속`,
+    detailForDrawer: '밸류 카드 forward EPS 성장 근사',
+    descriptionKey: 'epsGrowth',
+    icon: 'BarChart3',
+    tone: 'violet',
+    riskStrip: 'neutral',
+  },
 ]
 
 export const executionCards: ExecutionCard[] = [
@@ -429,6 +704,12 @@ export const stopInfo: StopInfo = {
   stopPrice: stopCalc.stopPrice,
   stopLossPct: stopCalc.stopLossPct,
   method: stopCalc.method,
+  basis:
+    stopCalc.method === 'RECENT_LOW'
+      ? 'LOW20'
+      : stopCalc.method === 'ATR'
+        ? 'ATR'
+        : 'FIXED',
   reason: stopCalc.reason,
   candidates: stopCalc.candidates,
   warning: stopCalc.warning,

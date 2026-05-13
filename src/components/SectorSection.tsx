@@ -25,7 +25,7 @@ function sectorIconMeta(sector: string): { icon: LucideIcon; className: string }
   if (sector.includes('자동차')) return { icon: Car, className: 'text-emerald-600' }
   if (sector.includes('건설')) return { icon: Building2, className: 'text-orange-600' }
   if (sector.includes('2차전지')) return { icon: BatteryCharging, className: 'text-violet-600' }
-  return { icon: TrendingUp, className: 'text-slate-600' }
+  return { icon: TrendingUp, className: 'text-secondary' }
 }
 
 export function SectorSection({ sector }: Props) {
@@ -35,7 +35,7 @@ export function SectorSection({ sector }: Props) {
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
-        <h3 className="inline-flex items-center gap-2 text-lg font-bold text-slate-900">
+        <h3 className="inline-flex items-center gap-2 text-lg font-bold text-primary">
           <SectorIcon className={`size-5 ${sectorMeta.className}`} />
           {sector.label}
         </h3>
@@ -44,18 +44,18 @@ export function SectorSection({ sector }: Props) {
             className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
               sector.isLeading
                 ? 'border-rose-200 bg-rose-50 text-rose-700'
-                : 'border-slate-200 bg-slate-100 text-slate-600'
+                : 'border-default bg-app text-secondary'
             }`}
           >
             {sector.isLeading ? '주도섹터' : '비주도'}
           </span>
-          <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+          <span className="inline-flex items-center gap-1 text-xs text-secondary">
             <Sparkles className="size-3.5 text-amber-500" />
             상위 {sector.stocks.length}종목
           </span>
         </div>
       </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {sector.stocks.map((stock) => (
           <ScreenerStockCard key={stock.code} stock={stock} />
         ))}

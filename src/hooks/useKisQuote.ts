@@ -18,6 +18,12 @@ export type KisQuote = {
   pbr: number | null
   eps: number | null
   bps: number | null
+  /** EPS/BPS 기반 ROE 근사(%), TTM */
+  roeTtmApprox: number | null
+  /** KIS 시세 output 내 영업이익률 유사 필드(있을 때만) */
+  operatingMarginTtm: number | null
+  /** 부채비율 유사 필드(있을 때만) */
+  debtRatio: number | null
   fetchedAt: string
   kisEnv: string
 }

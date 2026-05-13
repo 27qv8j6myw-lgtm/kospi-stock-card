@@ -1,9 +1,13 @@
 import { useMemo } from 'react'
-import { Activity, Gauge, Info, Target } from 'lucide-react'
+import { Activity, Info, Sparkles, Target } from 'lucide-react'
+import type { DetailedInvestmentMemoResult } from '../types/aiBriefing'
 import type { SummaryInfo } from '../types/stock'
 import type { MetricSummaryResult } from '../lib/summaryLogic'
-import type { DetailedInvestmentMemoResult } from '../types/aiBriefing'
 import { investmentMemoAtAGlance } from '../lib/investmentMemoAtAGlance'
+import { entryStageToBadgeStatus, strategyToBadgeStatus } from '../lib/strategyBadges'
+import { InsightCard } from './ui/InsightCard'
+import { StatusBadge } from './ui/StatusBadge'
+import { UnifiedEntryStageCard } from './ExecutionStageCard'
 
 type SummaryPanelProps = {
   summary: SummaryInfo
@@ -14,36 +18,36 @@ type SummaryPanelProps = {
 
 function LoadingDots({ label = '로딩중' }: { label?: string }) {
   return (
-    <span className="inline-flex items-center gap-1 text-slate-500">
+    <span className="inline-flex items-center gap-1 text-secondary">
       <span>{label}</span>
-      <span className="size-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:0ms]" />
-      <span className="size-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:120ms]" />
-      <span className="size-1.5 animate-bounce rounded-full bg-slate-400 [animation-delay:240ms]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:0ms]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:120ms]" />
+      <span className="size-1.5 animate-bounce rounded-full bg-tertiary [animation-delay:240ms]" />
     </span>
   )
 }
 
 export function SummaryPanel({ summary, metricSummary, investmentMemo, aiLoading }: SummaryPanelProps) {
-  const { line2 } = useMemo(
-    () => (investmentMemo ? investmentMemoAtAGlance(investmentMemo) : { line2: '' }),
+  const { line1, line2 } = useMemo(
+    () => (investmentMemo ? investmentMemoAtAGlance(investmentMemo) : { line1: '', line2: '' }),
     [investmentMemo],
   )
   const memoTitleCompact = useMemo(() => {
     const raw = (investmentMemo?.title || '').trim()
     if (!raw) return ''
-    // "삼성전자 (005930) — 투자 메모" -> "투자 메모"
     const noPrefix = raw.replace(/^[^-—–]+[-—–]\s*/u, '').trim()
     const noStock = noPrefix.replace(/\([^)]+\)/g, '').trim()
     return noStock || '투자 메모'
   }, [investmentMemo?.title])
-  const toneStyle =
+
+  const toneMini =
     metricSummary.tone === 'positive'
-      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+      ? 'rounded-full border border-light bg-success-bg px-2 py-0.5 text-xxs font-semibold text-success-text'
       : metricSummary.tone === 'caution'
-        ? 'border-amber-200 bg-amber-50 text-amber-700'
+        ? 'rounded-full border border-light bg-warning-bg px-2 py-0.5 text-xxs font-semibold text-warning-text'
         : metricSummary.tone === 'danger'
-          ? 'border-red-200 bg-red-50 text-red-700'
-          : 'border-blue-200 bg-blue-50 text-blue-700'
+          ? 'rounded-full border border-light bg-danger-bg px-2 py-0.5 text-xxs font-semibold text-danger-text'
+          : 'rounded-full border border-light bg-info-bg px-2 py-0.5 text-xxs font-semibold text-info-text'
   const toneLabel =
     metricSummary.tone === 'positive'
       ? '긍정'
@@ -53,45 +57,59 @@ export function SummaryPanel({ summary, metricSummary, investmentMemo, aiLoading
           ? '위험'
           : '중립'
 
+  const titleNode = aiLoading || !memoTitleCompact ? <LoadingDots /> : memoTitleCompact
+  const subtitleNode = aiLoading || !line2 ? <LoadingDots label="전략 생성중" /> : line2
+
+  const rows = useMemo(
+    () => [
+      {
+        icon: <Sparkles className="shrink-0" aria-hidden />,
+        label: '핵심 한 줄',
+        value: <span className="font-medium">{line1 || '—'}</span>,
+      },
+      {
+        icon: <Activity className="shrink-0" aria-hidden />,
+        label: '전략',
+        value: (
+          <span className="inline-flex flex-wrap items-center justify-end gap-2">
+            <span className="font-sans-en font-semibold">{summary.executionUi.strategyLabelKo}</span>
+            <StatusBadge status={strategyToBadgeStatus(summary.strategy)} size="sm" />
+          </span>
+        ),
+      },
+      {
+        icon: <Target className="shrink-0" aria-hidden />,
+        label: '진입 신호',
+        value: (
+          <span className="inline-flex flex-wrap items-center justify-end gap-2">
+            <StatusBadge status={entryStageToBadgeStatus(summary.entryStageCode)} size="sm" />
+            <span className="text-xs font-medium text-secondary">{summary.executionUi.entryStageAction}</span>
+          </span>
+        ),
+      },
+      {
+        icon: <Info className="shrink-0" aria-hidden />,
+        label: 'Reason',
+        value: <span className="whitespace-pre-line font-medium leading-relaxed">{summary.reason}</span>,
+        valueFullWidth: true,
+      },
+    ],
+    [line1, summary],
+  )
+
   return (
     <section className="p-6 sm:p-8">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-slate-500">한눈에 보기</h3>
-        <p className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold ${toneStyle}`}>
-          {toneLabel}
-        </p>
-      </div>
-      <h4 className="mt-3 text-[17px] font-bold leading-snug text-slate-900 sm:text-lg">
-        {aiLoading || !memoTitleCompact ? <LoadingDots /> : memoTitleCompact}
-      </h4>
-      <p className="mt-2 text-sm leading-relaxed text-slate-500">
-        {aiLoading || !line2 ? <LoadingDots label="전략 생성중" /> : line2}
-      </p>
-
-      <ul className="mt-6 space-y-4 border-t border-slate-100 pt-6 text-sm">
-        <li className="flex items-center gap-2">
-          <Gauge className="size-4 text-amber-500" />
-          <span className="text-slate-500">Final Grade</span>
-          <span className="ml-auto font-semibold text-amber-600">{summary.finalGrade}</span>
-        </li>
-        <li className="flex items-center gap-2">
-          <Activity className="size-4 text-blue-600" />
-          <span className="text-slate-500">Strategy</span>
-          <span className="ml-auto font-semibold text-blue-600">{summary.strategy}</span>
-        </li>
-        <li className="flex items-center gap-2">
-          <Target className="size-4 text-rose-500" />
-          <span className="text-slate-500">Entry Stage</span>
-          <span className="ml-auto font-semibold text-rose-600">{summary.entryStage}</span>
-        </li>
-        <li className="flex items-start gap-2">
-          <Info className="mt-0.5 size-4 text-slate-400" />
-          <div className="min-w-0">
-            <span className="text-slate-500">Reason</span>
-            <p className="mt-1 whitespace-pre-line font-medium leading-relaxed text-slate-800">{summary.reason}</p>
-          </div>
-        </li>
-      </ul>
+      <InsightCard
+        title={titleNode}
+        subtitle={subtitleNode}
+        belowSubtitle={<UnifiedEntryStageCard ui={summary.executionUi} />}
+        headerTrailing={
+          <span className="flex flex-wrap items-center justify-end gap-1.5">
+            <span className={toneMini}>{toneLabel}</span>
+          </span>
+        }
+        rows={rows}
+      />
     </section>
   )
 }

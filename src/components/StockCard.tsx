@@ -10,6 +10,12 @@ import {
 import { useKisQuote } from '../hooks/useKisQuote'
 import { useKisChart, type Timeframe } from '../hooks/useKisChart'
 import { useKisLogicIndicators } from '../hooks/useKisLogicIndicators'
+import {
+  executionUiFromAiLoose,
+  marketScoreFromLogicIndicators,
+} from '../lib/signalLogic'
+import { ChartMountShell } from './chart/ChartMountShell'
+import { UnifiedEntryStageCard } from './ExecutionStageCard'
 import { StockNameSearch } from './StockNameSearch'
 import {
   Activity,
@@ -18,7 +24,6 @@ import {
   CalendarDays,
   CandlestickChart,
   FileSpreadsheet,
-  Gauge,
   Globe2,
   Info,
   Layers,
@@ -41,13 +46,15 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-const TIMEFRAMES: Timeframe[] = ['3D', '1W', '1M', '3M', '1Y']
+import type { UnifiedEntryStageTier } from '../types/stock'
+
+const TIMEFRAMES: Timeframe[] = ['5D', '1M', '3M', '1Y']
 
 /** 레퍼런스: 라운드 화이트 카드, 얇은 보더 */
 const cardShell =
-  'rounded-xl border border-slate-200/95 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.05)]'
+  'rounded-xl border border-default/95 bg-card shadow-[0_1px_2px_rgba(15,23,42,0.05)]'
 const tileCard =
-  'rounded-lg border border-slate-200/90 bg-white'
+  'rounded-lg border border-default/90 bg-card'
 
 function digitsOnly(s: string) {
   return s.replace(/\D/g, '').slice(0, 6)
@@ -91,7 +98,7 @@ function changeStyle(change: number, changePercent: number) {
     return {
       arrow: '—',
       line: `0 (0.00%)`,
-      className: 'text-slate-400',
+      className: 'text-tertiary',
     }
   }
   const up = change > 0 || (change === 0 && changePercent > 0)
@@ -103,7 +110,7 @@ function changeStyle(change: number, changePercent: number) {
   return {
     arrow,
     line,
-    className: up ? 'text-rose-600' : 'text-sky-600',
+    className: up ? 'text-price-up' : 'text-price-down',
   }
 }
 
@@ -115,25 +122,23 @@ function extractRsi(s?: string) {
 
 function SectionTitle({ children }: { children: ReactNode }) {
   return (
-    <h3 className="text-[15px] font-bold tracking-tight text-slate-900">{children}</h3>
+    <h3 className="text-[15px] font-bold tracking-tight text-primary">{children}</h3>
   )
 }
 
-function HeroEntryBadge({ stage }: { stage: string }) {
-  const u = stage.toUpperCase()
-  const isRisk =
-    u.includes('REJECT') || u.includes('거부') || stage.includes('거절')
-  return (
-    <span
-      className={`rounded-md border px-2.5 py-0.5 text-xs font-bold ${
-        isRisk
-          ? 'border-red-300 bg-white text-red-600'
-          : 'border-slate-200 bg-slate-50 text-slate-800'
-      }`}
-    >
-      {u === 'REJECT' || stage === 'REJECT' ? 'REJECT' : stage}
-    </span>
-  )
+function heroTierBadgeClass(tier: UnifiedEntryStageTier): string {
+  switch (tier) {
+    case 'NEW_ENTRY':
+      return 'border-emerald-300 bg-emerald-50 text-emerald-900'
+    case 'SCALE_IN':
+      return 'border-teal-300 bg-teal-50 text-teal-900'
+    case 'HOLD_STEADY':
+      return 'border-default bg-neutral-bg text-primary'
+    case 'SCALE_OUT':
+      return 'border-amber-300 bg-amber-50 text-amber-900'
+    default:
+      return 'border-red-300 bg-card text-red-600'
+  }
 }
 
 function MetricTile({
@@ -153,9 +158,9 @@ function MetricTile({
     >
       <div className="flex items-center gap-2">
         <Icon className={`size-4 shrink-0 ${iconClassName}`} strokeWidth={2} />
-        <span className="text-[11px] font-medium text-slate-500">{label}</span>
+        <span className="text-[11px] font-medium text-secondary">{label}</span>
       </div>
-      <div className="mt-2 text-[13px] font-semibold leading-snug text-slate-900">
+      <div className="mt-2 text-[13px] font-semibold leading-snug text-primary">
         {children}
       </div>
     </div>
@@ -178,9 +183,9 @@ function ChartTooltip({
   const n = Number(raw)
   if (!Number.isFinite(n)) return null
   return (
-    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-md">
-      <p className="text-[11px] font-medium text-slate-500">{String(label)}</p>
-      <p className="mt-0.5 text-sm font-semibold tabular-nums tracking-tight text-slate-900">
+    <div className="rounded-lg border border-default bg-card px-3 py-2 shadow-md">
+      <p className="text-[11px] font-medium text-secondary">{String(label)}</p>
+      <p className="mt-0.5 text-sm font-semibold tabular-nums tracking-tight text-primary">
         {formatKrw(n)}
       </p>
     </div>
@@ -271,7 +276,7 @@ export function StockCard({
   )
   const [pickedName, setPickedName] = useState<string | null>(null)
 
-  const [tf, setTf] = useState<Timeframe>('3D')
+  const [tf, setTf] = useState<Timeframe>('5D')
   const { state: quoteState } = useKisQuote(queryCode)
   const { state: logicState } = useKisLogicIndicators(queryCode)
 
@@ -328,19 +333,21 @@ export function StockCard({
   const basePrice =
     quoteState.status === 'ok' ? quoteState.data.price : 71_200
   const chartState = useKisChart(queryCode, tf)
-  const chartData = chartState.points.length
-    ? chartState.points
-    : [{ label: '—', price: Math.round(basePrice), ts: '' }]
-
-  /** 1W·1M·3M·1Y: 마지막 일봉이 오늘보다 이전이면 오늘까지 직선(동일가)으로 확장 */
   const chartSeriesData = useMemo(() => {
-    if (tf === '3D') return chartData
-    if (!chartState.points.length) return chartData
+    const base =
+      chartState.status === 'ok' && chartState.mode === 'daily' && chartState.points.length
+        ? chartState.points
+        : null
 
-    const base = chartState.points
+    if (!base) {
+      return [{ label: '—', price: Math.round(basePrice), ts: '' }]
+    }
+
     const last = base[base.length - 1]
     const today = koreaYmd()
-    if (!last?.ts || String(last.ts).length !== 8) return chartData
+    if (!last?.ts || String(last.ts).length !== 8) {
+      return base
+    }
     if (String(last.ts) >= today) return base
 
     const extendPrice =
@@ -352,7 +359,7 @@ export function StockCard({
 
     const label = `${today.slice(4, 6)}.${today.slice(6, 8)}`
     return [...base, { label, price: extendPrice, ts: today }]
-  }, [tf, chartData, chartState.points, quoteState, basePrice])
+  }, [tf, chartState, quoteState, basePrice])
 
   const displayName =
     quoteState.status === 'ok' && quoteState.data.nameKr
@@ -408,21 +415,17 @@ export function StockCard({
   const finalOpinion = aiFill?.finalOpinion
   const executionSignals = aiFill?.executionSignals
 
-  const opinionGrade =
-    finalOpinion?.finalGrade || aiFill?.finalGrade || 'C'
   const opinionStrategy =
     finalOpinion?.strategy || aiFill?.strategy || 'WATCH_ONLY'
   const opinionEntryStage =
     finalOpinion?.entryStage || aiFill?.entryStage || 'REJECT'
+  const executionUiDemo = executionUiFromAiLoose(opinionStrategy, opinionEntryStage)
+
   const keyReasons =
     finalOpinion?.keyReasons?.slice(0, 3) || [
       aiFill?.reason ||
         '일부 점수는 유지되나 진입 근거는 아직 부족합니다.',
     ]
-
-  const strategyDisplay = String(opinionStrategy)
-    .replace(/\s+/g, '_')
-    .toUpperCase()
 
   const rsiText =
     logic?.rsi ??
@@ -483,54 +486,6 @@ export function StockCard({
     return -1
   }, [chartSeriesData])
 
-  /** 1D: Y축은 당일 시세 고가·저가만 사용 (시세 없을 때만 분봉 데이터로 대체) */
-  const chartYDomain = useMemo((): [number, number] | null => {
-    if (tf !== '3D') return null
-
-    const fromPointsOnly = (): [number, number] | null => {
-      let lo = Infinity
-      let hi = -Infinity
-      for (const p of chartData) {
-        const raw = p.price
-        if (raw == null || !Number.isFinite(Number(raw))) continue
-        const n = Number(raw)
-        lo = Math.min(lo, n)
-        hi = Math.max(hi, n)
-      }
-      if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null
-      if (hi === lo) {
-        const d = Math.max(1, lo * 0.001)
-        return [lo - d, hi + d]
-      }
-      const topPad = (hi - lo) * 0.02
-      return [lo, hi + topPad]
-    }
-
-    if (quoteState.status !== 'ok') return fromPointsOnly()
-
-    const dayLow = quoteState.data.low
-    const dayHigh = quoteState.data.high
-    if (
-      dayLow == null ||
-      dayHigh == null ||
-      !Number.isFinite(dayLow) ||
-      !Number.isFinite(dayHigh)
-    ) {
-      return fromPointsOnly()
-    }
-
-    const lo = Math.min(dayLow, dayHigh)
-    const hi = Math.max(dayLow, dayHigh)
-    const span = hi - lo
-    if (span <= 0) {
-      const d = Math.max(1, lo * 0.001)
-      return [lo - d, hi + d]
-    }
-    // 하단은 당일 저가에 딱 맞춤(아래 그리드·축 기준), 상단만 짤림 방지 여백
-    const topPad = span * 0.02
-    return [lo, hi + topPad]
-  }, [tf, quoteState, chartData])
-
   const oneRLossRaw = Number.isFinite(exec?.oneRLossKrw)
     ? Number(exec?.oneRLossKrw)
     : -31_000
@@ -555,11 +510,13 @@ export function StockCard({
       {
         label: '시장',
         icon: Target,
-        iconClass: 'text-amber-500',
-        value:
-          logic?.market?.includes('Caution') || logic?.market?.includes('주의')
-            ? logic.market
-            : logic?.market || 'Caution (KOSPI200 변동성 1.2σ)',
+        iconClass:
+          marketScoreFromLogicIndicators(logic) <= 44 ||
+          Boolean(logic?.market?.includes('Caution')) ||
+          Boolean(logic?.market?.includes('주의'))
+            ? 'text-amber-500'
+            : 'text-emerald-600',
+        value: logic?.marketHeadline || logic?.market || '데이터 없음',
       },
       {
         label: '수급',
@@ -612,7 +569,7 @@ export function StockCard({
       {
         label: '통계',
         icon: Percent,
-        iconClass: 'text-slate-600',
+        iconClass: 'text-secondary',
         value:
           logic?.stats || '유사 패턴 승률 68.4%, 참고 수익률 +2.9%',
       },
@@ -633,24 +590,24 @@ export function StockCard({
     quoteState.status === 'ok' ? quoteState.data.code : queryCode
 
   return (
-    <article className={`relative ${cardShell}`}>
-      <header className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-4 sm:px-8">
-        <h1 className="text-lg font-bold text-slate-900 sm:text-xl">종목 카드</h1>
+    <article className={`relative min-w-0 max-w-full overflow-x-hidden ${cardShell}`}>
+      <header className="flex items-start justify-between gap-4 border-b border-light px-6 py-4 sm:px-8">
+        <h1 className="text-lg font-bold text-primary sm:text-xl">종목 카드</h1>
         <div className="flex shrink-0 items-center gap-3">
           <button
             type="button"
             onClick={() => void runAIFill(queryCode)}
             disabled={aiLoading}
-            className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+            className="rounded-lg border border-default bg-card p-1.5 text-secondary hover:bg-neutral-bg disabled:opacity-50"
             title="AI 분석"
           >
             <Sparkles className="size-4" strokeWidth={2} />
           </button>
-          <p className="text-sm text-slate-400">{headerDateLabel}</p>
+          <p className="text-sm text-tertiary">{headerDateLabel}</p>
         </div>
       </header>
 
-      <div className="border-b border-slate-100 bg-white px-6 py-3 sm:px-8">
+      <div className="border-b border-light bg-card px-6 py-3 sm:px-8">
         <StockNameSearch
           compact
           value={searchDisplay}
@@ -663,37 +620,37 @@ export function StockCard({
         />
       </div>
 
-      <section className="border-b border-slate-100 px-6 py-5 sm:px-8">
+      <section className="border-b border-light px-6 py-5 sm:px-8">
         <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex gap-4">
             {!logoFailed ? (
               <img
                 src={logoSrc}
                 alt=""
-                className="size-[52px] shrink-0 rounded-full border border-slate-200 bg-white object-contain p-1.5"
+                className="size-[52px] shrink-0 rounded-full border border-default bg-card object-contain p-1.5"
                 loading="lazy"
                 onError={() => setLogoFailed(true)}
               />
             ) : (
               <div
-                className="flex size-[52px] shrink-0 items-center justify-center rounded-full border border-slate-200 bg-slate-50 text-base font-bold text-slate-700"
+                className="flex size-[52px] shrink-0 items-center justify-center rounded-full border border-default bg-neutral-bg text-base font-bold text-secondary"
                 aria-hidden
               >
                 {avatarChar}
               </div>
             )}
             <div className="min-w-0">
-              <p className="font-mono text-lg font-bold tabular-nums tracking-tight text-slate-900">
+              <p className="font-mono text-lg font-bold tabular-nums tracking-tight text-primary">
                 {codeDisplay}
               </p>
-              <p className="mt-0.5 text-sm font-medium text-slate-600">
+              <p className="mt-0.5 text-sm font-medium text-secondary">
                 {displayName}
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                <span className="rounded-md border border-default bg-neutral-bg px-2 py-0.5 text-[11px] font-medium text-secondary">
                   {marketLabel}
                 </span>
-                <span className="rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-medium text-slate-600">
+                <span className="rounded-md border border-default bg-neutral-bg px-2 py-0.5 text-[11px] font-medium text-secondary">
                   국내주식
                 </span>
               </div>
@@ -702,14 +659,18 @@ export function StockCard({
 
           <div className="flex flex-col gap-1 sm:items-end">
             <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 sm:justify-end">
-              <p className="text-2xl font-bold tabular-nums tracking-tight text-slate-900 sm:text-3xl">
+              <p className="text-2xl font-bold tabular-nums tracking-tight text-primary sm:text-3xl">
                 {quoteState.status === 'ok'
                   ? formatKrw(quoteState.data.price)
                   : quoteState.status === 'loading'
                     ? '···'
                     : formatKrw(basePrice)}
               </p>
-              <HeroEntryBadge stage={opinionEntryStage} />
+              <span
+                className={`rounded-md border px-2.5 py-0.5 text-xs font-bold ${heroTierBadgeClass(executionUiDemo.tier)}`}
+              >
+                {executionUiDemo.entryStageLabel}
+              </span>
             </div>
             <p className={`text-sm font-semibold tabular-nums sm:text-right ${ch.className}`}>
               <span className="mr-1">{ch.arrow}</span>
@@ -732,37 +693,34 @@ export function StockCard({
         ) : null}
       </section>
 
-      <div className="grid grid-cols-1 items-stretch md:grid-cols-2 md:divide-x md:divide-slate-100">
-        <section className="min-w-0 p-6 sm:p-8">
+      <div className="grid grid-cols-1 items-stretch md:grid-cols-2 md:divide-x md:divide-light">
+        <section className="min-h-[280px] min-w-0 p-6 sm:p-8">
           <SectionTitle>한눈에 보기</SectionTitle>
-          <p className="mt-3 text-[17px] font-bold leading-snug text-slate-900 sm:text-lg">
+          <p className="mt-3 text-[17px] font-bold leading-snug text-primary sm:text-lg">
             {aiFill?.summaryTitle || '지금은 보류가 더 좋은 구간'}
           </p>
-          <p className="mt-2 text-sm leading-relaxed text-slate-500">
+          <p className="mt-2 text-sm leading-relaxed text-secondary">
             {aiFill?.summaryBody ||
               '일부 점수는 유지되나 진입 근거는 아직 부족'}
           </p>
-          <ul className="mt-6 space-y-4 border-t border-slate-100 pt-6">
-            <li className="flex items-center gap-2 text-sm">
-              <Gauge className="size-4 shrink-0 text-amber-500" strokeWidth={2} />
-              <span className="text-slate-500">최종 등급</span>
-              <span className="ml-auto font-semibold text-amber-600">{opinionGrade}</span>
-            </li>
+          <ul className="mt-6 space-y-4 border-t border-light pt-6">
             <li className="flex items-center gap-2 text-sm">
               <Activity className="size-4 shrink-0 text-blue-600" strokeWidth={2} />
-              <span className="text-slate-500">전략</span>
-              <span className="ml-auto font-semibold text-blue-600">{strategyDisplay}</span>
+              <span className="text-secondary">전략</span>
+              <span className="ml-auto font-semibold text-blue-800">{executionUiDemo.strategyLabelKo}</span>
             </li>
-            <li className="flex items-center gap-2 text-sm">
-              <Target className="size-4 shrink-0 text-red-500" strokeWidth={2} />
-              <span className="text-slate-500">진입 단계</span>
-              <span className="ml-auto font-semibold text-red-600">{opinionEntryStage}</span>
+            <li className="flex flex-col gap-2 text-sm">
+              <div className="flex items-center gap-2">
+                <Target className="size-4 shrink-0 text-rose-500" strokeWidth={2} />
+                <span className="text-secondary">진입 단계</span>
+              </div>
+              <UnifiedEntryStageCard ui={executionUiDemo} />
             </li>
             <li className="flex items-start gap-2 text-sm">
-              <Info className="mt-0.5 size-4 shrink-0 text-slate-400" strokeWidth={2} />
+              <Info className="mt-0.5 size-4 shrink-0 text-tertiary" strokeWidth={2} />
               <div className="min-w-0 flex-1">
-                <span className="text-slate-500">핵심 근거</span>
-                <p className="mt-1 font-medium leading-relaxed text-slate-800">
+                <span className="text-secondary">핵심 근거</span>
+                <p className="mt-1 font-medium leading-relaxed text-primary">
                   {keyReasons[0]}
                 </p>
               </div>
@@ -770,7 +728,7 @@ export function StockCard({
           </ul>
         </section>
 
-        <section className="flex min-h-[300px] min-w-0 flex-col p-6 sm:min-h-[340px] sm:p-8">
+        <section className="flex min-h-[280px] min-w-0 flex-col p-6 sm:min-h-[300px] sm:p-8">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
             <div className="flex w-full gap-1 sm:w-auto sm:justify-end">
               {TIMEFRAMES.map((t) => (
@@ -780,8 +738,8 @@ export function StockCard({
                   onClick={() => setTf(t)}
                   className={`min-w-[2.5rem] flex-1 rounded-md border-2 px-2 py-1.5 text-center text-[11px] font-bold sm:min-w-[2.75rem] sm:flex-none ${
                     tf === t
-                      ? 'border-blue-500 bg-white text-blue-700 shadow-sm'
-                      : 'border-transparent bg-slate-100 text-slate-500 hover:bg-slate-200/80'
+                      ? 'border-blue-500 bg-card text-blue-700 shadow-sm'
+                      : 'border-transparent bg-app text-secondary hover:bg-neutral-bg/80'
                   }`}
                 >
                   {t}
@@ -794,9 +752,8 @@ export function StockCard({
               차트: {chartState.message}
             </p>
           ) : null}
-          <div className="relative mt-3 w-full">
-            <div className="h-[252px] w-full sm:h-[288px]">
-              <ResponsiveContainer width="100%" height="100%">
+          <ChartMountShell height={280} className="mt-3">
+            <ResponsiveContainer width="100%" height={280} minHeight={280} minWidth={0}>
                 <AreaChart
                   key={tf + queryCode}
                   data={chartSeriesData}
@@ -823,21 +780,13 @@ export function StockCard({
                     tickMargin={14}
                     padding={{ left: 0, right: 0 }}
                   />
-                  <YAxis
-                    hide
-                    width={0}
-                    domain={
-                      chartYDomain
-                        ? [chartYDomain[0], chartYDomain[1]]
-                        : (['auto', 'auto'] as const)
-                    }
-                  />
+                  <YAxis hide width={0} domain={['auto', 'auto'] as const} />
                   <Tooltip
                     content={<ChartTooltip />}
                     cursor={{ stroke: 'rgba(59, 130, 246, 0.35)', strokeWidth: 1 }}
                   />
                   <Area
-                    type={tf === '3D' ? 'natural' : 'monotone'}
+                    type="monotone"
                     dataKey="price"
                     stroke="#2563eb"
                     strokeWidth={2}
@@ -874,19 +823,18 @@ export function StockCard({
                   />
                 </AreaChart>
               </ResponsiveContainer>
-            </div>
-          </div>
+          </ChartMountShell>
         </section>
       </div>
 
-      <section className="border-t border-slate-100 px-6 py-6 sm:px-8">
+      <section className="border-t border-light px-6 py-6 sm:px-8">
         <SectionTitle>로직 지표</SectionTitle>
         {logicState.status === 'error' ? (
           <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
             로직 지표: {logicState.message}
           </p>
         ) : null}
-        <div className="mt-4 grid grid-cols-2 gap-2.5 md:grid-cols-3 md:gap-3">
+        <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2 sm:gap-3 lg:grid-cols-3">
           {logicTiles.map((tile) => (
             <MetricTile
               key={tile.label}
@@ -900,9 +848,9 @@ export function StockCard({
         </div>
       </section>
 
-      <section className="border-t border-slate-100 px-6 py-6 sm:px-8">
+      <section className="border-t border-light px-6 py-6 sm:px-8">
         <SectionTitle>실행 전략</SectionTitle>
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {[
             {
               title: '추천 비중',
@@ -925,7 +873,7 @@ export function StockCard({
               value: '—',
               hint: exec?.basePlan || aiFill?.executionPlan || defaultExecHint,
               icon: CalendarDays,
-              iconClass: 'text-slate-500',
+              iconClass: 'text-secondary',
             },
             {
               title: '최대 비중',
@@ -940,36 +888,36 @@ export function StockCard({
               <div key={row.title} className={`flex min-h-[7.5rem] flex-col p-4 ${tileCard}`}>
                 <div className="flex items-center gap-2">
                   <ExecIcon className={`size-4 shrink-0 ${row.iconClass}`} strokeWidth={2} />
-                  <span className="text-xs font-medium text-slate-500">{row.title}</span>
+                  <span className="text-xs font-medium text-secondary">{row.title}</span>
                 </div>
-                <p className="mt-3 text-xl font-bold tabular-nums text-slate-900">{row.value}</p>
-                <p className="mt-2 text-xs leading-relaxed text-slate-500">{row.hint}</p>
+                <p className="mt-3 text-xl font-bold tabular-nums text-primary">{row.value}</p>
+                <p className="mt-2 text-xs leading-relaxed text-secondary">{row.hint}</p>
               </div>
             )
           })}
         </div>
       </section>
 
-      <section className="border-t border-slate-100 px-6 py-6 sm:px-8">
+      <section className="border-t border-light px-6 py-6 sm:px-8">
         <SectionTitle>목표가</SectionTitle>
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {targets.map((row) => (
             <div key={row.horizon + (row.sub ?? '')} className={`flex flex-col p-4 ${tileCard}`}>
-              <p className="text-xs font-semibold text-slate-500">
+              <p className="text-xs font-semibold text-secondary">
                 {row.horizon}
                 {row.sub ? (
-                  <span className="ml-1 font-normal text-slate-400">{row.sub}</span>
+                  <span className="ml-1 font-normal text-tertiary">{row.sub}</span>
                 ) : null}
               </p>
               <p className="mt-2 text-xl font-bold tabular-nums text-emerald-600">
                 {formatKrw(row.price)}
               </p>
               <p className="text-sm font-semibold tabular-nums text-emerald-600">+{row.pct}%</p>
-              <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-3 text-xs text-slate-500">
+              <div className="mt-3 flex items-center justify-between border-t border-light pt-3 text-xs text-secondary">
                 <span>달성 확률</span>
-                <span className="font-semibold tabular-nums text-slate-800">{row.rate}%</span>
+                <span className="font-semibold tabular-nums text-primary">{row.rate}%</span>
               </div>
-              <p className="mt-1 text-xs text-slate-400">N={row.n}</p>
+              <p className="mt-1 text-xs text-tertiary">N={row.n}</p>
             </div>
           ))}
         </div>
@@ -977,13 +925,13 @@ export function StockCard({
           <span className="font-semibold">손절</span>{' '}
           <span className="tabular-nums font-bold">{formatKrw(stopPrice)}</span>
           <span className="text-red-600"> (−{stopLossPct.toFixed(1)}%)</span>
-          <span className="text-slate-600"> [지지: {formatKrw(supportPrice)}]</span>
+          <span className="text-secondary"> [지지: {formatKrw(supportPrice)}]</span>
         </div>
       </section>
 
-      <footer className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-3 text-[13px] text-slate-600 sm:px-8">
+      <footer className="flex items-center justify-between border-t border-default bg-neutral-bg px-6 py-3 text-[13px] text-secondary sm:px-8">
         <div className="flex items-center gap-2">
-          <FileSpreadsheet className="size-4 shrink-0 text-slate-400" strokeWidth={2} />
+          <FileSpreadsheet className="size-4 shrink-0 text-tertiary" strokeWidth={2} />
           <span>
             <span className="font-medium text-red-700">투자주의:</span>{' '}
             본 분석은 참고용이며 최종 투자 판단과 책임은 투자자 본인에게 있습니다.
@@ -991,7 +939,7 @@ export function StockCard({
         </div>
         <button
           type="button"
-          className="rounded-full p-1 text-slate-400 hover:bg-slate-200/80"
+          className="rounded-full p-1 text-tertiary hover:bg-neutral-bg/80"
           aria-label="안내"
         >
           <Info className="size-4" strokeWidth={2} />

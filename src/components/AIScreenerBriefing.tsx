@@ -50,7 +50,7 @@ export function AIScreenerBriefing({ stocks }: Props) {
 
   return (
     <section className="space-y-3">
-      <h3 className="inline-flex items-center gap-2 text-lg font-bold text-slate-900">
+      <h3 className="inline-flex items-center gap-2 text-lg font-bold text-primary">
         <MessageSquareQuote className="size-5 text-indigo-600" />
         종목별 상세 AI 분석
       </h3>
@@ -61,24 +61,24 @@ export function AIScreenerBriefing({ stocks }: Props) {
             return (
           <article
             key={`${stock.code}-brief`}
-            className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+            className="rounded-2xl border border-default bg-card p-4 shadow-sm"
           >
-            <header className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
-              <h4 className="text-base font-semibold text-slate-900">
-                {stock.name} <span className="text-xs font-normal text-slate-500">({stock.sector})</span>
+            <header className="flex flex-wrap items-center justify-between gap-2 border-b border-light pb-2">
+              <h4 className="text-base font-semibold text-primary">
+                {stock.name} <span className="text-xs font-normal text-secondary">({stock.sector})</span>
               </h4>
-              <div className="inline-flex items-center gap-2 text-xs text-slate-600">
-                <span className="rounded-full bg-slate-100 px-2 py-0.5">상승여력 {stock.consensusUpsidePct.toFixed(1)}%</span>
+              <div className="inline-flex items-center gap-2 text-xs text-secondary">
+                <span className="rounded-full bg-app px-2 py-0.5">상승여력 {stock.consensusUpsidePct.toFixed(1)}%</span>
                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-700">비중 {stock.recommendedWeightPct}%</span>
               </div>
             </header>
 
             <div className="mt-3 grid gap-2 md:grid-cols-[170px_1fr]">
-              <p className="inline-flex items-start gap-1 text-sm font-semibold text-slate-700">
+              <p className="inline-flex items-start gap-1 text-sm font-semibold text-secondary">
                 <Lightbulb className="mt-0.5 size-3.5 text-blue-600" />
                 상승 가능성
               </p>
-              <p className="text-sm leading-6 text-slate-700">
+              <p className="text-sm leading-6 text-secondary">
                 {memo?.paragraphs?.[1] ||
                   stock.aiWhyNow ||
                   `${stock.sector} 내 상대강도와 수급 동행이 확인되어 단기 추세 지속 확률이 높습니다.`}

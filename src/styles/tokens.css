@@ -1,0 +1,80 @@
+/**
+ * Design tokens — light mode only (다크모드 v2 예정).
+ * @theme in index.css maps these to Tailwind utilities.
+ */
+
+:root {
+  /* —— Background —— */
+  --bg-app: #fafaf9;
+  --bg-card: #ffffff;
+  --bg-card-elevated: #ffffff;
+
+  /* —— Text —— */
+  --fg-primary: #1f1f1f;
+  --fg-secondary: #6b6b6b;
+  --fg-tertiary: #9ca3af;
+
+  /* —— Status —— */
+  --success-bg: #e8f5e8;
+  --success-text: #2d7a4a;
+  --warning-bg: #fff4e0;
+  --warning-text: #b86e12;
+  --danger-bg: #ffe8e8;
+  --danger-text: #c53030;
+  --info-bg: #e6f0ff;
+  --info-text: #2563eb;
+  --neutral-bg: #f3f4f6;
+  --neutral-text: #6b7280;
+
+  /* —— Icon pastels —— */
+  --icon-blue-bg: #dbeafe;
+  --icon-blue-fg: #2563eb;
+  --icon-green-bg: #d1fae5;
+  --icon-green-fg: #059669;
+  --icon-orange-bg: #fed7aa;
+  --icon-orange-fg: #ea580c;
+  --icon-purple-bg: #e9d5ff;
+  --icon-purple-fg: #9333ea;
+  --icon-pink-bg: #fce7f3;
+  --icon-pink-fg: #db2777;
+  --icon-yellow-bg: #fef3c7;
+  --icon-yellow-fg: #d97706;
+  --icon-cyan-bg: #cffafe;
+  --icon-cyan-fg: #0891b2;
+  --icon-rose-bg: #ffe4e6;
+  --icon-rose-fg: #e11d48;
+
+  /* —— 한국 시세 관례 —— */
+  --price-up: #e11d48;
+  --price-down: #2563eb;
+
+  /* —— Font stacks (Tailwind @theme에서 --font-* 로 노출) —— */
+  --family-sans-kr: 'Pretendard Variable', 'Pretendard', ui-sans-serif, system-ui, sans-serif;
+  --family-sans-en: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --family-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* —— Named spacing —— */
+  --spacing-card-gap: 12px;
+  --spacing-section-gap: 24px;
+  --spacing-card-padding: 18px;
+
+  /* —— Radius —— */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+
+  /* —— Shadows —— */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-card-elevated: 0 4px 16px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06);
+
+  /* —— Borders —— */
+  --border-light: #e5e7eb;
+  --border-default: #e5e7eb;
+  --border-medium: #d1d5db;
+}

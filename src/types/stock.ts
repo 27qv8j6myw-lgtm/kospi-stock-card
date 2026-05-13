@@ -1,4 +1,4 @@
-export type Timeframe = '3D' | '1W' | '1M' | '3M' | '1Y'
+export type Timeframe = '1D' | '5D' | '1M' | '3M' | '1Y'
 
 export type StockInfo = {
   name: string
@@ -12,12 +12,31 @@ export type StockInfo = {
   asOfDate: string
 }
 
+export type UnifiedEntryStageTier =
+  | 'NEW_ENTRY'
+  | 'SCALE_IN'
+  | 'HOLD_STEADY'
+  | 'SCALE_OUT'
+  | 'EXIT_ALL_OR_AVOID'
+
+export type Strategy = 'BUY' | 'BUY_AGGRESSIVE' | 'HOLD' | 'WATCH_ONLY' | 'TAKE_PROFIT' | 'REJECT'
+export type EntryStage = 'ACCEPT' | 'CAUTION' | 'WATCH' | 'REJECT'
+export type MarketStatus = 'RiskOn' | 'Neutral' | 'Caution'
+
+/** 전략·진입 단계 UI (Final Grade 대신 단일 행동 프레임) */
+export type ExecutionSummaryUi = {
+  tier: UnifiedEntryStageTier
+  strategyLabelKo: string
+  entryStageLabel: string
+  entryStageAction: string
+}
+
 export type SummaryInfo = {
   title: string
   description: string
-  finalGrade: string
-  strategy: string
-  entryStage: string
+  strategy: Strategy
+  entryStageCode: EntryStage
+  executionUi: ExecutionSummaryUi
   reason: string
 }
 
@@ -25,6 +44,11 @@ export type ChartPoint = {
   label: string
   value: number | null
 }
+
+export type MetricRiskStrip = 'neutral' | 'info' | 'warning' | 'orange' | 'danger'
+
+/** 카드 좌측 4px 액센트 (배경은 항상 흰색) */
+export type MetricCardAccent = 'neutral' | 'info' | 'caution' | 'warning' | 'danger'
 
 export type LogicMetric = {
   title: string
@@ -45,8 +69,35 @@ export type LogicMetric = {
     supplyPeriod: string
   }
   score?: number
+  /** 시장 카드 등 미니 추세선 (정규화 전 원시 값) */
+  sparkline?: number[]
   /** 섹터 자금흐름 등 상태 칩 (주도섹터·관심섹터 등) */
   statusBadge?: string
+  /** 카드 좌측 4px 색 — 미지정 시 riskStrip에서 유추 */
+  cardAccent?: MetricCardAccent
+  /** 카드 클릭 시 drawer에 표시할 상세(멀티라인) */
+  detailForDrawer?: string
+  /** Primary 숫자/문구 색 (실적 D-day 등) */
+  valueEmphasis?: 'danger' | 'warning' | 'muted' | 'default'
+  /** Sub 한 줄 강조 (실적 미스 등) */
+  subValueEmphasis?: 'danger' | 'default' | 'muted'
+  /** 수급 카드: 외·기 순매수(원) — 있으면 그리드에서 2행 분리 표시 */
+  supplyForeignWon?: number
+  supplyInstitutionWon?: number
+  /** 컨센서스 카드: 평균·최고 목표가(원) 및 현재가(원) */
+  consensusAvgWon?: number
+  consensusMaxWon?: number
+  consensusSpotWon?: number
+  /** 툴팁에 노출할 투자의견 평균(5점 만점) */
+  consensusRecommendationScore?: number | null
+  /** 그리드 우측 상단 커스텀 뱃지(예: 평균 도달) */
+  cornerBadge?: string
+  /** ⓘ 툴팁 — 있으면 descriptionKey 기본 COPY 대신 사용 */
+  indicatorTooltipOverride?: {
+    title: string
+    description: string
+    thresholds: string
+  }
   descriptionKey:
     | 'structure'
     | 'execution'
@@ -61,8 +112,25 @@ export type LogicMetric = {
     | 'consensus'
     | 'special'
     | 'statistics'
+    | 'structureState'
+    | 'earnings'
+    | 'roe'
+    | 'epsGrowth'
+    | 'fundamental'
+    | 'fundamentalPer'
+    | 'fundamentalPbr'
+    | 'fundamentalRoe'
+    | 'fundamentalOpMargin'
+    | 'fundamentalEpsGrowth'
+    | 'fundamentalDebt'
   icon: string
   tone: 'blue' | 'violet' | 'amber' | 'sky' | 'emerald' | 'indigo' | 'orange' | 'cyan' | 'teal' | 'rose' | 'slate' | 'red'
+  /** 좌측 4px 리스크 스트립 (ATR·지표·통계·밸류 등) */
+  riskStrip?: MetricRiskStrip
+  /** 임계 초과 시 제목 옆 경고 문구 */
+  riskBadge?: string
+  /** 주의(파란) 구간에서 정보 아이콘 표시 */
+  showRiskInfoIcon?: boolean
 }
 
 export type ExecutionCard = {
@@ -70,10 +138,6 @@ export type ExecutionCard = {
   value: string
   hint?: string
 }
-
-export type Strategy = 'BUY' | 'HOLD' | 'WATCH_ONLY' | 'TAKE_PROFIT' | 'REJECT'
-export type EntryStage = 'ACCEPT' | 'CAUTION' | 'WATCH' | 'REJECT'
-export type MarketStatus = 'RiskOn' | 'Neutral' | 'Caution'
 
 /** @deprecated 목표가 패널은 TargetPriceRow / CalculateTargetPricesResult 사용 */
 export type TargetPrice = {
@@ -107,6 +171,8 @@ export type TargetPriceInput = {
   consensusAvgTargetPrice?: number
   consensusMaxTargetPrice?: number
   marketStatus: MarketStatus
+  /** 실행 전략과 동일 손절가(없으면 내부에서 현재가 대비 근사) */
+  stopPrice?: number
 }
 
 export type TargetPriceRow = {
@@ -114,20 +180,31 @@ export type TargetPriceRow = {
   targetPrice: number
   expectedReturnPct: number
   probability: number
+  /** 동일 변동성(ATR) 근사 하 말기 손절가 이하 도달 휴리스틱 확률(%) */
+  stopHitProbability: number
+  /** 직전 3년 백테스트 근사 표본 수 (UI 표기용) */
+  backtestSampleSize: number
   method: string
   note?: string
 }
 
 export type CalculateTargetPricesResult = {
   targets: TargetPriceRow[]
+  /** 카드 공통 손절가(원) */
+  stopPrice: number
+  stopLossPct: number
   warnings: string[]
   notes: string[]
 }
 
+export type StopBasisTag = 'FIXED' | 'ATR' | 'LOW20' | 'TIGHT'
+
 export type StopInfo = {
   stopPrice: number
   stopLossPct: number
-  method: 'FIXED' | 'ATR' | 'SUPPORT' | 'MA20' | 'RECENT_LOW' | 'FALLBACK'
+  method: 'FIXED' | 'ATR' | 'SUPPORT' | 'MA20' | 'RECENT_LOW' | 'FALLBACK' | 'TIGHT'
+  /** 선택된 STOP 근거 (UI "기준" 표기) */
+  basis: StopBasisTag
   reason: string
   candidates: {
     method: string
@@ -162,7 +239,20 @@ export type RiskReward = {
   risk: number
   reward: number
   ratio: number
+  /** @deprecated 가격(1M 목표) 기반 R/R — UI는 `StrategyRiskRewardMetrics` 사용 */
   verdict: '좋음' | '가능' | '애매' | '비추천'
+}
+
+export type StrategyRiskRewardVerdict = '비효율' | '보통' | '양호' | '우수'
+
+/** 손익% 기준 순수·가중·확률가중 R/R (실행 전략 헤더 표시용) */
+export type StrategyRiskRewardMetrics = {
+  pureRatio: number
+  weightedRatio: number
+  expectedProbWeightedRatio: number
+  pureVerdict: StrategyRiskRewardVerdict
+  weightedVerdict: StrategyRiskRewardVerdict
+  expectedProbWeightedVerdict: StrategyRiskRewardVerdict
 }
 
 export type ExecutionInput = {
@@ -208,6 +298,8 @@ export type ExecutionPlan = {
 /** 3개월 +15% 실행 전략 계산 입력 */
 export type ThreeMonthStrategyInput = {
   currentPrice: number
+  /** 구조 점수(0~100) — 진입 트리 전용 */
+  structureScore: number
   finalScore: number
   executionScore: number
   supplyScore: number
@@ -221,18 +313,50 @@ export type ThreeMonthStrategyInput = {
   supportPrice: number
   consensusAvgTargetPrice: number | null
   consensusMaxTargetPrice: number | null
+  /** 없으면 `supportPrice`·현재가로 보수 추정 */
+  recentLow20?: number
+  /** 진입가 — 없으면 현재가 */
+  entryPrice?: number
+  realizedVol60AnnPct?: number | null
+  ma5?: number | null
+  priorSwingHigh?: number | null
+  volumeVs5dAvgRatio?: number | null
+  pnlSinceEntryPct?: number | null
+  firstTakeProfitReached?: boolean
+  stopBreachedReentry?: boolean
+  currentPositionPct?: number | null
+  daysSinceEntry?: number | null
+  /** 펀더멘털 가속 트랙 — 미입력 시 보수적 약세로 처리 */
+  sectorName?: string | null
+  operatingMarginTtmPct?: number | null
+  operatingMarginYoYPp?: number | null
+  forwardPer?: number | null
+  fiveYearAvgPer?: number | null
+  epsGrowthYoYPct?: number | null
+  trailingPer?: number | null
 }
 
 /** 3개월 +15% 전략 산출물 */
 export type ThreeMonthStrategy = {
   entryDecision: string
+  /** 진입 트리 판단 근거 한 줄 */
+  entryRationale?: string
+  /** 펀더멘털 3박자 요약 시그널 */
+  fundamentalSignal?: 'strong' | 'moderate' | 'weak'
+  /** 한눈에 보기 Reason 한 줄 (RSI·ATR·펀더 요약) */
+  entryReasonShort?: string
   recommendedPositionPct: number
   stopPrice: number
   stopLossPct: number
   stopReason: string
+  /** Stop 패널 후보 표 — `strategy/` 손절 산출과 동기 */
+  stopPanelMethod?: StopInfo['method']
+  stopPanelCandidates?: StopInfo['candidates']
   firstTakeProfitPrice: number
   firstTakeProfitPct: number
   firstTakeProfitSellPct: number
+  /** 1차 익절 + 강제 트리거 한 줄 */
+  firstTakeProfitDetail?: string
   finalTargetPrice: number
   finalTargetPct: number
   maxHoldingPeriod: string
