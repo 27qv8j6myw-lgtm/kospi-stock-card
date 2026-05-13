@@ -8,6 +8,7 @@ import { StockHeader } from '../components/StockHeader'
 import { StockHero, letterGradeToTone, scoreToLetterGrade, type StockHeroChartProps } from '../components/StockHero'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { StopPanel } from '../components/StopPanel'
+import { AiScenarioCard } from '../components/stock/AiScenarioCard'
 import { PriceTargets } from '../components/PriceTargets'
 import { useKisChart, type IntradayInterval } from '../hooks/useKisChart'
 import { useKisLogicIndicators } from '../hooks/useKisLogicIndicators'
@@ -120,7 +121,7 @@ export default function Page(props: PageProps = {}) {
     return () => clearTimeout(t)
   }, [searchDisplay, queryCode])
 
-  const { state: quoteState } = useKisQuote(queryCode)
+  const { state: quoteState, quoteRefresh } = useKisQuote(queryCode)
   const { state: logicState } = useKisLogicIndicators(queryCode)
 
   useEffect(() => {
@@ -165,7 +166,7 @@ export default function Page(props: PageProps = {}) {
     return m.includes('KOSDAQ') || m.includes('코스닥') ? 'KQ' : 'KS'
   }, [liveStock.market])
 
-  const chartState = useKisChart(queryCode, tf, {
+  const { chartState, intradayLastUpdated, intradayRefreshing } = useKisChart(queryCode, tf, {
     exchangeSuffix: chartExchangeSuffix,
     intradayInterval: intradayIv,
   })
@@ -317,6 +318,7 @@ export default function Page(props: PageProps = {}) {
       trailingPER,
       fundamentalSignal: entryBundle.fundamentalSignal,
       entryReasonShort: entryBundle.reasonShort,
+      entryTreeJudgment: entryBundle.judgment,
     }
   }, [logicState.data, quoteState, liveStock.price, liveStock.sector, queryCode, valuationLiveModel])
 
@@ -1203,8 +1205,19 @@ export default function Page(props: PageProps = {}) {
         chartState.status === 'ok' && chartState.mode === 'intraday' ? chartState.intraday : null,
       intradayInterval: intradayIv,
       onIntradayIntervalChange: setIntradayIv,
+      intradayLastUpdated,
+      intradayRefreshing,
     }
-  }, [tf, chartData, liveStock.price, liveStock.change, chartState, intradayIv])
+  }, [
+    tf,
+    chartData,
+    liveStock.price,
+    liveStock.change,
+    chartState,
+    intradayIv,
+    intradayLastUpdated,
+    intradayRefreshing,
+  ])
 
   const heroStock = useMemo(() => {
     const subtitleParts = [liveStock.code, liveStock.market, liveStock.sector].filter(
@@ -1218,6 +1231,7 @@ export default function Page(props: PageProps = {}) {
       price: liveStock.price,
       change: liveStock.change,
       changePct: liveStock.changePercent,
+      quoteRefresh,
     }
   }, [
     liveStock.code,
@@ -1227,6 +1241,7 @@ export default function Page(props: PageProps = {}) {
     liveStock.price,
     liveStock.change,
     liveStock.changePercent,
+    quoteRefresh,
   ])
 
   const heroInsight = useMemo(() => {
@@ -1252,6 +1267,7 @@ export default function Page(props: PageProps = {}) {
             return first.length > 80 ? `${first.slice(0, 77)}…` : first
           })())
 
+    const j = executionUiBundle?.entryTreeJudgment
     return {
       title,
       finalGrade: letter,
@@ -1263,6 +1279,8 @@ export default function Page(props: PageProps = {}) {
           ? ('danger' as const)
           : ('default' as const),
       reason: reasonShort,
+      entrySplitPrices: j?.splitPrices ?? null,
+      entryRecommendedAction: j?.recommendedAction,
     }
   }, [
     summaryInfo.reason,
@@ -1272,6 +1290,7 @@ export default function Page(props: PageProps = {}) {
     executionUiBundle?.score,
     executionUiBundle?.entryReasonShort,
     executionUiBundle?.fundamentalSignal,
+    executionUiBundle?.entryTreeJudgment,
     logicDerived?.threeMonth?.entryReasonShort,
     logicDerived?.threeMonth?.fundamentalSignal,
     logicState.data,
@@ -1331,6 +1350,10 @@ export default function Page(props: PageProps = {}) {
             displayMode={targetPriceDisplayMode}
           />
           <StopPanel stop={stopInfo} />
+
+          <div className="border-t border-default px-6 py-6 sm:px-8">
+            <AiScenarioCard stockCode={liveStock.code} stockName={liveStock.name} />
+          </div>
 
           <footer className="border-t border-default px-6 py-4 sm:px-8">
             <p className="inline-flex items-center gap-2 rounded-md border border-default bg-neutral-bg px-3 py-1.5 text-xs text-secondary">

@@ -26,3 +26,13 @@ export function formatSignedPct(value: number, decimals = 1): string {
   if (value < 0) return `${value.toFixed(decimals)}%`
   return `${value.toFixed(decimals)}%`
 }
+
+/** 시세·차트 자동 갱신 시각 표시용 (nowMs는 주기적 리렌더용) */
+export function formatRelativeTime(date: Date, nowMs: number = Date.now()): string {
+  const seconds = Math.floor((nowMs - date.getTime()) / 1000)
+  if (seconds < 5) return '방금'
+  if (seconds < 60) return `${seconds}초 전`
+  const mins = Math.floor(seconds / 60)
+  if (mins < 60) return `${mins}분 전`
+  return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+}

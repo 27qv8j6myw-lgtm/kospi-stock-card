@@ -332,7 +332,7 @@ export function StockCard({
 
   const basePrice =
     quoteState.status === 'ok' ? quoteState.data.price : 71_200
-  const chartState = useKisChart(queryCode, tf)
+  const { chartState } = useKisChart(queryCode, tf)
   const chartSeriesData = useMemo(() => {
     const base =
       chartState.status === 'ok' && chartState.mode === 'daily' && chartState.points.length

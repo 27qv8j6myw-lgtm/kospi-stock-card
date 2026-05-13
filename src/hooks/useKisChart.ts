@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
+import { apiUrl } from '../lib/apiBase'
 import type { Timeframe } from '../types/stock'
 import type { IntradayChartApiResponse } from '../types/intradayChart'
+import { useAutoRefresh } from './useAutoRefresh'
 
 export type { Timeframe }
 
@@ -26,7 +28,7 @@ type OkIntraday = {
   intraday: IntradayChartApiResponse
 }
 
-type State =
+export type KisChartState =
   | { status: 'idle'; points: ChartPoint[]; intraday: null; mode: null }
   | { status: 'loading'; points: ChartPoint[]; intraday: null; mode: 'daily' | 'intraday' | null }
   | OkDaily
@@ -36,12 +38,25 @@ type State =
 const inflight = new Map<string, Promise<unknown>>()
 const recent = new Map<string, { at: number; data: unknown }>()
 
+export type UseKisChartResult = {
+  chartState: KisChartState
+  intradayLastUpdated: Date | null
+  intradayRefreshing: boolean
+}
+
+const INTRADAY_POLL_MS = 60_000
+
 export function useKisChart(
   stockCode: string,
   tf: Timeframe,
   opts?: { exchangeSuffix?: 'KS' | 'KQ'; intradayInterval?: IntradayInterval },
-) {
-  const [state, setState] = useState<State>({ status: 'idle', points: [], intraday: null, mode: null })
+): UseKisChartResult {
+  const [state, setState] = useState<KisChartState>({
+    status: 'idle',
+    points: [],
+    intraday: null,
+    mode: null,
+  })
 
   const normalizedCode = useMemo(
     () => String(stockCode).replace(/\D/g, '').padStart(6, '0'),
@@ -51,7 +66,50 @@ export function useKisChart(
   const suffix = opts?.exchangeSuffix ?? 'KS'
   const iv = opts?.intradayInterval ?? '5m'
 
+  const intradayUrl = useMemo(() => {
+    const base = apiUrl('/api/intraday-chart')
+    return `${base}?code=${encodeURIComponent(normalizedCode)}&interval=${encodeURIComponent(iv)}&suffix=${encodeURIComponent(suffix)}`
+  }, [normalizedCode, iv, suffix])
+
+  const isIntradayTf = tf === '1D'
+
+  const {
+    data: intradayPolled,
+    lastUpdated: intradayHookLastUpdated,
+    isFetching: intradayHookFetching,
+    error: intradayPollError,
+  } = useAutoRefresh<IntradayChartApiResponse>(intradayUrl, {
+    intervalMs: INTRADAY_POLL_MS,
+    enabled: isIntradayTf,
+  })
+
   useEffect(() => {
+    if (!isIntradayTf) return
+    if (intradayPolled) {
+      setState({ status: 'ok', mode: 'intraday', points: [], intraday: intradayPolled })
+      return
+    }
+    if (!intradayHookFetching && intradayPollError) {
+      setState({
+        status: 'error',
+        points: [],
+        intraday: null,
+        mode: null,
+        message: intradayPollError,
+      })
+      return
+    }
+    setState({
+      status: 'loading',
+      points: [],
+      intraday: null,
+      mode: 'intraday',
+    })
+  }, [isIntradayTf, intradayPolled, intradayHookFetching, intradayPollError])
+
+  useEffect(() => {
+    if (isIntradayTf) return
+
     let cancelled = false
 
     const load = async () => {
@@ -59,67 +117,8 @@ export function useKisChart(
         status: 'loading',
         points: s.points,
         intraday: null,
-        mode: tf === '1D' ? 'intraday' : 'daily',
+        mode: 'daily',
       }))
-
-      if (tf === '1D') {
-        const intraKey = `intraday:${normalizedCode}:${iv}:${suffix}`
-        const now = Date.now()
-        const hit = recent.get(intraKey)
-        if (hit && now - hit.at < 3_000) {
-          setState({
-            status: 'ok',
-            mode: 'intraday',
-            points: [],
-            intraday: hit.data as IntradayChartApiResponse,
-          })
-          return
-        }
-
-        try {
-          let task = inflight.get(intraKey)
-          if (!task) {
-            const u = new URL('/api/intraday-chart', window.location.origin)
-            u.searchParams.set('code', normalizedCode)
-            u.searchParams.set('interval', iv)
-            u.searchParams.set('suffix', suffix)
-            task = fetch(u.toString()).then(async (res) => {
-              const text = await res.text()
-              let json: unknown = null
-              try {
-                json = JSON.parse(text)
-              } catch {
-                json = null
-              }
-              if (!res.ok) {
-                const msg =
-                  json && typeof json === 'object' && json !== null && 'error' in json
-                    ? String((json as { error: unknown }).error)
-                    : `HTTP ${res.status}`
-                throw new Error(msg)
-              }
-              return json
-            })
-            inflight.set(intraKey, task)
-          }
-          const json = (await task) as IntradayChartApiResponse
-          inflight.delete(intraKey)
-          recent.set(intraKey, { at: Date.now(), data: json })
-          if (cancelled) return
-          setState({ status: 'ok', mode: 'intraday', points: [], intraday: json })
-        } catch (e) {
-          inflight.delete(intraKey)
-          if (cancelled) return
-          setState({
-            status: 'error',
-            points: [],
-            intraday: null,
-            mode: null,
-            message: e instanceof Error ? e.message : String(e),
-          })
-        }
-        return
-      }
 
       const key = `${normalizedCode}:${tf}`
       const now = Date.now()
@@ -128,20 +127,21 @@ export function useKisChart(
         const points = Array.isArray((hit.data as { points?: ChartPoint[] })?.points)
           ? ((hit.data as { points: ChartPoint[] }).points as ChartPoint[])
           : []
-        setState({ status: 'ok', mode: 'daily', points, intraday: null })
+        if (!cancelled) setState({ status: 'ok', mode: 'daily', points, intraday: null })
         return
       }
 
       try {
         let task = inflight.get(key)
         if (!task) {
-          task = fetch(
+          const chartUrl = apiUrl(
             `/api/chart?code=${encodeURIComponent(normalizedCode)}&tf=${encodeURIComponent(tf)}`,
-          ).then(async (res) => {
+          )
+          task = fetch(chartUrl).then(async (res) => {
             const text = await res.text()
-            let json: any = null
+            let json: { points?: ChartPoint[]; error?: string } | null = null
             try {
-              json = JSON.parse(text)
+              json = text ? JSON.parse(text) : null
             } catch {
               const htmlLike =
                 text.trimStart().startsWith('<!DOCTYPE') || text.trimStart().startsWith('<html')
@@ -183,7 +183,11 @@ export function useKisChart(
     return () => {
       cancelled = true
     }
-  }, [normalizedCode, tf, suffix, iv])
+  }, [normalizedCode, tf, isIntradayTf])
 
-  return state
+  return {
+    chartState: state,
+    intradayLastUpdated: isIntradayTf ? intradayHookLastUpdated : null,
+    intradayRefreshing: isIntradayTf ? intradayHookFetching : false,
+  }
 }

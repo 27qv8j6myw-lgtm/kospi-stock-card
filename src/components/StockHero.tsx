@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useState } from 'react'
+import { formatRelativeTime } from '../lib/utils/format'
 import {
   Area,
   AreaChart,
@@ -46,6 +47,15 @@ export type StockHeroStock = {
   price: number
   change: number
   changePct: number
+  /** 시세 자동 갱신 (선택) */
+  quoteRefresh?: { lastUpdated: Date | null; isFetching: boolean }
+}
+
+export type EntrySplitPricesGlance = {
+  first: number
+  second: number
+  third: number
+  firstNote: string
 }
 
 export type StockHeroInsight = {
@@ -61,6 +71,9 @@ export type StockHeroInsight = {
   /** 위험 구간 등 빨간 텍스트 */
   entryStageEmphasis?: 'danger' | 'default'
   reason: string
+  /** 룰 엔진 분할 매수 참고가 (회피·익절 단계는 null) */
+  entrySplitPrices?: EntrySplitPricesGlance | null
+  entryRecommendedAction?: 'immediate' | 'partial' | 'wait' | 'avoid'
 }
 
 export type StockHeroChartProps = {
@@ -75,6 +88,9 @@ export type StockHeroChartProps = {
   intraday?: IntradayChartApiResponse | null
   intradayInterval?: IntradayInterval
   onIntradayIntervalChange?: (iv: IntradayInterval) => void
+  /** 당일 분봉 자동 갱신 시각 */
+  intradayLastUpdated?: Date | null
+  intradayRefreshing?: boolean
 }
 
 export type StockHeroProps = {
@@ -85,8 +101,41 @@ export type StockHeroProps = {
   chartFooter?: ReactNode
 }
 
+function usePeriodicNow(active: boolean, intervalMs = 5000) {
+  const [t, setT] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const id = window.setInterval(() => setT(Date.now()), intervalMs)
+    return () => window.clearInterval(id)
+  }, [active, intervalMs])
+  return t
+}
+
 function formatKrwWhole(v: number) {
   return `${Math.round(v).toLocaleString('ko-KR')}원`
+}
+
+function HeroSplitPriceCell({
+  label,
+  price,
+  emphasize,
+}: {
+  label: string
+  price: number
+  emphasize?: boolean
+}) {
+  return (
+    <div
+      className={`rounded-lg border border-[#E5E7EB] px-2 py-2 text-center ${
+        emphasize ? 'bg-[#EFF6FF]' : 'bg-white'
+      }`}
+    >
+      <p className="text-xxs font-medium text-secondary sm:text-xs">{label}</p>
+      <p className="mt-1 font-sans-en text-sm font-semibold tabular-nums text-primary sm:text-base">
+        {Math.round(price).toLocaleString('ko-KR')}원
+      </p>
+    </div>
+  )
 }
 
 function gradeValueColor(grade: string): string {
@@ -299,6 +348,8 @@ function HeroChartInner({
         intradayInterval={intradayInterval}
         onIntradayIntervalChange={onIntradayIntervalChange}
         narrow={narrow}
+        intradayLastUpdated={chart.intradayLastUpdated}
+        intradayRefreshing={chart.intradayRefreshing}
       />
     )
   }
@@ -389,6 +440,8 @@ function IntradayChartBlock({
   intradayInterval,
   onIntradayIntervalChange,
   narrow,
+  intradayLastUpdated,
+  intradayRefreshing,
 }: {
   chart: StockHeroChartProps
   lineColor: string
@@ -397,8 +450,13 @@ function IntradayChartBlock({
   intradayInterval: IntradayInterval
   onIntradayIntervalChange?: (iv: IntradayInterval) => void
   narrow: boolean
+  intradayLastUpdated?: Date | null
+  intradayRefreshing?: boolean
 }) {
   const { status, errorMessage, onTimeframeChange, timeframe } = chart
+  const chartTick = usePeriodicNow(
+    Boolean(intradayLastUpdated || intradayRefreshing),
+  )
   const series = intraday?.series ?? []
   const openPx = intraday?.openPrice ?? 0
   const mkt = intraday?.marketStatus ?? 'pre_open'
@@ -459,6 +517,22 @@ function IntradayChartBlock({
           ))}
         </div>
       </div>
+      {intradayLastUpdated || intradayRefreshing ? (
+        <p className="mt-1 text-xs text-secondary">
+          당일 차트
+          {intradayRefreshing ? (
+            <>
+              {' · '}
+              <span className="font-medium text-info-text">갱신 중</span>
+            </>
+          ) : intradayLastUpdated ? (
+            <>
+              {' · '}
+              {formatRelativeTime(intradayLastUpdated, chartTick)}
+            </>
+          ) : null}
+        </p>
+      ) : null}
 
       {mkt === 'pre_open' && status === 'ok' ? (
         <p className="mt-3 text-sm font-medium text-primary">장 시작 대기</p>
@@ -543,6 +617,9 @@ export function StockHero({ stock, insight, chart, chartFooter }: StockHeroProps
   const isUp = stock.change >= 0
   const lineColor = isUp ? UP_HEX : DOWN_HEX
   const hue = logoHueFromCode(stock.code)
+  const quoteTick = usePeriodicNow(
+    Boolean(stock.quoteRefresh?.lastUpdated || stock.quoteRefresh?.isFetching),
+  )
 
   return (
     <Card variant="elevated" padding="lg" radius="xl" className="overflow-hidden shadow-lg">
@@ -584,6 +661,23 @@ export function StockHero({ stock, insight, chart, chartFooter }: StockHeroProps
             {stock.change.toLocaleString('ko-KR')}원 ({isUp ? '+' : ''}
             {stock.changePct.toFixed(2)}%)
           </p>
+          {stock.quoteRefresh &&
+          (stock.quoteRefresh.lastUpdated || stock.quoteRefresh.isFetching) ? (
+            <p className="mt-1 text-xs text-secondary sm:text-right">
+              시세
+              {stock.quoteRefresh.isFetching ? (
+                <>
+                  {' · '}
+                  <span className="font-medium text-info-text">갱신 중</span>
+                </>
+              ) : stock.quoteRefresh.lastUpdated ? (
+                <>
+                  {' · '}
+                  {formatRelativeTime(stock.quoteRefresh.lastUpdated, quoteTick)}
+                </>
+              ) : null}
+            </p>
+          ) : null}
           <div className="mt-2 flex w-full justify-start sm:justify-end">
             <StatusBadge status={strategyToBadgeStatus(insight.strategy)} size="glance" />
           </div>
@@ -647,6 +741,29 @@ export function StockHero({ stock, insight, chart, chartFooter }: StockHeroProps
                 </span>
               </div>
             </li>
+            {insight.entrySplitPrices &&
+            insight.entryRecommendedAction &&
+            insight.entryRecommendedAction !== 'avoid' ? (
+              <li className="border-t border-[#F3F4F6] py-3.5">
+                <p className="text-sm font-semibold text-primary">
+                  추천 분할 매수 가격
+                  {insight.entrySplitPrices.firstNote !== '현재가 즉시' ? (
+                    <span className="ml-1.5 font-normal text-secondary">
+                      · {insight.entrySplitPrices.firstNote}
+                    </span>
+                  ) : null}
+                </p>
+                <div className="mt-3 grid grid-cols-3 gap-2">
+                  <HeroSplitPriceCell
+                    label="1차"
+                    price={insight.entrySplitPrices.first}
+                    emphasize={insight.entrySplitPrices.firstNote === '현재가 즉시'}
+                  />
+                  <HeroSplitPriceCell label="2차 (-5%)" price={insight.entrySplitPrices.second} />
+                  <HeroSplitPriceCell label="3차 (-10%)" price={insight.entrySplitPrices.third} />
+                </div>
+              </li>
+            ) : null}
           </ul>
         </div>
 
