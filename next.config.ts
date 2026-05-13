@@ -11,11 +11,13 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'intraday-chart',
     'logic-indicators',
     'ai-fill',
+    'ai/stock-scenario',
     'ai-briefing',
     'screener-briefing',
     'market-briefing',
     'research-stock',
     'health',
+    'market-indices',
     'screening',
     'compare-stock',
   ]

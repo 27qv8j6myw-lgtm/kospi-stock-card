@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Info, TrendingUp } from 'lucide-react'
+import { PageHeader } from '../components/layout/PageHeader'
 import { ExecutionStrategy } from '../components/ExecutionStrategy'
 import { IndicatorGrid } from '../components/IndicatorGrid'
 import { StockNameSearch } from '../components/StockNameSearch'
 import { SpecialEventBanner } from '../components/SpecialEventBanner'
-import { StockHeader } from '../components/StockHeader'
 import { StockHero, letterGradeToTone, scoreToLetterGrade, type StockHeroChartProps } from '../components/StockHero'
 import { ErrorBoundary } from '../components/ErrorBoundary'
 import { StopPanel } from '../components/StopPanel'
@@ -1299,16 +1299,7 @@ export default function Page(props: PageProps = {}) {
   return (
     <main className="mx-auto min-w-0 max-w-6xl overflow-x-hidden px-4 py-8 sm:px-6 lg:px-8">
       <article className="overflow-visible rounded-2xl border border-default bg-card shadow-card">
-          <StockHeader
-            title="Signal15 🇰🇷"
-            subtitle=""
-            asOfDate={liveStock.asOfDate}
-            leading={
-              <span className="flex size-11 items-center justify-center rounded-xl border border-red-200 bg-red-50 sm:size-12">
-                <TrendingUp className="size-6 text-red-600 sm:size-7" strokeWidth={2.25} aria-hidden />
-              </span>
-            }
-          />
+          <PageHeader title="종목 카드" asOfDate={liveStock.asOfDate} />
           <div className="border-b border-default px-6 py-3 sm:px-8">
             <StockNameSearch
               compact

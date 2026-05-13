@@ -18,6 +18,9 @@ import { computeLogicIndicatorsPack } from './indicators/logicBundle.mjs'
 import { buildEarningsIntel, extractSpecialAlertsFromKisRaw } from './earningsIntel.mjs'
 import { runScreeningSimple } from './screening/runScreeningSimple.mjs'
 import { getCompareStockPayload } from './screening/compareStock.mjs'
+import { analyzeStockScenario } from './ai/stockScenario.mjs'
+import { scoreSingleStock, fetchIndexScreeningContext } from './screening/scoreStock.mjs'
+import { getMarketIndices } from './marketIndices.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** `server/` 의 부모 = 프로젝트 루트 (실행 cwd 와 무관) */
@@ -908,6 +911,16 @@ app.get('/api/health', (_req, res) => {
   })
 })
 
+app.get('/api/market-indices', async (_req, res) => {
+  try {
+    const result = await getMarketIndices()
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[/api/market-indices]', message)
+    res.status(500).json({ error: message })
+  }
+})
 
 app.get('/api/intraday-chart', async (req, res) => {
   const code = String(req.query.code || '005930').replace(/\D/g, '').padStart(6, '0')
@@ -1102,6 +1115,58 @@ app.get('/api/ai-fill', async (req, res) => {
       stage: 'llm',
       hint: 'ANTHROPIC_MODEL 이 Anthropic 콘솔에서 허용된 모델 ID인지 확인하세요.',
     })
+  }
+})
+
+app.get('/api/ai/stock-scenario', async (req, res) => {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  if (!appKey || !appSecret) {
+    res.status(503).json({ error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    return
+  }
+
+  const rawCode = req.query.code
+  if (!rawCode) {
+    res.status(400).json({ error: 'code 필수' })
+    return
+  }
+  const code = String(rawCode).replace(/\D/g, '').padStart(6, '0')
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const indexCtx = await fetchIndexScreeningContext(appKey, appSecret, env)
+    const scored = await scoreSingleStock(appKey, appSecret, env, code, indexCtx)
+
+    const stockData = {
+      name: scored.name || code,
+      sector: scored.sector || '',
+      currentPrice: scored.currentPrice,
+      changePct: scored.changePct,
+      totalScore: scored.totalScore,
+      subScores: scored.subScores,
+      rsi: scored.subScores?.rsi,
+      atrGap: scored.subScores?.atrGap,
+      return5D: scored.sectorReturn5D,
+      per: scored.per,
+      fiveYearAvgPer: null,
+      operatingMargin: scored.operatingMargin,
+      consensusAvg: null,
+      consensusUpside: null,
+      foreign3D: scored.supplyDemand3D?.foreign ?? 0,
+      institution3D: scored.supplyDemand3D?.institution ?? 0,
+    }
+
+    const result = await analyzeStockScenario(code, stockData)
+    if (!result) {
+      res.status(500).json({ error: 'AI 분석 실패' })
+      return
+    }
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[/api/ai/stock-scenario]', message)
+    res.status(500).json({ error: message })
   }
 })
 
