@@ -12,6 +12,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'logic-indicators',
     'ai-fill',
     'ai/stock-scenario',
+    'ai-stock-scenario',
     'ai-briefing',
     'screener-briefing',
     'market-briefing',

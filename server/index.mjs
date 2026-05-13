@@ -1118,58 +1118,6 @@ app.get('/api/ai-fill', async (req, res) => {
   }
 })
 
-app.get('/api/ai/stock-scenario', async (req, res) => {
-  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
-  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
-  if (!appKey || !appSecret) {
-    res.status(503).json({ error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
-    return
-  }
-
-  const rawCode = req.query.code
-  if (!rawCode) {
-    res.status(400).json({ error: 'code 필수' })
-    return
-  }
-  const code = String(rawCode).replace(/\D/g, '').padStart(6, '0')
-  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
-
-  try {
-    const indexCtx = await fetchIndexScreeningContext(appKey, appSecret, env)
-    const scored = await scoreSingleStock(appKey, appSecret, env, code, indexCtx)
-
-    const stockData = {
-      name: scored.name || code,
-      sector: scored.sector || '',
-      currentPrice: scored.currentPrice,
-      changePct: scored.changePct,
-      totalScore: scored.totalScore,
-      subScores: scored.subScores,
-      rsi: scored.subScores?.rsi,
-      atrGap: scored.subScores?.atrGap,
-      return5D: scored.sectorReturn5D,
-      per: scored.per,
-      fiveYearAvgPer: null,
-      operatingMargin: scored.operatingMargin,
-      consensusAvg: null,
-      consensusUpside: null,
-      foreign3D: scored.supplyDemand3D?.foreign ?? 0,
-      institution3D: scored.supplyDemand3D?.institution ?? 0,
-    }
-
-    const result = await analyzeStockScenario(code, stockData)
-    if (!result) {
-      res.status(500).json({ error: 'AI 분석 실패' })
-      return
-    }
-    res.json(result)
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e)
-    console.error('[/api/ai/stock-scenario]', message)
-    res.status(500).json({ error: message })
-  }
-})
-
 app.get('/api/logic-indicators', async (req, res) => {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
   const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
@@ -1252,6 +1200,59 @@ app.get('/api/logic-indicators', async (req, res) => {
   }
 })
 
+/** AI 시나리오 — `/api/ai-stock-scenario`(단일 세그먼트, Vercel·리버스 프록시 호환) + 레거시 `/api/ai/stock-scenario` */
+async function handleAiStockScenarioReq(req, res) {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  if (!appKey || !appSecret) {
+    res.status(503).json({ error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    return
+  }
+
+  const rawCode = req.query.code
+  if (!rawCode) {
+    res.status(400).json({ error: 'code 필수' })
+    return
+  }
+  const code = String(rawCode).replace(/\D/g, '').padStart(6, '0')
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const indexCtx = await fetchIndexScreeningContext(appKey, appSecret, env)
+    const scored = await scoreSingleStock(appKey, appSecret, env, code, indexCtx)
+
+    const stockData = {
+      name: scored.name || code,
+      sector: scored.sector || '',
+      currentPrice: scored.currentPrice,
+      changePct: scored.changePct,
+      totalScore: scored.totalScore,
+      subScores: scored.subScores,
+      rsi: scored.subScores?.rsi,
+      atrGap: scored.subScores?.atrGap,
+      return5D: scored.sectorReturn5D,
+      per: scored.per,
+      fiveYearAvgPer: null,
+      operatingMargin: scored.operatingMargin,
+      consensusAvg: null,
+      consensusUpside: null,
+      foreign3D: scored.supplyDemand3D?.foreign ?? 0,
+      institution3D: scored.supplyDemand3D?.institution ?? 0,
+    }
+
+    const result = await analyzeStockScenario(code, stockData)
+    if (!result) {
+      res.status(500).json({ error: 'AI 분석 실패 - null 응답' })
+      return
+    }
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[/api/ai-stock-scenario]', message)
+    res.status(500).json({ error: message })
+  }
+}
+
 app.get('/api/quote', async (req, res) => {
   const appKey = process.env.KIS_APP_KEY?.trim()
   const appSecret = process.env.KIS_APP_SECRET?.trim()
@@ -1283,6 +1284,9 @@ app.get('/api/quote', async (req, res) => {
     res.status(502).json({ error: message })
   }
 })
+
+app.get('/api/ai-stock-scenario', handleAiStockScenarioReq)
+app.get('/api/ai/stock-scenario', handleAiStockScenarioReq)
 
 app.get('/api/screening', async (_req, res) => {
   const appKey = process.env.KIS_APP_KEY?.trim()
