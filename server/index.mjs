@@ -4,7 +4,15 @@ import { fileURLToPath } from 'node:url'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import express from 'express'
-import { inquireChartByTimeframe, inquireDomesticPrice, inquireInvestorByStock } from './kisClient.mjs'
+import { createClient } from '@supabase/supabase-js'
+import {
+  inquireChartByTimeframe,
+  inquireDailyBars,
+  inquireDomesticPrice,
+  inquireInvestorByStock,
+  inquireTradeValueRankTop,
+  isKisRateLimitError,
+} from './kisClient.mjs'
 import { getIntradayChart, krxMarketStatus } from './yahooIntraday.mjs'
 import { completeJsonChat, getAiConfig } from './aiClient.mjs'
 import { runResearchStock } from './researchStock.mjs'
@@ -17,10 +25,32 @@ import {
 import { computeLogicIndicatorsPack } from './indicators/logicBundle.mjs'
 import { buildEarningsIntel, extractSpecialAlertsFromKisRaw } from './earningsIntel.mjs'
 import { runScreeningSimple } from './screening/runScreeningSimple.mjs'
+import { runAutoScreening } from './screening/autoScreening.mjs'
+import { isAiEnabledForUser, getUserModel, resolveAiAccess } from './lib/userModel.mjs'
+import { getUserIdFromRequest } from './lib/auth.mjs'
 import { getCompareStockPayload } from './screening/compareStock.mjs'
 import { analyzeStockScenario } from './ai/stockScenario.mjs'
+import { selectTopFiveWithAnalysis } from './ai/screeningAnalysis.mjs'
+import {
+  getCachedAutoScreening,
+  getCachedScreening,
+  getLastAutoScreeningCache,
+  makeAutoScreeningCacheKey,
+  setCachedScreening,
+} from './lib/screeningCache.mjs'
+import { buildSectorCandidates } from './screening/buildSectorCandidates.mjs'
+import { analyzePortfolio } from './ai/portfolioAnalysis.mjs'
+import { summarizeInsight } from './ai/insightSummary.mjs'
 import { scoreSingleStock, fetchIndexScreeningContext } from './screening/scoreStock.mjs'
+import {
+  isAiPowerSector,
+  sanitizePowerEquipmentInBundle,
+  screeningStockNameKr,
+} from './screening/sectorMaster.mjs'
 import { getMarketIndices } from './marketIndices.mjs'
+import { getMarketSummary } from './marketSummary.mjs'
+import { getStockMasterByCode, searchStocksMaster } from './lib/stocksMasterSearch.mjs'
+import { registerProRoutes } from './pro/proRoutes.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 /** `server/` 의 부모 = 프로젝트 루트 (실행 cwd 와 무관) */
@@ -54,8 +84,53 @@ function cleanEnvSecret(v) {
   return s
 }
 
+/** Supabase 서비스 롤 — `market_cache` / `activity_logs` 서버 조회 */
+function getSupabaseService() {
+  const url = cleanEnvSecret(process.env.NEXT_PUBLIC_SUPABASE_URL)
+  const key = cleanEnvSecret(process.env.SUPABASE_SERVICE_ROLE_KEY)
+  if (!url || !key) return null
+  return createClient(url, key, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  })
+}
 
-/** 차트 요청 캐시/중복제거 (모의투자 호출 제한 보호) */
+/**
+ * @param {string} key
+ * @returns {Promise<unknown | null>}
+ */
+async function getMarketCached(key) {
+  const sb = getSupabaseService()
+  if (!sb) return null
+  const { data, error } = await sb
+    .from('market_cache')
+    .select('data')
+    .eq('cache_key', key)
+    .gt('expires_at', new Date().toISOString())
+    .maybeSingle()
+  if (error) {
+    console.warn('[market_cache] get', key, error.message)
+    return null
+  }
+  return data?.data ?? null
+}
+
+/**
+ * @param {string} key
+ * @param {unknown} data
+ * @param {number} ttlMs
+ */
+async function setMarketCached(key, data, ttlMs) {
+  const sb = getSupabaseService()
+  if (!sb) return
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString()
+  const { error } = await sb.from('market_cache').upsert(
+    { cache_key: key, data, expires_at: expiresAt },
+    { onConflict: 'cache_key' },
+  )
+  if (error) console.warn('[market_cache] set', key, error.message)
+}
+
+/** 차트 요청 캐시/중복제거 (KIS 호출 한도 보호) */
 const chartCache = new Map()
 const chartInflight = new Map()
 const intradayCache = new Map()
@@ -72,7 +147,7 @@ function intradayChartTtlMs() {
 }
 
 function logicTtlMs() {
-  // vps 호출 제한 보호: 로직 지표는 10분 캐시
+  // KIS 호출 한도 보호: 로직 지표는 10분 캐시
   return 10 * 60_000
 }
 
@@ -577,7 +652,10 @@ async function computeKisLogicIndicators(quote, stockChart, investor, consensus,
 }
 
 const allowedOrigins = new Set(
-  (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
+  (
+    process.env.CORS_ORIGINS ||
+    'http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000'
+  )
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean),
@@ -601,7 +679,7 @@ app.use(
 
 app.use(express.json({ limit: '512kb' }))
 
-async function generateAIFill({ payload }) {
+async function generateAIFill({ payload, model }) {
   const system = [
     '너는 한국 주식 카드 데이터 생성기다.',
     '입력 데이터를 바탕으로 과장 없이 보수적으로 요약한다.',
@@ -663,11 +741,11 @@ async function generateAIFill({ payload }) {
     },
   }
 
-  return completeJsonChat({ system, user: JSON.stringify(user) })
+  return completeJsonChat({ system, user: JSON.stringify(user), model })
 }
 
 /** AI 투자 메모 — 클라이언트 프롬프트(종목·숫자·뉴스 JSON)를 받아 JSON 응답 */
-async function generateAiBriefingJson({ prompt }) {
+async function generateAiBriefingJson({ prompt, model }) {
   const system = [
     '너는 한국 주식 애널리스트다. 입력 프롬프트의 규칙·금지사항·문단 순서를 그대로 따른다.',
     '숫자(원, %, PER, 억)를 빼먹지 말고, 추상 표현만으로 채우지 말 것.',
@@ -677,7 +755,7 @@ async function generateAiBriefingJson({ prompt }) {
     'keyPoints(string[] 4~7), risks(string[] 2~5), strategyComment(string), strategyPlan(object), tone은 "bullish"|"neutral"|"caution" 중 하나.',
   ].join(' ')
 
-  const json = await completeJsonChat({ system, user: prompt })
+  const json = await completeJsonChat({ system, user: prompt, model })
 
   const strArr = (v, max = 8) =>
     Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()).slice(0, max).map((x) => x.trim()) : []
@@ -747,8 +825,14 @@ app.post('/api/ai-briefing', async (req, res) => {
   }
 
   try {
-    const briefing = await generateAiBriefingJson({ prompt })
-    res.json(briefing)
+    const userId = await getUserIdFromRequest(req)
+    const access = await resolveAiAccess(userId)
+    if (!access.ok) {
+      res.status(access.status).json({ error: access.error })
+      return
+    }
+    const briefing = await generateAiBriefingJson({ prompt, model: access.modelId })
+    res.json({ ...briefing, model: access.model })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.error('[api/ai-briefing]', message)
@@ -783,6 +867,8 @@ const handleScreenerBriefing = async (req, res) => {
   const strategy = typeof req.body?.strategy === 'object' && req.body.strategy ? req.body.strategy : {}
 
   const aiCfg = getAiConfig()
+  const userId = await getUserIdFromRequest(req)
+  const access = await resolveAiAccess(userId)
 
   const sources = buildSourceList(news, reports)
 
@@ -810,6 +896,11 @@ const handleScreenerBriefing = async (req, res) => {
     return
   }
 
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error })
+    return
+  }
+
   try {
     const briefing = await generateMarketBriefingWithAi({
       stockName,
@@ -818,6 +909,7 @@ const handleScreenerBriefing = async (req, res) => {
       strategy,
       news,
       reports,
+      model: access.modelId,
     })
     res.json({
       briefing,
@@ -825,6 +917,7 @@ const handleScreenerBriefing = async (req, res) => {
       reports,
       sources,
       updatedAt: new Date().toISOString(),
+      model: access.model,
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
@@ -881,6 +974,96 @@ app.post('/api/research-stock', async (req, res) => {
   }
 })
 
+/** 보유 포트 — KIS 스코어 + Opus 종합 분석 */
+app.post('/api/portfolio/analyze', async (req, res) => {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  if (!appKey || !appSecret) {
+    res.status(503).json({ error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    return
+  }
+
+  const { holdings } = req.body || {}
+  if (!Array.isArray(holdings) || holdings.length === 0) {
+    res.status(400).json({ error: 'holdings 필수' })
+    return
+  }
+
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const userId = await getUserIdFromRequest(req)
+    const access = await resolveAiAccess(userId)
+    if (!access.ok) {
+      res.status(access.status).json({ error: access.error })
+      return
+    }
+    const indexCtx = await fetchIndexScreeningContext(appKey, appSecret, env)
+
+    const enriched = await Promise.all(
+      holdings.map(async (h) => {
+        try {
+          const code = String(h?.code ?? '')
+            .replace(/\D/g, '')
+            .padStart(6, '0')
+          if (!code || code === '000000') return null
+
+          const scored = await scoreSingleStock(appKey, appSecret, env, code, indexCtx)
+          const avgPrice = Number(h.avgPrice)
+          const currentPrice = Number(scored.currentPrice) || 0
+          const returnPct =
+            Number.isFinite(avgPrice) && avgPrice > 0 && Number.isFinite(currentPrice)
+              ? ((currentPrice - avgPrice) / avgPrice) * 100
+              : 0
+
+          return {
+            ...h,
+            code,
+            name: scored.name || code,
+            currentPrice,
+            returnPct,
+            quantity: Number(h.quantity) || 0,
+            stopLoss: h.stopLoss != null && Number.isFinite(Number(h.stopLoss)) ? Number(h.stopLoss) : null,
+            indicators: {
+              rsi: scored.subScores?.rsi,
+              atrGap: scored.subScores?.atrGap,
+              return5D: scored.sectorReturn5D,
+              per: scored.per,
+              operatingMargin: scored.operatingMargin,
+            },
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          console.error(`[Portfolio] ${h?.code}:`, msg)
+          return null
+        }
+      }),
+    )
+
+    const validHoldings = enriched.filter(Boolean)
+    if (validHoldings.length === 0) {
+      res.status(500).json({ error: '데이터 수집 실패' })
+      return
+    }
+
+    const analysis = await analyzePortfolio(validHoldings, userId)
+    if (!analysis) {
+      res.status(500).json({ error: 'AI 분석 실패' })
+      return
+    }
+
+    res.json({
+      holdings: validHoldings,
+      analysis,
+      generatedAt: new Date().toISOString(),
+    })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[/api/portfolio/analyze]', message)
+    res.status(500).json({ error: message })
+  }
+})
+
 app.get('/api/health', (_req, res) => {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
   const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
@@ -907,6 +1090,7 @@ app.get('/api/health', (_req, res) => {
       appKeyPresent: Boolean(appKey),
       appSecretPresent: Boolean(appSecret),
       anthropicKeyPresent: Boolean(anthropicKey),
+      supabaseServiceRoleConfigured: Boolean(cleanEnvSecret(process.env.SUPABASE_SERVICE_ROLE_KEY)),
     },
   })
 })
@@ -1014,7 +1198,7 @@ app.get('/api/chart', async (req, res) => {
     const message = e instanceof Error ? e.message : String(e)
 
     // 한도 초과 시 직전 캐시를 살려서 화면 깨짐 방지
-    if (message.includes('EGW00201')) {
+    if (isKisRateLimitError(e)) {
       const stale = chartCache.get(key)
       if (stale?.points?.length) {
         res.json({
@@ -1046,6 +1230,13 @@ app.get('/api/ai-fill', async (req, res) => {
         'AI API 키가 없습니다. 프로젝트 루트 .env 에 ANTHROPIC_API_KEY 를 넣고 프록시 서버(npm run dev 또는 npm run dev:server)를 재시작하세요.',
       stage: 'config',
     })
+    return
+  }
+
+  const userId = await getUserIdFromRequest(req)
+  const access = await resolveAiAccess(userId)
+  if (!access.ok) {
+    res.status(access.status).json({ error: access.error })
     return
   }
 
@@ -1083,7 +1274,7 @@ app.get('/api/ai-fill', async (req, res) => {
       res.status(502).json({
         error: `KIS 조회 실패(시세·차트). AI 호출 이전 단계에서 중단되었습니다: ${message}`,
         stage: 'kis',
-        hint: '모의투자 호출 한도·토큰 만료·종목코드를 확인하거나, KIS 없이 테스트하려면 .env 에서 KIS_APP_KEY/SECRET 을 비워 두면 됩니다.',
+        hint: '호출 한도·토큰 만료·종목코드를 확인하거나, KIS 없이 테스트하려면 .env 에서 KIS_APP_KEY/SECRET 을 비워 두면 됩니다.',
       })
       return
     }
@@ -1098,11 +1289,12 @@ app.get('/api/ai-fill', async (req, res) => {
   }
 
   try {
-    const ai = await generateAIFill({ payload })
+    const ai = await generateAIFill({ payload, model: access.modelId })
     res.json({
       code,
       ai,
-      model,
+      model: access.model,
+      aiModel: access.modelId,
       aiProvider: 'anthropic',
       kisDataAvailable: payload.kisDataAvailable === true,
       fetchedAt: new Date().toISOString(),
@@ -1200,6 +1392,23 @@ app.get('/api/logic-indicators', async (req, res) => {
   }
 })
 
+/** 종목명·코드 검색 — `stocks_master` (Supabase service_role) */
+app.get('/api/stocks/search', async (req, res) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q : ''
+    const out = await searchStocksMaster(q, 10)
+    if (!out.ok) {
+      res.status(503).json({ error: out.error, items: [] })
+      return
+    }
+    res.json({ items: out.items })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[/api/stocks/search]', message)
+    res.status(500).json({ error: message, items: [] })
+  }
+})
+
 /** AI 시나리오 — `/api/ai-stock-scenario`(단일 세그먼트, Vercel·리버스 프록시 호환) + 레거시 `/api/ai/stock-scenario` */
 async function handleAiStockScenarioReq(req, res) {
   const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
@@ -1209,8 +1418,8 @@ async function handleAiStockScenarioReq(req, res) {
     return
   }
 
-  const rawCode = req.query.code
-  if (!rawCode) {
+  const rawCode = req.query?.code ?? req.body?.code
+  if (rawCode == null || String(rawCode).trim() === '') {
     res.status(400).json({ error: 'code 필수' })
     return
   }
@@ -1218,6 +1427,12 @@ async function handleAiStockScenarioReq(req, res) {
   const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
 
   try {
+    const userId = await getUserIdFromRequest(req)
+    const access = await resolveAiAccess(userId)
+    if (!access.ok) {
+      res.status(access.status).json({ error: access.error })
+      return
+    }
     const indexCtx = await fetchIndexScreeningContext(appKey, appSecret, env)
     const scored = await scoreSingleStock(appKey, appSecret, env, code, indexCtx)
 
@@ -1240,15 +1455,22 @@ async function handleAiStockScenarioReq(req, res) {
       institution3D: scored.supplyDemand3D?.institution ?? 0,
     }
 
-    const result = await analyzeStockScenario(code, stockData)
+    const result = await analyzeStockScenario(code, stockData, userId)
     if (!result) {
       res.status(500).json({ error: 'AI 분석 실패 - null 응답' })
       return
     }
-    res.json(result)
+    res.json({
+      ...result,
+      currentPrice: scored.currentPrice ?? null,
+    })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.error('[/api/ai-stock-scenario]', message)
+    if (isKisRateLimitError(e)) {
+      res.status(429).json({ error: '호출 한도 초과', code: 'RATE_LIMIT', retryAfter: 3 })
+      return
+    }
     res.status(500).json({ error: message })
   }
 }
@@ -1268,30 +1490,147 @@ app.get('/api/quote', async (req, res) => {
     return
   }
 
-  const code = String(req.query.code || '005930')
+  const rawCode = String(req.query.code || '005930')
+  const code = rawCode.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
   const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
 
   try {
     const q = await inquireDomesticPrice(appKey, appSecret, env, code)
     const { raw: _raw, ...rest } = q
+    const industryKr = rest.sector != null ? String(rest.sector) : ''
+    let nameResolved = rest.nameKr || screeningStockNameKr(code) || null
+    if (
+      nameResolved &&
+      industryKr &&
+      String(nameResolved).trim() === industryKr.trim()
+    ) {
+      nameResolved = screeningStockNameKr(code) || nameResolved
+    }
+
+    let marketResolved = rest.market
+    let sectorResolved = industryKr || rest.sector
+    if (!nameResolved || !marketResolved || !sectorResolved) {
+      const master = await getStockMasterByCode(code)
+      if (master.ok && master.item) {
+        if (!nameResolved) nameResolved = master.item.name
+        if (!marketResolved || marketResolved === '—') marketResolved = master.item.market
+        if (!sectorResolved) sectorResolved = master.item.sector
+      }
+    }
+
     res.json({
+      code,
       ...rest,
+      market: marketResolved,
+      sector: sectorResolved,
+      sectorKr: sectorResolved,
+      nameKr: nameResolved,
+      name: nameResolved,
+      stockName: nameResolved,
       fetchedAt: new Date().toISOString(),
       kisEnv: env,
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
+    if (isKisRateLimitError(e)) {
+      res.status(429).json({ error: '호출 한도 초과', code: 'RATE_LIMIT', retryAfter: 3 })
+      return
+    }
     res.status(502).json({ error: message })
   }
 })
 
 app.get('/api/ai-stock-scenario', handleAiStockScenarioReq)
+app.post('/api/ai-stock-scenario', handleAiStockScenarioReq)
 app.get('/api/ai/stock-scenario', handleAiStockScenarioReq)
+app.post('/api/ai/stock-scenario', handleAiStockScenarioReq)
+app.get('/api/stock-scenario', handleAiStockScenarioReq)
+app.post('/api/stock-scenario', handleAiStockScenarioReq)
 
-app.get('/api/screening', async (_req, res) => {
+/** 한눈에 보기 AI 요약 — 단일 세그먼트 경로 (프록시 호환) */
+async function handleAiInsightSummaryReq(req, res) {
+  const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+  const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+  if (!appKey || !appSecret) {
+    res.status(503).json({ error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    return
+  }
+
+  const rawCode = req.query.code
+  if (!rawCode) {
+    res.status(400).json({ error: 'code 필수' })
+    return
+  }
+  const code = String(rawCode).replace(/\D/g, '').padStart(6, '0')
+  const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+
+  try {
+    const userId = await getUserIdFromRequest(req)
+    const access = await resolveAiAccess(userId)
+    if (!access.ok) {
+      res.status(access.status).json({ error: access.error })
+      return
+    }
+
+    const indexCtx = await fetchIndexScreeningContext(appKey, appSecret, env)
+    const scored = await scoreSingleStock(appKey, appSecret, env, code, indexCtx)
+    const sub = scored.subScores || {}
+
+    const data = {
+      name: scored.name || code,
+      currentPrice: scored.currentPrice,
+      changePct: scored.changePct,
+      totalScore: scored.totalScore,
+      subScores: {
+        structure: sub.structure,
+        execution: sub.execution,
+        momentum: sub.market ?? sub.momentum,
+        supplyDemand: sub.supplyDemand,
+      },
+      rsi: sub.rsi,
+      atrGap: sub.atrGap,
+      per: scored.per,
+      fiveYearAvgPer: null,
+      operatingMargin: scored.operatingMargin,
+      consensusUpside: (() => {
+        const u = Number(scored.consensusUpside)
+        if (!Number.isFinite(u) || u === 0) return null
+        return u
+      })(),
+    }
+
+    const result = await summarizeInsight(code, data, userId)
+    if (!result) {
+      res.status(500).json({ error: 'AI 요약 실패' })
+      return
+    }
+    res.json({ ...result, model: access.model })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[/api/ai-insight-summary]', message)
+    if (isKisRateLimitError(e)) {
+      res.status(429).json({ error: '호출 한도 초과', code: 'RATE_LIMIT', retryAfter: 3 })
+      return
+    }
+    res.status(500).json({ error: message })
+  }
+}
+
+app.get('/api/ai-insight-summary', handleAiInsightSummaryReq)
+
+/** 스크리닝 전체 번들 — GET 또는 POST(본문 없음). POST + `candidates` 는 TOP5 AI만 (`selectTopFiveWithAnalysis`). */
+async function handleScreeningBundleReq(req, res) {
+  const routeStart = Date.now()
+  const timeoutId = setTimeout(() => {
+    if (!res.headersSent) {
+      console.error(`[Screening] /api/screening ${SCREENING_ROUTE_TIMEOUT_MS / 1000}초 경과`)
+    }
+  }, SCREENING_ROUTE_TIMEOUT_MS)
+
   const appKey = process.env.KIS_APP_KEY?.trim()
   const appSecret = process.env.KIS_APP_SECRET?.trim()
   if (!appKey || !appSecret) {
+    clearTimeout(timeoutId)
     res.status(503).json({
       error:
         '서버에 KIS_APP_KEY, KIS_APP_SECRET 이 설정되지 않았습니다. 프로젝트 루트 .env 경로를 확인하세요.',
@@ -1306,16 +1645,239 @@ app.get('/api/screening', async (_req, res) => {
   const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
 
   try {
-    const out = await runScreeningSimple(appKey, appSecret, env)
-    res.json({
-      ...out,
-      fetchedAt: new Date().toISOString(),
-      kisEnv: env,
+    const userId = await getUserIdFromRequest(req)
+    const aiOk = Boolean(userId) && (await isAiEnabledForUser(userId))
+    const body =
+      req.method === 'POST' && req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? req.body
+        : {}
+    const force = Boolean(body.force)
+    console.log(`[Screening] [${new Date().toISOString()}] /api/screening 번들 시작`)
+    const out = await runScreeningSimple(appKey, appSecret, env, userId, {
+      skipTopFiveAi: Boolean(userId) && !aiOk,
+      force,
     })
+    clearTimeout(timeoutId)
+    if (!res.headersSent) {
+      res.json({
+        ...sanitizePowerEquipmentInBundle(out),
+        fetchedAt: new Date().toISOString(),
+        kisEnv: env,
+      })
+    }
+    console.log(`[Screening] /api/screening 완료 (+${Date.now() - routeStart}ms)`)
   } catch (e) {
+    clearTimeout(timeoutId)
     const message = e instanceof Error ? e.message : String(e)
-    res.status(502).json({ error: message })
+    console.error('[Screening] /api/screening', message)
+    if (!res.headersSent) {
+      const userId = await getUserIdFromRequest(req).catch(() => null)
+      const userModel = userId ? await getUserModel(userId) : 'opus'
+      const fallback = await getLastAutoScreeningCache(userModel)
+      if (fallback) {
+        res.json({
+          ...fallback,
+          stale: true,
+          fetchedAt: new Date().toISOString(),
+        })
+        return
+      }
+      res.status(502).json({ error: message })
+    }
   }
+}
+
+app.get('/api/screening', handleScreeningBundleReq)
+
+const SCREENING_ROUTE_TIMEOUT_MS = 240_000
+
+/** 서버리스 인스턴스 내 동시 분석 합류 (cacheKey 당 1건) */
+const SCREENING_LOCKS =
+  /** @type {Map<string, Promise<Record<string, unknown>>>} */ (
+    globalThis.__screeningLocks ?? (globalThis.__screeningLocks = new Map())
+  )
+
+/**
+ * @param {{ force?: boolean, userId: string, cacheKey: string }} opts
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function runAutoScreeningDeduped(opts) {
+  const { cacheKey, userId, force } = opts
+
+  if (SCREENING_LOCKS.has(cacheKey)) {
+    console.log(`[Screening] 진행 중 분석 대기: ${cacheKey}`)
+    try {
+      return await SCREENING_LOCKS.get(cacheKey)
+    } catch {
+      console.log('[Screening] 대기한 분석 실패 — 새로 시도')
+    }
+  }
+
+  const analysisPromise = runAutoScreening({
+    force: Boolean(force),
+    userId,
+  }).finally(() => {
+    SCREENING_LOCKS.delete(cacheKey)
+  })
+
+  SCREENING_LOCKS.set(cacheKey, analysisPromise)
+  return analysisPromise
+}
+
+/** AI 동적 섹터 스크리닝 (시장 데이터 → 섹터 1~5 → 섹터별 TOP 5) */
+async function handleAutoScreeningReq(req, res) {
+  const routeStart = Date.now()
+  const timeoutId = setTimeout(() => {
+    if (!res.headersSent) {
+      console.error(
+        `[Screening] ${SCREENING_ROUTE_TIMEOUT_MS / 1000}초 경과 — Vercel 한도 근접 (+${Date.now() - routeStart}ms)`,
+      )
+    }
+  }, SCREENING_ROUTE_TIMEOUT_MS)
+
+  try {
+    const userId = await getUserIdFromRequest(req)
+    const access = await resolveAiAccess(userId)
+    if (!access.ok) {
+      clearTimeout(timeoutId)
+      res.status(access.status).json({ error: access.error })
+      return
+    }
+
+    const body =
+      req.method === 'POST' && req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? req.body
+        : {}
+    const force = Boolean(body.force) || req.query?.force === '1' || req.query?.force === 'true'
+    const cacheKey = makeAutoScreeningCacheKey(access.model)
+
+    if (!force) {
+      const cached = await getCachedAutoScreening(cacheKey)
+      if (cached) {
+        clearTimeout(timeoutId)
+        console.log('[Cache HIT] auto-screening', cacheKey)
+        res.json({
+          ...cached,
+          fetchedAt: new Date().toISOString(),
+        })
+        return
+      }
+    }
+
+    const out = await runAutoScreeningDeduped({ force, userId, cacheKey })
+    clearTimeout(timeoutId)
+    if (!res.headersSent) {
+      res.json({
+        ...out,
+        fetchedAt: new Date().toISOString(),
+      })
+    }
+  } catch (e) {
+    clearTimeout(timeoutId)
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[Screening]', message)
+
+    if (!res.headersSent) {
+      const userId = await getUserIdFromRequest(req).catch(() => null)
+      const userModel = userId ? await getUserModel(userId) : 'opus'
+      const fallback = await getLastAutoScreeningCache(userModel)
+      if (fallback) {
+        res.json({
+          ...fallback,
+          stale: true,
+          fetchedAt: new Date().toISOString(),
+        })
+        return
+      }
+      res.status(500).json({ error: message })
+    }
+  }
+}
+
+app.get('/api/screening-auto', handleAutoScreeningReq)
+app.post('/api/screening-auto', handleAutoScreeningReq)
+
+app.post('/api/screening', async (req, res) => {
+  const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}
+
+  if (Array.isArray(body.candidates) && body.candidates.length > 0) {
+    try {
+      const userId = await getUserIdFromRequest(req)
+      const access = await resolveAiAccess(userId)
+      if (!access.ok) {
+        res.status(access.status).json({ error: access.error })
+        return
+      }
+      const result = await selectTopFiveWithAnalysis(body.candidates, userId, {})
+      res.json(result)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[/api/screening POST candidates]', message)
+      res.status(500).json({ error: message })
+    }
+    return
+  }
+
+  const sector = typeof body.sector === 'string' ? body.sector.trim() : ''
+  if (sector) {
+    const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+    const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+    if (!appKey || !appSecret) {
+      res.status(503).json({ error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+      return
+    }
+    const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+    try {
+      const userId = await getUserIdFromRequest(req)
+      const access = await resolveAiAccess(userId)
+      if (!access.ok) {
+        res.status(access.status).json({ error: access.error })
+        return
+      }
+      const model = access.model
+      const force = Boolean(body.force)
+      if (!force) {
+        const cached = await getCachedScreening(sector, model)
+        if (cached) {
+          const safe = isAiPowerSector(sector)
+            ? sanitizePowerEquipmentInBundle({ ...cached, sector })
+            : { ...cached, sector }
+          res.json(safe)
+          return
+        }
+      }
+      const candidates = await buildSectorCandidates(appKey, appSecret, env, sector)
+      const aiPack = await selectTopFiveWithAnalysis(candidates, userId, {})
+      const allowedCodes = new Set(candidates.map((c) => String(c.code).replace(/\D/g, '').padStart(6, '0')))
+      const items = (aiPack.items || []).filter((it) =>
+        allowedCodes.has(String(it.code).replace(/\D/g, '').padStart(6, '0')),
+      )
+      const finalResult = sanitizePowerEquipmentInBundle({
+        ...aiPack,
+        items,
+        sector,
+        model: aiPack.modelUsed ?? model,
+        cached: false,
+        generatedAt: new Date().toISOString(),
+      })
+      const stamp = new Date().toISOString()
+      const toStore = {
+        generatedAt: stamp,
+        items,
+        modelUsed: aiPack.modelUsed,
+        anthropicModel: aiPack.anthropicModel,
+      }
+      void setCachedScreening(sector, model, toStore, userId).catch(() => {})
+      res.json(finalResult)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[/api/screening POST sector]', message)
+      res.status(500).json({ error: message })
+    }
+    return
+  }
+
+  await handleScreeningBundleReq(req, res)
 })
 
 app.get('/api/compare-stock', async (req, res) => {
@@ -1351,6 +1913,243 @@ app.get('/api/compare-stock', async (req, res) => {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     res.status(502).json({ error: message })
+  }
+})
+
+const handleMarketTopVolume = async (_req, res) => {
+  try {
+    const cached = await getMarketCached('top-volume-kospi')
+    if (cached) {
+      console.log('[top-volume] cache HIT')
+      return res.json(cached)
+    }
+    const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+    const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+    if (!appKey || !appSecret) {
+      return res.status(503).json({ stocks: [], error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    }
+    const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+    const rows = await inquireTradeValueRankTop(appKey, appSecret, env, {
+      marketIscd: '0001',
+      limit: 5,
+    })
+    const enriched = rows
+      .filter((s) => s.code && s.code !== '000000')
+      .map((s) => ({
+        code: s.code,
+        name: s.name || s.code,
+        currentPrice: s.currentPrice,
+        changePct: s.changePct,
+        tradingValue: s.tradingValue,
+      }))
+    const result = { stocks: enriched, generatedAt: new Date().toISOString() }
+    await setMarketCached('top-volume-kospi', result, 5 * 60 * 1000)
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[top-volume]', message)
+    res.status(500).json({ stocks: [], error: message })
+  }
+}
+
+const handleMarketTopMomentum = async (_req, res) => {
+  try {
+    const cached = await getMarketCached('top-momentum-kospi200')
+    if (cached) {
+      console.log('[top-momentum] cache HIT')
+      return res.json(cached)
+    }
+    const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+    const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+    if (!appKey || !appSecret) {
+      return res.status(503).json({ stocks: [], error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    }
+    const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+    const sb = getSupabaseService()
+    if (!sb) {
+      return res.json({ stocks: [], message: 'Supabase 서비스 키 없음' })
+    }
+    const { data: kospi200, error: qErr } = await sb
+      .from('stocks_master')
+      .select('code, name, sector')
+      .eq('is_kospi200', true)
+    if (qErr) {
+      console.error('[top-momentum] stocks_master', qErr.message)
+      return res.status(500).json({ stocks: [], error: qErr.message })
+    }
+    if (!kospi200?.length) {
+      return res.json({ stocks: [], message: 'KOSPI 200 데이터 없음' })
+    }
+    const CHUNK = 10
+    const results = []
+    for (let i = 0; i < kospi200.length; i += CHUNK) {
+      const chunk = kospi200.slice(i, i + CHUNK)
+      const chunkResults = await Promise.all(
+        chunk.map(async (stock) => {
+          const codeRaw = stock.code != null ? String(stock.code) : ''
+          const code = codeRaw.replace(/\D/g, '').padStart(6, '0')
+          if (!code || code === '000000') return null
+          try {
+            const dailyData = await inquireDailyBars(appKey, appSecret, env, code, 8)
+            if (!dailyData || dailyData.length < 4) return null
+            const todayClose = dailyData[dailyData.length - 1].price
+            const threeDaysAgoClose = dailyData[dailyData.length - 4].price
+            if (
+              todayClose == null ||
+              threeDaysAgoClose == null ||
+              !Number.isFinite(todayClose) ||
+              !Number.isFinite(threeDaysAgoClose) ||
+              threeDaysAgoClose === 0
+            ) {
+              return null
+            }
+            const return3D = ((todayClose - threeDaysAgoClose) / threeDaysAgoClose) * 100
+            return {
+              code,
+              name: stock.name || code,
+              sector: stock.sector ?? null,
+              currentPrice: todayClose,
+              return3D,
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            console.error(`[momentum] ${code}:`, msg)
+            return null
+          }
+        }),
+      )
+      for (const row of chunkResults) {
+        if (row) results.push(row)
+      }
+    }
+    const top5 = results.sort((a, b) => b.return3D - a.return3D).slice(0, 5)
+    const result = { stocks: top5, generatedAt: new Date().toISOString() }
+    await setMarketCached('top-momentum-kospi200', result, 60 * 60 * 1000)
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[top-momentum]', message)
+    res.status(500).json({ stocks: [], error: message })
+  }
+}
+
+const handleUserRecentViews = async (req, res) => {
+  try {
+    const userId = await getUserIdFromRequest(req)
+    if (!userId) return res.json({ stocks: [] })
+    const sb = getSupabaseService()
+    if (!sb) {
+      console.warn('[recent-views] Supabase 서비스 키 없음')
+      return res.json({ stocks: [] })
+    }
+    const { data: logs, error: logErr } = await sb
+      .from('activity_logs')
+      .select('metadata, created_at')
+      .eq('user_id', userId)
+      .eq('action', 'view_stock')
+      .order('created_at', { ascending: false })
+      .limit(20)
+    if (logErr) {
+      console.error('[recent-views]', logErr.message)
+      return res.status(500).json({ stocks: [], error: logErr.message })
+    }
+    const seen = new Set()
+    const unique = []
+    for (const row of logs || []) {
+      const meta = row.metadata && typeof row.metadata === 'object' ? row.metadata : {}
+      const codeRaw = meta.code != null ? String(meta.code) : ''
+      const code = codeRaw.replace(/\D/g, '').padStart(6, '0')
+      if (!code || code === '000000' || seen.has(code)) continue
+      seen.add(code)
+      unique.push({
+        code,
+        name: typeof meta.name === 'string' && meta.name.trim() ? meta.name.trim() : code,
+        lastViewedAt: row.created_at,
+      })
+      if (unique.length >= 5) break
+    }
+    const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+    const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+    const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+    const enriched = await Promise.all(
+      unique.map(async (s) => {
+        if (!appKey || !appSecret) {
+          return { ...s, currentPrice: null, changePct: null }
+        }
+        try {
+          const quote = await inquireDomesticPrice(appKey, appSecret, env, s.code)
+          return {
+            ...s,
+            currentPrice: quote.price,
+            changePct: quote.changePercent,
+          }
+        } catch {
+          return { ...s, currentPrice: null, changePct: null }
+        }
+      }),
+    )
+    res.json({ stocks: enriched })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[recent-views]', message)
+    res.status(500).json({ stocks: [], error: message })
+  }
+}
+
+app.get('/api/market/top-volume', handleMarketTopVolume)
+app.get('/api/market-top-volume', handleMarketTopVolume)
+app.get('/api/market/top-momentum', handleMarketTopMomentum)
+app.get('/api/market-top-momentum', handleMarketTopMomentum)
+app.get('/api/user/recent-views', handleUserRecentViews)
+app.get('/api/user-recent-views', handleUserRecentViews)
+
+app.get('/api/stocks-search', async (req, res) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q.trim() : ''
+    if (q.length < 1) return res.json({ results: [] })
+    const out = await searchStocksMaster(q, 10)
+    if (!out.ok) {
+      res.status(503).json({ error: out.error, results: [] })
+      return
+    }
+    res.json({ results: out.items })
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[stocks-search]', message)
+    res.status(500).json({ error: message, results: [] })
+  }
+})
+
+registerProRoutes(app, { getSupabaseService, getUserIdFromRequest })
+
+app.get('/api/market-summary', async (_req, res) => {
+  try {
+    const cached = await getMarketCached('market-summary')
+    if (cached) {
+      console.log('[market-summary] cache HIT')
+      return res.json(cached)
+    }
+    const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
+    const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
+    if (!appKey || !appSecret) {
+      return res.status(503).json({ indices: [], error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
+    }
+    const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+    const result = await getMarketSummary(appKey, appSecret, env)
+    for (const idx of result.indices || []) {
+      if (idx.key === 'kospi') console.log('[market-summary] KOSPI:', idx)
+      if (idx.key === 'kosdaq') console.log('[market-summary] KOSDAQ:', idx)
+      if (idx.key === 'nasdaq') console.log('[market-summary] NASDAQ:', idx)
+      if (idx.key === 'sp500') console.log('[market-summary] S&P:', idx)
+      if (idx.key === 'usdkrw') console.log('[market-summary] USDKRW:', idx)
+      if (idx.key === 'wti') console.log('[market-summary] WTI:', idx)
+    }
+    await setMarketCached('market-summary', result, 5 * 60 * 1000)
+    res.json(result)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    console.error('[market-summary]', message)
+    res.status(500).json({ indices: [], error: message })
   }
 })
 

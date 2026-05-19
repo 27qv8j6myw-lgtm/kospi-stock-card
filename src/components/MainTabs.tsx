@@ -1,60 +1,79 @@
-import { LineChart, Target } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { Crown, LineChart, Shield, Target } from 'lucide-react'
+import { UserMenu } from '@/components/portfolio/UserMenu'
+import { useAuth } from '@/hooks/useAuth'
+import { isProUser } from '@/lib/proAccess'
 
+/**
+ * 상단 탭 — 활성 상태는 `useState`가 아니라 **`pathname`에서만 derive**합니다.
+ * (`App` → `useAppNavigation` → `history.pushState` / `popstate`)
+ */
 export type MainTabsProps = {
   pathname: string
   navigate: (to: string) => void
+  /** `App`에서 `useIsAdmin(user)`(Supabase `is_admin` RPC) 결과 — `MainTabs` 안에서 `useAuth` 중복 호출하지 않음 */
+  isAdmin?: boolean
 }
 
-function resolveStockTabPath(pathname: string): string {
-  const m = pathname.match(/^\/stocks\/(\d{6})\/?$/)
-  if (m) return `/stocks/${m[1]}`
-  try {
-    const last = sessionStorage.getItem('lastStockCode')
-    if (last && /^\d{6}$/.test(last)) return `/stocks/${last}`
-  } catch {
-    /* ignore */
-  }
-  return '/stocks/005930'
-}
+export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps) {
+  const { user } = useAuth()
+  const showPro = isProUser(user?.email)
 
-export function MainTabs({ pathname, navigate }: MainTabsProps) {
-  const tabs = [
-    { id: 'stocks', label: '종목 카드', icon: LineChart, path: resolveStockTabPath(pathname) },
+  const tabs: { id: string; label: string; icon: LucideIcon; path: string; pro?: boolean }[] = [
+    { id: 'stocks', label: '종목 카드', icon: LineChart, path: '/' },
     { id: 'screening', label: '섹터 스크리닝', icon: Target, path: '/screening' },
-    // 격리: 비교 분석 탭 — React #300 후보 (복구 시 주석 해제)
-    // { id: 'compare', label: '비교 분석', icon: GitCompare, path: '/compare' },
-  ] as const
+  ]
+  if (isAdmin) {
+    tabs.push({ id: 'admin', label: '관리', icon: Shield, path: '/admin' })
+  }
+  if (showPro) {
+    tabs.push({ id: 'pro', label: 'PRO', icon: Crown, path: '/pro', pro: true })
+  }
 
-  const isActive = (id: (typeof tabs)[number]['id']) => {
+  const isActive = (id: string) => {
     if (id === 'screening') return pathname === '/screening' || pathname.startsWith('/screening/')
-    // if (id === 'compare') return pathname === '/compare' || pathname.startsWith('/compare/')
-    return pathname.startsWith('/stocks/')
+    if (id === 'admin') return pathname === '/admin' || pathname.startsWith('/admin/')
+    if (id === 'pro')
+      return pathname === '/pro' || pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')
+    if (id === 'stocks')
+      return pathname === '/' || pathname === '' || /^\/stocks\/\d{6}\/?$/.test(pathname)
+    return false
   }
 
   return (
-    <header className="sticky top-0 z-40 border-b border-default bg-card/95 backdrop-blur-sm">
+    <header className="sticky top-0 z-50 border-b border-default bg-card/95 backdrop-blur-sm">
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
-        <nav className="-mx-4 flex min-w-0 gap-1 overflow-x-auto overflow-y-hidden px-4 pb-px scrollbar-none sm:mx-0 sm:px-0" aria-label="주요 메뉴">
-          {tabs.map((tab) => {
-            const Icon = tab.icon
-            const active = isActive(tab.id)
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => navigate(tab.path)}
-                className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors min-h-[44px] sm:min-h-0 ${
-                  active
-                    ? 'border-blue-600 text-blue-600'
-                    : 'border-transparent text-secondary hover:text-primary'
-                }`}
-              >
-                <Icon className="size-4 shrink-0" strokeWidth={2} aria-hidden />
-                {tab.label}
-              </button>
-            )
-          })}
-        </nav>
+        <div className="flex min-w-0 items-center gap-3 pb-px">
+          <nav
+            className="-mx-4 flex min-w-0 max-w-full flex-1 gap-1 overflow-x-auto overflow-y-hidden px-4 sm:mx-0 sm:px-0"
+            aria-label="주요 메뉴"
+          >
+            {tabs.map((tab) => {
+              const Icon = tab.icon
+              const active = isActive(tab.id)
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  aria-label={tab.label}
+                  onClick={() => navigate(tab.path)}
+                  className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors min-h-[44px] sm:min-h-0 ${
+                    tab.pro
+                      ? `pro-tab ${active ? 'active border-amber-600' : 'border-transparent'}`
+                      : active
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-secondary hover:text-primary'
+                  }`}
+                >
+                  <Icon className="size-6 shrink-0 sm:size-4" strokeWidth={2} aria-hidden />
+                  <span className="hidden sm:inline">{tab.label}</span>
+                </button>
+              )
+            })}
+          </nav>
+          {/* 사용자 메뉴: 아바타·이름(데스크탑)·로그아웃만 — AI 모델 배지 없음 */}
+          <UserMenu />
+        </div>
       </div>
     </header>
   )

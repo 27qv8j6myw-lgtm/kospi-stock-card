@@ -11,16 +11,29 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'intraday-chart',
     'logic-indicators',
     'ai-fill',
-    'ai/stock-scenario',
     'ai-stock-scenario',
+    'stock-scenario',
+    'ai-insight-summary',
     'ai-briefing',
     'screener-briefing',
     'market-briefing',
     'research-stock',
+    'portfolio/analyze',
     'health',
     'market-indices',
+    'market-summary',
     'screening',
+    'screening-auto',
     'compare-stock',
+    'stocks/search',
+    'stocks-search',
+    'market-top-volume',
+    'market-top-momentum',
+    'user-recent-views',
+    'pro-chat',
+    'pro-conversations',
+    'pro-messages',
+    'pro-conversation',
   ]
   return paths.map((p) => ({
     source: `/api/${p}`,
@@ -30,8 +43,21 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  /** Vercel에 `VITE_SUPABASE_*` 만 있을 때 클라 번들에 노출 (Phase 1 환경변수 호환) */
+  env: {
+    NEXT_PUBLIC_SUPABASE_URL:
+      process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.VITE_SUPABASE_URL ?? '',
+    NEXT_PUBLIC_SUPABASE_ANON_KEY:
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.VITE_SUPABASE_ANON_KEY ?? '',
+  },
   /** 기존 Vite 코드베이스 ESLint 규칙과 충돌 — CI에서 lint 단계 분리 권장 */
   eslint: { ignoreDuringBuilds: true },
+  async redirects() {
+    return [
+      { source: '/portfolio', destination: '/stocks/000660', permanent: false },
+      { source: '/portfolio/:path*', destination: '/stocks/000660', permanent: false },
+    ]
+  },
   async rewrites() {
     return devApiProxyRewrites()
   },
