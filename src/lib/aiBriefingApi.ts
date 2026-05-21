@@ -1,4 +1,5 @@
 import type { DetailedInvestmentMemoResult } from '../types/aiBriefing'
+import { fetchWithAuth } from './api'
 import type { NewsItem } from './newsSearch'
 import type { BrokerReport } from './reportSearch'
 import type { BriefingSource } from './marketBriefingSource'
@@ -7,7 +8,7 @@ import type { BriefingSource } from './marketBriefingSource'
  * 서버 `POST /api/ai-briefing` 호출 — API 키는 서버(Vercel 환경변수 `ANTHROPIC_API_KEY`)에만 둡니다.
  */
 export async function fetchAiBriefing(prompt: string): Promise<DetailedInvestmentMemoResult> {
-  const res = await fetch('/api/ai-briefing', {
+  const res = await fetchWithAuth('/api/ai-briefing', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ prompt }),
@@ -90,7 +91,7 @@ export async function fetchMarketBriefing(params: {
   sources: BriefingSource[]
   updatedAt: string
 }> {
-  const res = await fetch('/api/screener-briefing', {
+  const res = await fetchWithAuth('/api/screener-briefing', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),

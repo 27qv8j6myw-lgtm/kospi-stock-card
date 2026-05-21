@@ -8,6 +8,7 @@ import { computeStopLossLevel } from './stopLossLevel'
 import { computeStrategySummaryLine } from './strategySummaryLine'
 import { computeTimeStopRule } from './timeStopRule'
 import type { ExecutionStrategyInputs, StopMethodTag } from './types'
+import { validateThreeMonthStrategy } from './scenarioValidator'
 
 function mapStopMethodToPanel(m: StopMethodTag): StopInfo['method'] {
   if (m === 'ATR') return 'ATR'
@@ -71,7 +72,9 @@ export function computeExecutionStrategy(i: ExecutionStrategyInputs): ThreeMonth
   if (i.atrDistanceAbs >= 5.0) warnings.push('ATR 이격 5.0 이상 — 1차 익절 50% 강제 검토.')
   if (entry === '관망 (과열)') warnings.push('과열권 — 신규 진입 보류.')
 
-  return {
+  const ref = i.entryPrice != null && i.entryPrice > 0 ? i.entryPrice : i.price
+
+  const raw = {
     entryDecision: entry,
     entryRationale: bundle.rationale,
     fundamentalSignal: bundle.fundamentalSignal,
@@ -95,6 +98,8 @@ export function computeExecutionStrategy(i: ExecutionStrategyInputs): ThreeMonth
     consensusNote,
     warnings,
   }
+
+  return validateThreeMonthStrategy(raw, i.price, entry, ref)
 }
 
 /** 삼성 P0 시나리오 자체 검증 (개발 시 `import { verifySamsungP0Fixture } ...` 호출) */

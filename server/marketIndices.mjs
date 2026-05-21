@@ -9,7 +9,28 @@ const SYMBOLS = [
   { key: 'kospi', yahooSymbol: '^KS11', label: 'KOSPI', format: 'index' },
   { key: 'kospi200', yahooSymbol: '^KS200', label: 'KOSPI200', format: 'index' },
   { key: 'wti', yahooSymbol: 'CL=F', label: 'WTI', format: 'usd' },
+  { key: 'vix', yahooSymbol: '^VIX', label: 'VIX', format: 'index' },
 ]
+
+/**
+ * @param {string} yahooSymbol
+ * @returns {Promise<{ value: number, changePct: number } | null>}
+ */
+async function fetchYahooSnapshot(yahooSymbol) {
+  const data = await fetchYahooQuote(yahooSymbol)
+  if (!data) return null
+  return { value: data.price, changePct: data.changePct }
+}
+
+/** 종목 카드 PageHeader·market-summary 공용 */
+export async function getWtiPrice() {
+  return fetchYahooSnapshot('CL=F')
+}
+
+/** 종목 카드 PageHeader·market-summary 공용 */
+export async function getVixIndex() {
+  return fetchYahooSnapshot('^VIX')
+}
 
 /**
  * @param {string} symbol

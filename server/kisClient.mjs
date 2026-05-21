@@ -5,6 +5,15 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { withCache } from './lib/kisCache.mjs'
+
+/** 시세류 TTL (ms) */
+const KIS_CACHE_TTL_QUOTE_MS = 30_000
+/** 일봉·투자자 등 분석/스크리닝용 TTL (ms) */
+const KIS_CACHE_TTL_ANALYSIS_MS = 5 * 60_000
+
+const KIS_RATE_LIMIT_RETRY_MS = [1000, 2000, 4000]
+const KIS_RATE_LIMIT_MAX_RETRIES = 3
 
 const BASE_URL = {
   prod: 'https://openapi.koreainvestment.com:9443',
@@ -62,6 +71,41 @@ function normalizeKisOutputRows(output) {
   if (Array.isArray(output)) return output
   if (typeof output === 'object') return [output]
   return []
+}
+
+/**
+ * 주식현재가 시세 output 에서 한글 종목명 추출 (TR/계정마다 필드명이 다를 수 있음)
+ * @param {Record<string, unknown>|null|undefined} o
+ * @param {string} iscd6
+ * @returns {string|null}
+ */
+function resolveKoreanNameFromPriceOutput(o, iscd6) {
+  if (!o || typeof o !== 'object') return null
+  const code = String(iscd6 || '').replace(/\D/g, '').padStart(6, '0')
+  const candidates = [
+    o.hts_kor_isnm,
+    o.hts_kor_isnm1,
+    o.prdt_name,
+    o.prdt_abrv_name,
+    o.prdt_korean_name,
+    o.kor_isnm,
+    o.stck_kor_isnm,
+    o.iscd_name,
+  ]
+  for (const c of candidates) {
+    const s = typeof c === 'string' ? c.trim() : ''
+    if (s && s !== code) return s
+  }
+  for (const [k, v] of Object.entries(o)) {
+    if (typeof v !== 'string') continue
+    // bstp_kor_isnm 등 업종·시장 필드는 'isnm'에만 걸려 종목명으로 오인됨 → 제외
+    if (/bstp|bsop|mrkt_kor_name|rprs_mrkt|fid_/i.test(k)) continue
+    const t = v.trim()
+    if (!t || t === code) continue
+    if (!/[가-힣]/.test(t)) continue
+    if (/(isnm|kornm|kor_nm|prdt.*nm|abrv|name)/i.test(k)) return t
+  }
+  return null
 }
 
 function ymd(d) {
@@ -147,10 +191,20 @@ function parseJsonOrThrow(res, text, kind) {
 function normalizeKisError(data, fallbackPrefix) {
   const cd = data?.msg_cd || String(data?.rt_cd ?? '')
   const msg = data?.msg1 || data?.message || cd || '알 수 없는 오류'
-  if (cd === 'EGW00201') {
-    return '호출 한도 초과(EGW00201). 모의투자(vps)는 REST 초당/분당 제한이 매우 낮습니다. 잠시 후 다시 시도하거나 폴링 간격을 늘려주세요.'
-  }
   return `${fallbackPrefix} (${cd}): ${msg}`
+}
+
+/**
+ * KIS 한도(EGW00201) 또는 동일 의미의 예외인지.
+ * @param {unknown} e
+ * @returns {boolean}
+ */
+export function isKisRateLimitError(e) {
+  if (e && typeof e === 'object' && 'code' in e && /** @type {{ code?: string }} */ (e).code === 'RATE_LIMIT') {
+    return true
+  }
+  const msg = e instanceof Error ? e.message : String(e ?? '')
+  return msg === '호출 한도 초과' || msg.includes('EGW00201')
 }
 
 export async function getAccessToken(appKey, appSecret, env) {
@@ -206,100 +260,133 @@ export async function getAccessToken(appKey, appSecret, env) {
 }
 
 async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
-  const token = await getAccessToken(appKey, appSecret, env)
-  const url = new URL(`${baseUrl(env)}${path}`)
-  for (const [k, v] of Object.entries(params || {})) {
-    url.searchParams.set(k, String(v))
-  }
+  let attempt = 0
+  while (true) {
+    const token = await getAccessToken(appKey, appSecret, env)
+    const url = new URL(`${baseUrl(env)}${path}`)
+    for (const [k, v] of Object.entries(params || {})) {
+      url.searchParams.set(k, String(v))
+    }
 
-  const res = await fetch(url, {
-    headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      Accept: 'text/plain',
-      authorization: `Bearer ${token}`,
-      appkey: appKey,
-      appsecret: appSecret,
-      tr_id: trId,
-      custtype: 'P',
-      tr_cont: '',
-    },
-  })
+    const res = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        Accept: 'text/plain',
+        authorization: `Bearer ${token}`,
+        appkey: appKey,
+        appsecret: appSecret,
+        tr_id: trId,
+        custtype: 'P',
+        tr_cont: '',
+      },
+    })
 
-  const text = await res.text()
-  const data = parseJsonOrThrow(res, text, kind)
-  if (!res.ok || data.rt_cd !== '0') {
-    throw new Error(normalizeKisError(data, `${kind} 오류`))
+    const text = await res.text()
+    const data = parseJsonOrThrow(res, text, kind)
+    if (!res.ok || data.rt_cd !== '0') {
+      const cd = data?.msg_cd || String(data?.rt_cd ?? '')
+      if (cd === 'EGW00201' && attempt < KIS_RATE_LIMIT_MAX_RETRIES) {
+        const ms = KIS_RATE_LIMIT_RETRY_MS[attempt] ?? 4000
+        console.log(`[KIS] 한도 초과, ${ms}ms 후 재시도 (${attempt + 1}/${KIS_RATE_LIMIT_MAX_RETRIES})`)
+        await new Promise((r) => setTimeout(r, ms))
+        attempt += 1
+        continue
+      }
+      if (cd === 'EGW00201') {
+        const err = new Error('호출 한도 초과')
+        err.code = 'RATE_LIMIT'
+        throw err
+      }
+      throw new Error(normalizeKisError(data, `${kind} 오류`))
+    }
+    return data
   }
-  return data
 }
 
 /** 국내 주식 현재가 시세 [v1_국내주식-008] */
 export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
   const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
-  const data = await kisGet({
-    appKey,
-    appSecret,
-    env,
-    path: '/uapi/domestic-stock/v1/quotations/inquire-price',
-    params: {
-      FID_COND_MRKT_DIV_CODE: 'J',
-      FID_INPUT_ISCD: iscd,
-    },
-    trId: 'FHKST01010100',
-    kind: 'KIS 시세',
-  })
+  const cacheKey = `kis:quote:${env}:${iscd}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_QUOTE_MS, async () => {
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/inquire-price',
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_INPUT_ISCD: iscd,
+        },
+        trId: 'FHKST01010100',
+        kind: 'KIS 시세',
+      })
 
-  const o = data.output
-  const price = num(o?.stck_prpr)
-  if (price === null) throw new Error('현재가(stck_prpr) 파싱 실패')
+      const rows = normalizeKisOutputRows(data.output)
+      const o = rows[0]
+      if (!o || typeof o !== 'object') throw new Error('KIS 시세 output 없음')
 
-  const epsN = num(o?.eps)
-  const bpsN = num(o?.bps)
-  const roeTtmApprox =
-    epsN != null && bpsN != null && Number.isFinite(epsN) && Number.isFinite(bpsN) && bpsN !== 0
-      ? (epsN / bpsN) * 100
-      : null
+      const price = num(o?.stck_prpr)
+      if (price === null) throw new Error('현재가(stck_prpr) 파싱 실패')
 
-  /** 응답 필드명이 종목·TR마다 다를 수 있어 키워드 스캔(있을 때만) */
-  const skipKey = /prdy|stck|prpr|vrss|ctrt|vol|hour|date|time|iscd|cntg|acml|frgn|orgn|prsn|fid|nmix|kospi/i
-  function firstRatioByKeyHint(obj, hintRe) {
-    if (!obj || typeof obj !== 'object') return null
-    for (const [k, v] of Object.entries(obj)) {
-      if (skipKey.test(k)) continue
-      if (!hintRe.test(k)) continue
-      const n = num(v)
-      if (n == null || !Number.isFinite(n)) continue
-      return n
-    }
-    return null
-  }
+      const epsN = num(o?.eps)
+      const bpsN = num(o?.bps)
+      const roeTtmApprox =
+        epsN != null && bpsN != null && Number.isFinite(epsN) && Number.isFinite(bpsN) && bpsN !== 0
+          ? (epsN / bpsN) * 100
+          : null
 
-  const operatingMarginTtm = firstRatioByKeyHint(o, /(oprt|oper|bsop|prfi).*mrgn|margin|margn|이익률/i)
-  const debtRatio = firstRatioByKeyHint(o, /debt|lblt|liab|부채|tot_lblt|borr|gearing/i)
+      /** 응답 필드명이 종목·TR마다 다를 수 있어 키워드 스캔(있을 때만) */
+      const skipKey = /prdy|stck|prpr|vrss|ctrt|vol|hour|date|time|iscd|cntg|acml|frgn|orgn|prsn|fid|nmix|kospi/i
+      function firstRatioByKeyHint(obj, hintRe) {
+        if (!obj || typeof obj !== 'object') return null
+        for (const [k, v] of Object.entries(obj)) {
+          if (skipKey.test(k)) continue
+          if (!hintRe.test(k)) continue
+          const n = num(v)
+          if (n == null || !Number.isFinite(n)) continue
+          return n
+        }
+        return null
+      }
 
-  return {
-    code: iscd,
-    nameKr: o?.hts_kor_isnm || o?.hts_kor_isnm1 || o?.prdt_name || null,
-    market: o?.rprs_mrkt_kor_name || null,
-    sector: o?.bstp_kor_isnm || null,
-    price,
-    change: num(o?.prdy_vrss) ?? 0,
-    changePercent: num(o?.prdy_ctrt) ?? 0,
-    changeSign: o?.prdy_vrss_sign ?? null,
-    volume: num(o?.acml_vol),
-    tradeValue: num(o?.acml_tr_pbmn),
-    open: num(o?.stck_oprc),
-    high: num(o?.stck_hgpr),
-    low: num(o?.stck_lwpr),
-    per: num(o?.per),
-    pbr: num(o?.pbr),
-    eps: epsN,
-    bps: bpsN,
-    roeTtmApprox,
-    operatingMarginTtm,
-    debtRatio,
-    raw: o,
-  }
+      const operatingMarginTtm = firstRatioByKeyHint(o, /(oprt|oper|bsop|prfi).*mrgn|margin|margn|이익률/i)
+      const debtRatio = firstRatioByKeyHint(o, /debt|lblt|liab|부채|tot_lblt|borr|gearing/i)
+
+      const listedShares = num(o?.lstn_stcn)
+      const htsAvls = num(o?.hts_avls)
+      let marketCap = null
+      if (price != null && listedShares != null && listedShares > 0) {
+        marketCap = Math.round(price * listedShares)
+      } else if (htsAvls != null && htsAvls > 0) {
+        marketCap = Math.round(htsAvls * 1_000_000)
+      }
+
+      return {
+        code: iscd,
+        nameKr: resolveKoreanNameFromPriceOutput(o, iscd),
+        market: o?.rprs_mrkt_kor_name || null,
+        sector: o?.bstp_kor_isnm || null,
+        price,
+        change: num(o?.prdy_vrss) ?? 0,
+        changePercent: num(o?.prdy_ctrt) ?? 0,
+        changeSign: o?.prdy_vrss_sign ?? null,
+        volume: num(o?.acml_vol),
+        tradeValue: num(o?.acml_tr_pbmn),
+        open: num(o?.stck_oprc),
+        high: num(o?.stck_hgpr),
+        low: num(o?.stck_lwpr),
+        per: num(o?.per),
+        pbr: num(o?.pbr),
+        eps: epsN,
+        bps: bpsN,
+        roeTtmApprox,
+        operatingMarginTtm,
+        debtRatio,
+        marketCap,
+        listedShares,
+        raw: o,
+      }
+    })
 }
 
 // inquire-investor 의 *_tr_pbmn 은 원화가 아닌 축약 단위로 내려오므로 KRW로 보정
@@ -336,58 +423,61 @@ function sumInvestorRows(rows, maxDays) {
 /** 국내 주식 현재가 투자자 [주식현재가 투자자] */
 export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
   const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
-  const data = await kisGet({
-    appKey,
-    appSecret,
-    env,
-    path: '/uapi/domestic-stock/v1/quotations/inquire-investor',
-    params: {
-      FID_COND_MRKT_DIV_CODE: 'J',
-      FID_INPUT_ISCD: iscd,
-    },
-    trId: 'FHKST01010900',
-    kind: 'KIS 투자자동향',
-  })
+  const cacheKey = `kis:investor:${env}:${iscd}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/inquire-investor',
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_INPUT_ISCD: iscd,
+        },
+        trId: 'FHKST01010900',
+        kind: 'KIS 투자자동향',
+      })
 
-  const rows = normalizeKisOutputRows(data.output)
-  const latest = rows[0] || null
-  const emptyCumulative = () => ({
-    foreignNetShares: 0,
-    foreignNetAmount: 0,
-    institutionNetShares: 0,
-    institutionNetAmount: 0,
-    personalNetShares: 0,
-    personalNetAmount: 0,
-    daysUsed: 0,
-  })
+      const rows = normalizeKisOutputRows(data.output)
+      const latest = rows[0] || null
+      const emptyCumulative = () => ({
+        foreignNetShares: 0,
+        foreignNetAmount: 0,
+        institutionNetShares: 0,
+        institutionNetAmount: 0,
+        personalNetShares: 0,
+        personalNetAmount: 0,
+        daysUsed: 0,
+      })
 
-  if (!latest) {
-    return {
-      code: iscd,
-      latest: null,
-      rows: [],
-      cumulative3d: emptyCumulative(),
-      cumulative5d: emptyCumulative(),
-      cumulative20d: emptyCumulative(),
-    }
-  }
+      if (!latest) {
+        return {
+          code: iscd,
+          latest: null,
+          rows: [],
+          cumulative3d: emptyCumulative(),
+          cumulative5d: emptyCumulative(),
+          cumulative20d: emptyCumulative(),
+        }
+      }
 
-  return {
-    code: iscd,
-    latest: {
-      date: latest.stck_bsop_date || null,
-      personalNetShares: num(latest.prsn_ntby_qty) ?? 0,
-      personalNetAmount: (num(latest.prsn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
-      foreignNetShares: num(latest.frgn_ntby_qty) ?? 0,
-      foreignNetAmount: (num(latest.frgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
-      institutionNetShares: num(latest.orgn_ntby_qty) ?? 0,
-      institutionNetAmount: (num(latest.orgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
-    },
-    rows,
-    cumulative3d: sumInvestorRows(rows, 3),
-    cumulative5d: sumInvestorRows(rows, 5),
-    cumulative20d: sumInvestorRows(rows, 20),
-  }
+      return {
+        code: iscd,
+        latest: {
+          date: latest.stck_bsop_date || null,
+          personalNetShares: num(latest.prsn_ntby_qty) ?? 0,
+          personalNetAmount: (num(latest.prsn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
+          foreignNetShares: num(latest.frgn_ntby_qty) ?? 0,
+          foreignNetAmount: (num(latest.frgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
+          institutionNetShares: num(latest.orgn_ntby_qty) ?? 0,
+          institutionNetAmount: (num(latest.orgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW,
+        },
+        rows,
+        cumulative3d: sumInvestorRows(rows, 3),
+        cumulative5d: sumInvestorRows(rows, 5),
+        cumulative20d: sumInvestorRows(rows, 20),
+      }
+    })
 }
 
 async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
@@ -401,61 +491,65 @@ async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
  */
 export async function inquireDailyBars(appKey, appSecret, env, code6, maxBars = 60) {
   const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
-  const today = new Date()
-  const start = new Date(today)
-  start.setDate(start.getDate() - 430)
+  const nReq = Math.max(5, Math.min(Number(maxBars) || 60, 430))
+  const cacheKey = `kis:daily:${env}:${iscd}:${nReq}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+      const today = new Date()
+      const start = new Date(today)
+      start.setDate(start.getDate() - 430)
 
-  const data = await kisGet({
-    appKey,
-    appSecret,
-    env,
-    path: '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
-    params: {
-      FID_COND_MRKT_DIV_CODE: 'J',
-      FID_INPUT_ISCD: iscd,
-      FID_INPUT_DATE_1: ymd(start),
-      FID_INPUT_DATE_2: ymd(today),
-      FID_PERIOD_DIV_CODE: 'D',
-      FID_ORG_ADJ_PRC: '1',
-    },
-    trId: 'FHKST03010100',
-    kind: 'KIS 기간차트',
-  })
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_INPUT_ISCD: iscd,
+          FID_INPUT_DATE_1: ymd(start),
+          FID_INPUT_DATE_2: ymd(today),
+          FID_PERIOD_DIV_CODE: 'D',
+          FID_ORG_ADJ_PRC: '1',
+        },
+        trId: 'FHKST03010100',
+        kind: 'KIS 기간차트',
+      })
 
-  const rows = Array.isArray(data.output2) ? data.output2 : []
-  const parsed = rows
-    .map((r) => {
-      const date = r.stck_bsop_date || r.biz_day || r.bstp_nmix_prpr || ''
-      const close = num(r.stck_clpr) ?? num(r.stck_prpr) ?? num(r.clpr)
-      if (!date || close === null) return null
-      const open = num(r.stck_oprc) ?? close
-      const high = num(r.stck_hgpr) ?? close
-      const low = num(r.stck_lwpr) ?? close
-      const volume = num(r.acml_vol) ?? num(r.ft_vol) ?? 0
-      return {
-        label: mdLabel(date),
-        price: Math.round(close),
-        open: Math.round(open),
-        high: Math.round(high),
-        low: Math.round(low),
-        volume: Math.max(0, Math.round(volume)),
-        ts: date,
-      }
+      const rows = Array.isArray(data.output2) ? data.output2 : []
+      const parsed = rows
+        .map((r) => {
+          const date = r.stck_bsop_date || r.biz_day || r.bstp_nmix_prpr || ''
+          const close = num(r.stck_clpr) ?? num(r.stck_prpr) ?? num(r.clpr)
+          if (!date || close === null) return null
+          const open = num(r.stck_oprc) ?? close
+          const high = num(r.stck_hgpr) ?? close
+          const low = num(r.stck_lwpr) ?? close
+          const volume = num(r.acml_vol) ?? num(r.ft_vol) ?? 0
+          return {
+            label: mdLabel(date),
+            price: Math.round(close),
+            open: Math.round(open),
+            high: Math.round(high),
+            low: Math.round(low),
+            volume: Math.max(0, Math.round(volume)),
+            ts: date,
+          }
+        })
+        .filter(Boolean)
+
+      parsed.sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+
+      const n = Math.max(5, Math.min(Number(maxBars) || 60, parsed.length))
+      return parsed.slice(-n).map(({ label, price, ts, open, high, low, volume }) => ({
+        label,
+        price,
+        ts,
+        open,
+        high,
+        low,
+        volume,
+      }))
     })
-    .filter(Boolean)
-
-  parsed.sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
-
-  const n = Math.max(5, Math.min(Number(maxBars) || 60, parsed.length))
-  return parsed.slice(-n).map(({ label, price, ts, open, high, low, volume }) => ({
-    label,
-    price,
-    ts,
-    open,
-    high,
-    low,
-    volume,
-  }))
 }
 
 async function inquireIntradayChart(appKey, appSecret, env, code6) {
@@ -595,3 +689,194 @@ export async function inquireKospiReturn5D(appKey, appSecret, env) {
   const pts = await inquireChartByTimeframe(appKey, appSecret, env, '069500', '5D')
   return chartPointsToReturnPct(pts)
 }
+
+/**
+ * 국내주식 거래금액(누적) 순위 상위 — [국내주식-047] `volume-rank`, `FID_BLNG_CLS_CODE=3` 거래금액순.
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {{ marketIscd?: string, limit?: number }} [opts] — `FID_INPUT_ISCD` (예: 0001 KOSPI, 0000 전체)
+ * @returns {Promise<Array<{ code: string, name: string, currentPrice: number | null, changePct: number | null, tradingValue: number | null }>>}
+ */
+export async function inquireTradeValueRankTop(appKey, appSecret, env, opts = {}) {
+  const marketIscd = opts.marketIscd != null ? String(opts.marketIscd) : '0001'
+  const limit = Math.min(50, Math.max(1, Number(opts.limit) || 5))
+  const cacheKey = `kis:trade-value-rank:${env}:${marketIscd}:${limit}`
+  return await withCache(cacheKey, 5 * 60_000, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/volume-rank',
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_COND_SCR_DIV_CODE: '20171',
+        FID_INPUT_ISCD: marketIscd,
+        FID_DIV_CLS_CODE: '0',
+        FID_BLNG_CLS_CODE: '3',
+        FID_TRGT_CLS_CODE: '111111111',
+        FID_TRGT_EXLS_CLS_CODE: '0000000000',
+        FID_INPUT_PRICE_1: '0',
+        FID_INPUT_PRICE_2: '10000000000',
+        FID_VOL_CNT: '0',
+        FID_INPUT_DATE_1: '',
+      },
+      trId: 'FHPST01710000',
+      kind: 'KIS 거래금액순위',
+    })
+    const rows = normalizeKisOutputRows(data.output)
+    return rows.slice(0, limit).map((r) => {
+      const code = String(r.mksc_shrn_iscd ?? '')
+        .replace(/\D/g, '')
+        .padStart(6, '0')
+      return {
+        code,
+        name: typeof r.hts_kor_isnm === 'string' ? r.hts_kor_isnm.trim() : '',
+        currentPrice: num(r.stck_prpr),
+        changePct: num(r.prdy_ctrt),
+        tradingValue: num(r.acml_tr_pbmn),
+      }
+    })
+  })
+}
+
+/**
+ * 국내업종 현재지수 [v1_국내주식-063] — KOSPI `0001`, KOSDAQ `1001`
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {string} iscd
+ * @returns {Promise<{ value: number, changePct: number } | null>}
+ */
+export async function inquireDomesticIndexPrice(appKey, appSecret, env, iscd) {
+  const code = String(iscd || '').trim()
+  const cacheKey = `kis:dom-index:${env}:${code}`
+  return await withCache(cacheKey, 60_000, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/inquire-index-price',
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'U',
+        FID_INPUT_ISCD: code,
+      },
+      trId: 'FHPUP02100000',
+      kind: 'KIS 국내지수',
+    })
+    const rows = normalizeKisOutputRows(data.output)
+    const o = rows[0]
+    if (!o || typeof o !== 'object') return null
+    const value = num(o.bstp_nmix_prpr)
+    const changePct = num(o.bstp_nmix_prdy_ctrt)
+    if (value == null || !Number.isFinite(value)) return null
+    return { value, changePct: changePct ?? 0 }
+  })
+}
+
+/**
+ * 해외지수·환율 현재가 스냅샷 [v1_해외주식-031] output1
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {'N'|'X'} mrktDiv — N 해외지수, X 환율
+ * @param {string} iscd — 예: COMP, SPX, FX@KRW
+ * @returns {Promise<{ value: number, changePct: number } | null>}
+ */
+export async function inquireOverseasIndexOrFxSnapshot(appKey, appSecret, env, mrktDiv, iscd) {
+  const sym = String(iscd || '').trim()
+  const cacheKey = `kis:ovrs-snap:${env}:${mrktDiv}:${sym}`
+  return await withCache(cacheKey, 60_000, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/overseas-price/v1/quotations/inquire-time-indexchartprice',
+      params: {
+        FID_COND_MRKT_DIV_CODE: mrktDiv,
+        FID_INPUT_ISCD: sym,
+        FID_HOUR_CLS_CODE: '0',
+        FID_PW_DATA_INCU_YN: 'Y',
+      },
+      trId: 'FHKST03030200',
+      kind: 'KIS 해외지수',
+    })
+    const raw = data.output1
+    const o = Array.isArray(raw) ? raw[0] : raw
+    if (!o || typeof o !== 'object') return null
+    const value = num(o.ovrs_nmix_prpr)
+    const changePct = num(o.prdy_ctrt)
+    if (value == null || !Number.isFinite(value)) return null
+    return { value, changePct: changePct ?? 0 }
+  })
+}
+
+function firstNumByKeyHint(obj, hintRe) {
+  if (!obj || typeof obj !== 'object') return null
+  for (const [k, v] of Object.entries(obj)) {
+    if (!hintRe.test(k)) continue
+    const n = num(v)
+    if (n != null && Number.isFinite(n)) return n
+  }
+  return null
+}
+
+/**
+ * 국내주식 공매도 일별추이 [국내주식-134] FHPST04830000
+ * @returns {Promise<{ rows: Array<Record<string, unknown>>, summary: Record<string, unknown> | null }>}
+ */
+export async function inquireDailyShortSale(appKey, appSecret, env, code6, opts = {}) {
+  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const days = Math.max(3, Math.min(Number(opts.days) || 10, 30))
+  const end = new Date()
+  const start = new Date()
+  start.setDate(start.getDate() - days * 2)
+  const cacheKey = `kis:short-sale:${env}:${iscd}:${ymd(end)}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/daily-short-sale',
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_INPUT_ISCD: iscd,
+        FID_INPUT_DATE_1: ymd(start),
+        FID_INPUT_DATE_2: ymd(end),
+      },
+      trId: 'FHPST04830000',
+      kind: 'KIS 공매도',
+    })
+    const summary = data.output1 && typeof data.output1 === 'object' ? data.output1 : null
+    const rows = normalizeKisOutputRows(data.output2)
+    return { rows, summary }
+  })
+}
+
+/**
+ * 국내주식 신용잔고 일별추이 [국내주식-110] FHPST04760000
+ * @returns {Promise<Array<Record<string, unknown>>>}
+ */
+export async function inquireDailyCreditBalance(appKey, appSecret, env, code6) {
+  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const cacheKey = `kis:credit-bal:${env}:${iscd}:${ymd(new Date())}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/daily-credit-balance',
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'J',
+        FID_COND_SCR_DIV_CODE: '20476',
+        FID_INPUT_ISCD: iscd,
+        FID_INPUT_DATE_1: ymd(new Date()),
+      },
+      trId: 'FHPST04760000',
+      kind: 'KIS 신용잔고',
+    })
+    return normalizeKisOutputRows(data.output)
+  })
+}
+
+export { firstNumByKeyHint }

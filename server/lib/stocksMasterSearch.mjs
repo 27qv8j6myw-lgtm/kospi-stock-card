@@ -2,6 +2,7 @@
  * `stocks_master` Supabase 조회 (service_role). Express 라우트에서 사용.
  */
 import { createClient } from '@supabase/supabase-js'
+import { lookupAndRegisterStock } from './stockMasterKisLookup.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -28,7 +29,7 @@ function getServiceSupabase() {
  * @param {number} limit
  * @returns {Promise<{ ok: true, items: Array<{ code: string, name: string, market: string, sector: string }> } | { ok: false, error: string }>}
  */
-export async function searchStocksMaster(q, limit = 10) {
+export async function searchStocksMaster(q, limit = 15) {
   const trimmed = String(q ?? '').trim()
   if (!trimmed) {
     return { ok: true, items: [] }
@@ -45,7 +46,7 @@ export async function searchStocksMaster(q, limit = 10) {
   const codePattern = digits ? `${digits}%` : null
 
   const [nameRes, codeRes] = await Promise.all([
-    supabase.from('stocks_master').select('code,name,market,sector').ilike('name', namePattern).limit(60),
+    supabase.from('stocks_master').select('code,name,market,sector').ilike('name', namePattern).limit(80),
     codePattern
       ? supabase.from('stocks_master').select('code,name,market,sector').ilike('code', codePattern).limit(40)
       : Promise.resolve({ data: [], error: null }),
@@ -117,6 +118,27 @@ export async function searchStocksMaster(q, limit = 10) {
     seen.add(it.code)
     deduped.push(it)
     if (deduped.length >= limit) break
+  }
+
+  const code6Exact =
+    digits.length === 6 ? digits.padStart(6, '0') : /^\d{6}$/.test(trimmed) ? trimmed : null
+
+  if (code6Exact && !deduped.some((r) => r.code === code6Exact)) {
+    try {
+      const kisRow = await lookupAndRegisterStock(code6Exact, 'Auto-register-search')
+      if (kisRow) {
+        deduped.unshift({
+          code: kisRow.code,
+          name: kisRow.name,
+          market: kisRow.market,
+          sector: kisRow.sector || '—',
+        })
+        if (deduped.length > limit) deduped.length = limit
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.warn('[stocks-search] KIS 조회 실패', code6Exact, msg)
+    }
   }
 
   return { ok: true, items: deduped }

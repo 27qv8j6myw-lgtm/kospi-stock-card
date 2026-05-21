@@ -75,6 +75,7 @@ describe('judgeEntry 전후 비교 시나리오', () => {
       rsi: 79,
       atrGap: 3.6,
       fundamental: { ...baseFundSamsung },
+      currentPrice: baseFundSamsung.currentPrice,
     })
     expect(j.stage).toBe('hold')
     expect(treeStageToKo(j.stage)).toBe('보유 유지')
@@ -96,6 +97,7 @@ describe('judgeEntry 전후 비교 시나리오', () => {
         fiveYearAvgPer: 18,
         epsGrowthYoY: 12,
       },
+      currentPrice: 100_000,
     })
     expect(j.stage).toBe('buy_aggressive')
     expect(treeStageToKo(j.stage)).toBe('적극 매수')
@@ -117,8 +119,12 @@ describe('judgeEntry 전후 비교 시나리오', () => {
         fiveYearAvgPer: 12,
         epsGrowthYoY: 5,
       },
+      currentPrice: 100_000,
     })
     expect(j.stage).toBe('watch_overheat')
+    expect(j.recommendedAction).toBe('wait')
+    expect(j.splitPrices).not.toBeNull()
+    expect(j.splitPrices?.firstNote).toBe('-3% 조정 시')
   })
 })
 

@@ -5,8 +5,14 @@ import { useAutoRefresh } from './useAutoRefresh'
 export type KisQuote = {
   code: string
   nameKr: string | null
+  /** 서버 정규화( nameKr 과 동일 값 ); KIS 누락 시 보조 */
+  name?: string | null
+  /** 종목명 (name/nameKr 과 동일 권장). 업종명과 혼동 금지 */
+  stockName?: string | null
   market: string | null
   sector: string | null
+  /** KIS 업종 (bstp_kor_isnm 등). 종목명으로 쓰지 말 것 */
+  sectorKr?: string | null
   price: number
   change: number
   changePercent: number

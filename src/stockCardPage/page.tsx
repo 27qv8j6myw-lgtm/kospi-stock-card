@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Info, TrendingUp } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { TrendingUp } from 'lucide-react'
+import { useAppNavigation } from '../hooks/useAppNavigation'
 import { PageHeader } from '../components/layout/PageHeader'
 import { ExecutionStrategy } from '../components/ExecutionStrategy'
 import { IndicatorGrid } from '../components/IndicatorGrid'
@@ -7,19 +8,19 @@ import { StockNameSearch } from '../components/StockNameSearch'
 import { SpecialEventBanner } from '../components/SpecialEventBanner'
 import { StockHero, letterGradeToTone, scoreToLetterGrade, type StockHeroChartProps } from '../components/StockHero'
 import { ErrorBoundary } from '../components/ErrorBoundary'
-import { StopPanel } from '../components/StopPanel'
-import { AiScenarioCard } from '../components/stock/AiScenarioCard'
+import { MarketIndicesStrip } from '../components/home/MarketIndicesStrip'
 import { PriceTargets } from '../components/PriceTargets'
 import { useKisChart, type IntradayInterval } from '../hooks/useKisChart'
 import { useKisLogicIndicators } from '../hooks/useKisLogicIndicators'
 import { useKisQuote } from '../hooks/useKisQuote'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import {
   logicMetrics,
   mockSectorFlowSnapshot,
-  saveStatus,
   stockInfo,
-  stopInfo as mockStopInfo,
 } from '../lib/mockData'
+import { screeningStockNameOrNull } from '../data/sectorMaster'
+import { logActivity } from '../lib/activityLog'
 import {
   buildThreeDayFiSupplyReasonSentence,
   buildSupplyDrawerBody,
@@ -100,7 +101,8 @@ type PageProps = {
 
 export default function Page(props: PageProps = {}) {
   const { initialCode } = props
-  const defaultCode = initialCode ?? stockInfo.code
+  const { navigate } = useAppNavigation()
+  const defaultCode = initialCode ?? '000660'
   const [queryCode, setQueryCode] = useState(defaultCode)
   const [searchDisplay, setSearchDisplay] = useState(() =>
     initialCode && initialCode !== stockInfo.code ? `${initialCode}` : `${stockInfo.name} (${stockInfo.code})`,
@@ -108,6 +110,26 @@ export default function Page(props: PageProps = {}) {
   const [pickedName, setPickedName] = useState<string | null>(null)
   const [tf, setTf] = useState<Timeframe>('1D')
   const [intradayIv, setIntradayIv] = useState<IntradayInterval>('5m')
+
+  /** `/stocks/{code}`·스크리닝 TOP5 등 — URL 종목과 조회 코드를 동기화 (paint 전에 반영) */
+  useLayoutEffect(() => {
+    const code6 = String(initialCode ?? '000660')
+      .replace(/\D/g, '')
+      .padStart(6, '0')
+      .slice(0, 6)
+    setQueryCode(code6)
+    let fromPick: string | null = null
+    try {
+      fromPick = sessionStorage.getItem(`stock-pick:${code6}`)
+      if (fromPick) sessionStorage.removeItem(`stock-pick:${code6}`)
+    } catch {
+      fromPick = null
+    }
+    setPickedName(fromPick)
+    const master = screeningStockNameOrNull(code6)
+    const label = fromPick || master
+    setSearchDisplay(label ? `${label} (${code6})` : code6)
+  }, [initialCode])
 
   useEffect(() => {
     const m = searchDisplay.match(/(?<!\d)(\d{6})(?!\d)/)
@@ -121,21 +143,31 @@ export default function Page(props: PageProps = {}) {
     return () => clearTimeout(t)
   }, [searchDisplay, queryCode])
 
+  /** 검색·내부 상태로 종목이 바뀌면 URL(`/stocks/{code}`)도 맞춤 — 탭·북마크·뒤로가기와 단일 출처 */
+  useEffect(() => {
+    const code6 = String(queryCode || '')
+      .replace(/\D/g, '')
+      .padStart(6, '0')
+      .slice(0, 6)
+    if (!/^\d{6}$/.test(code6)) return
+    if (typeof window === 'undefined') return
+    const m = window.location.pathname.match(/^\/stocks\/(\d{6})\/?$/)
+    const urlCode = (m?.[1] ?? '').padStart(6, '0')
+    if (!urlCode || urlCode === code6) return
+    navigate(`/stocks/${code6}`)
+  }, [queryCode, navigate])
+
   const { state: quoteState, quoteRefresh } = useKisQuote(queryCode)
   const { state: logicState } = useKisLogicIndicators(queryCode)
 
   useEffect(() => {
-    try {
-      sessionStorage.setItem('lastStockCode', queryCode)
-    } catch {
-      /* ignore */
-    }
-  }, [queryCode])
-
-  useEffect(() => {
     if (quoteState.status !== 'ok') return
     if (quoteState.data.code !== queryCode) return
-    const nk = quoteState.data.nameKr || pickedName
+    const nk =
+      quoteState.data.stockName ||
+      quoteState.data.nameKr ||
+      quoteState.data.name ||
+      pickedName
     if (!nk) return
     setSearchDisplay((prev) => {
       if (prev === queryCode) return `${nk} (${queryCode})`
@@ -143,14 +175,44 @@ export default function Page(props: PageProps = {}) {
     })
   }, [quoteState, queryCode, pickedName])
 
-  const liveStock = useMemo(() => {
-    if (quoteState.status !== 'ok') return stockInfo
+  const pendingStock = useMemo(() => {
+    const code6 = String(queryCode || '').replace(/\D/g, '').padStart(6, '0').slice(0, 6)
+    const masterName = screeningStockNameOrNull(code6)
+    const pendingName =
+      pickedName || masterName || (code6 === stockInfo.code ? stockInfo.name : null)
+    const isDemoRow = code6 === stockInfo.code
     return {
       ...stockInfo,
-      name: quoteState.data.nameKr || pickedName || stockInfo.name,
+      name: pendingName ?? code6,
+      code: code6,
+      /** 005930 데모 행만 mock 시장·업종. 다른 종목은 시세 오기 전 빈 값(삼성 데모 업종이 붙는 현상 방지) */
+      market: isDemoRow ? stockInfo.market : '',
+      sector: isDemoRow ? stockInfo.sector : '',
+      asOfDate: undefined,
+    }
+  }, [queryCode, pickedName])
+
+  const liveStock = useMemo(() => {
+    if (quoteState.status !== 'ok') return pendingStock
+    if (quoteState.data.code !== pendingStock.code) return pendingStock
+    const isDemoRow = quoteState.data.code === stockInfo.code
+    const qSector = String(quoteState.data.sector ?? '').trim()
+    const qMarket = quoteState.data.market
+    const marketResolved = qMarket?.includes('코스피')
+      ? 'KOSPI'
+      : qMarket || (isDemoRow ? stockInfo.market : '')
+    const sectorResolved = qSector || (isDemoRow ? stockInfo.sector : '')
+    return {
+      ...stockInfo,
+      name:
+        quoteState.data.stockName ||
+        quoteState.data.nameKr ||
+        quoteState.data.name ||
+        pickedName ||
+        pendingStock.name,
       code: quoteState.data.code,
-      market: quoteState.data.market?.includes('코스피') ? 'KOSPI' : quoteState.data.market || stockInfo.market,
-      sector: quoteState.data.sector || stockInfo.sector,
+      market: marketResolved,
+      sector: sectorResolved,
       price: quoteState.data.price,
       change: quoteState.data.change,
       changePercent: quoteState.data.changePercent,
@@ -159,7 +221,32 @@ export default function Page(props: PageProps = {}) {
         new Date(quoteState.data.fetchedAt).getMonth() + 1,
       ).padStart(2, '0')}.${String(new Date(quoteState.data.fetchedAt).getDate()).padStart(2, '0')} 기준`,
     }
-  }, [quoteState, pickedName])
+  }, [quoteState, pickedName, pendingStock])
+
+  /** 종목 카드 조회 이력 — KIS 시세로 종목명 확정 후, code당 30분 1회 */
+  useEffect(() => {
+    const code = String(queryCode || '')
+      .replace(/\D/g, '')
+      .padStart(6, '0')
+    if (!/^\d{6}$/.test(code)) return
+    if (quoteState.status !== 'ok' || quoteState.data.code !== code) return
+    const name = String(
+      quoteState.data.stockName || quoteState.data.nameKr || quoteState.data.name || '',
+    ).trim()
+    if (!name) return
+
+    const key = `view_stock:${code}`
+    const last = typeof window !== 'undefined' ? window.sessionStorage.getItem(key) : null
+    const now = Date.now()
+    const THIRTY_MIN = 30 * 60 * 1000
+    if (last != null && last !== '') {
+      const prev = Number.parseInt(last, 10)
+      if (Number.isFinite(prev) && now - prev < THIRTY_MIN) return
+    }
+    if (typeof window !== 'undefined') window.sessionStorage.setItem(key, String(now))
+
+    void logActivity('view_stock', { code, name }).catch(() => {})
+  }, [queryCode, quoteState])
 
   const chartExchangeSuffix = useMemo(() => {
     const m = (liveStock.market || '').toUpperCase()
@@ -1170,19 +1257,6 @@ export default function Page(props: PageProps = {}) {
     ],
   )
 
-  const stopInfo = useMemo(() => {
-    if (!logicDerived) return mockStopInfo
-    return {
-      stopPrice: logicDerived.stop.stopPrice,
-      stopLossPct: logicDerived.stop.stopLossPct,
-      method: logicDerived.stop.method,
-      basis: logicDerived.stop.basis,
-      reason: logicDerived.stop.reason,
-      candidates: logicDerived.stop.candidates,
-      warning: logicDerived.stop.warning,
-    }
-  }, [logicDerived])
-
   const logicIndicatorSlots = useMemo(() => buildLogicIndicatorGridSlots(liveMetrics), [liveMetrics])
 
   const chartData = useMemo(() => {
@@ -1298,8 +1372,9 @@ export default function Page(props: PageProps = {}) {
 
   return (
     <main className="mx-auto min-w-0 max-w-6xl overflow-x-hidden px-4 py-8 sm:px-6 lg:px-8">
+      <MarketIndicesStrip />
       <article className="overflow-visible rounded-2xl border border-default bg-card shadow-card">
-          <PageHeader title="종목 카드" asOfDate={liveStock.asOfDate} />
+          <PageHeader title="종목 카드" />
           <div className="border-b border-default px-6 py-3 sm:px-8">
             <StockNameSearch
               compact
@@ -1340,21 +1415,9 @@ export default function Page(props: PageProps = {}) {
             loading={logicState.status === 'loading' && !targetPricePanelResult}
             displayMode={targetPriceDisplayMode}
           />
-          <StopPanel stop={stopInfo} />
 
-          <div className="border-t border-default px-6 py-6 sm:px-8">
-            <AiScenarioCard stockCode={liveStock.code} stockName={liveStock.name} />
-          </div>
-
-          <footer className="border-t border-default px-6 py-4 sm:px-8">
-            <p className="inline-flex items-center gap-2 rounded-md border border-default bg-neutral-bg px-3 py-1.5 text-xs text-secondary">
-              <Info className="size-3.5 shrink-0" aria-hidden />
-              {saveStatus}
-              <span className="text-tertiary">·</span>
-              <a href="/design-test" className="font-medium text-info-text underline">
-                디자인 토큰
-              </a>
-            </p>
+          <footer className="border-t border-default bg-neutral-bg/70 px-6 py-4 text-xs leading-relaxed text-secondary sm:px-8">
+            투자주의: 본 분석은 참고용이며 최종 투자 판단과 책임은 투자자 본인에게 있습니다.
           </footer>
       </article>
     </main>

@@ -1,5 +1,3 @@
-const PRO_USERS = ['joongsuc@me.com']
-
 /**
  * @param {import('express').Request} req
  * @param {import('express').Response} res
@@ -15,11 +13,20 @@ export async function requireProUser(req, res, supabaseService, getUserIdFromReq
       return null
     }
 
-    const { data } = await supabaseService.auth.admin.getUserById(userId)
-    const email = data?.user?.email?.toLowerCase().trim()
+    const { data, error } = await supabaseService
+      .from('user_settings')
+      .select('pro_enabled')
+      .eq('user_id', userId)
+      .maybeSingle()
 
-    if (!email || !PRO_USERS.includes(email)) {
-      res.status(403).json({ error: 'Pro 기능은 권한이 필요합니다' })
+    if (error) {
+      console.error('[Pro Access] user_settings', error)
+      res.status(500).json({ error: '권한 확인 실패' })
+      return null
+    }
+
+    if (!data?.pro_enabled) {
+      res.status(403).json({ error: 'Pro 모드 권한이 없습니다' })
       return null
     }
 

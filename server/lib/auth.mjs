@@ -13,6 +13,26 @@ function cleanEnvSecret(v) {
 }
 
 /**
+ * Bearer 토큰으로 사용자 컨텍스트 Supabase 클라이언트 (RPC `is_admin()` 등 `auth.uid()` 필요 시)
+ * @param {import('express').Request} req
+ * @returns {import('@supabase/supabase-js').SupabaseClient | null}
+ */
+export function createUserSupabaseFromRequest(req) {
+  const raw = req.headers.authorization ?? req.headers.Authorization
+  const authHeader = Array.isArray(raw) ? raw[0] : raw
+  if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) return null
+  const token = authHeader.slice(7).trim()
+  if (!token) return null
+  const url = cleanEnvSecret(process.env.NEXT_PUBLIC_SUPABASE_URL)
+  const anon = cleanEnvSecret(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+  if (!url || !anon) return null
+  return createClient(url, anon, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  })
+}
+
+/**
  * @param {import('express').Request} req
  * @returns {Promise<string | null>}
  */

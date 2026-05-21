@@ -4,8 +4,14 @@
   "buildCommand": "npm run build:vercel",
   "outputDirectory": "dist",
   "functions": {
-    "api/**/*.mjs": {
+    "api/[[...path]].mjs": {
       "maxDuration": 300
+    },
+    "api/admin-sync-stocks-fetch.mjs": {
+      "maxDuration": 60
+    },
+    "api/admin-sync-stocks-batch.mjs": {
+      "maxDuration": 30
     }
   },
   "rewrites": [

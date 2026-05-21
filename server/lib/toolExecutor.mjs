@@ -1,5 +1,18 @@
-import { inquireDomesticPrice, inquireDailyBars } from '../kisClient.mjs'
+import { inquireDomesticPrice, inquireDailyBars, inquireInvestorByStock } from '../kisClient.mjs'
 import { searchStocksMaster } from './stocksMasterSearch.mjs'
+import {
+  dividendYieldFromKisRaw,
+  fetchMarketIndices,
+  fetchTopByMomentum,
+  fetchTopByVolume,
+  fetchUserRecentViews,
+} from './proMarketData.mjs'
+import {
+  getAnalystReportsForPro,
+  getDisclosuresForPro,
+  searchNewsForPro,
+} from './proResearchTools.mjs'
+import { registerStockMaster } from './stockMasterKisLookup.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -27,6 +40,12 @@ function normalizeCode(raw) {
     .slice(0, 6)
 }
 
+function clampInt(v, fallback, min, max) {
+  const n = Number(v)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
+
 /**
  * @param {string} code6
  */
@@ -34,14 +53,31 @@ export async function getKisQuote(code6) {
   const code = normalizeCode(code6)
   const { appKey, appSecret, env } = getKisEnv()
   const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
+  const nameKr =
+    quote.nameKr && String(quote.nameKr).trim() && String(quote.nameKr).trim() !== code
+      ? String(quote.nameKr).trim()
+      : null
   return {
     code,
-    name: quote.nameKr || code,
+    name: nameKr || code,
+    market: quote.market ? String(quote.market).trim() : null,
+    sector: quote.sector ? String(quote.sector).trim() : null,
     currentPrice: quote.price,
     change: quote.change,
     changePct: quote.changePercent,
     volume: quote.volume,
     tradingValue: quote.tradeValue,
+    openPrice: quote.open ?? null,
+    dayHigh: quote.high ?? null,
+    dayLow: quote.low ?? null,
+    tradingAmount: quote.tradeValue ?? null,
+    per: quote.per,
+    pbr: quote.pbr,
+    eps: quote.eps,
+    bps: quote.bps,
+    dividendYield: dividendYieldFromKisRaw(quote.raw),
+    marketCap: quote.marketCap,
+    listedShares: quote.listedShares,
   }
 }
 
@@ -69,11 +105,14 @@ export async function getKis52Week(code6) {
 /**
  * @param {string} toolName
  * @param {Record<string, unknown>} input
+ * @param {string | null | undefined} [userId]
  */
-export async function executeTool(toolName, input) {
+export async function executeTool(toolName, input, userId) {
   console.log(`[Tool] ${toolName}`, input)
 
   try {
+    const { appKey, appSecret, env } = getKisEnv()
+
     switch (toolName) {
       case 'searchStock': {
         const query = String(input?.query ?? '').trim()
@@ -84,12 +123,40 @@ export async function executeTool(toolName, input) {
       }
 
       case 'getStockQuote': {
-        return await getKisQuote(String(input?.code ?? ''))
+        const q = await getKisQuote(String(input?.code ?? ''))
+        if (q.name && q.name !== q.code) {
+          void registerStockMaster(
+            {
+              code: q.code,
+              name: q.name,
+              market: q.market || 'KOSPI',
+              sector: q.sector || '—',
+            },
+            'Auto-register via Tool',
+          )
+        }
+        return {
+          code: q.code,
+          name: q.name,
+          market: q.market,
+          sector: q.sector,
+          currentPrice: q.currentPrice,
+          change: q.change,
+          changePct: q.changePct,
+          volume: q.volume,
+          tradingValue: q.tradingValue,
+          openPrice: q.openPrice,
+          dayHigh: q.dayHigh,
+          dayLow: q.dayLow,
+          tradingAmount: q.tradingAmount ?? q.tradingValue,
+          marketCap: q.marketCap,
+        }
       }
 
       case 'get52Week': {
-        const week52 = await getKis52Week(String(input?.code ?? ''))
-        const quote = await getKisQuote(String(input?.code ?? ''))
+        const code = normalizeCode(String(input?.code ?? ''))
+        const week52 = await getKis52Week(code)
+        const quote = await getKisQuote(code)
         const pctFromHigh =
           week52.high52w > 0
             ? Number((((quote.currentPrice - week52.high52w) / week52.high52w) * 100).toFixed(1))
@@ -100,6 +167,149 @@ export async function executeTool(toolName, input) {
           currentPrice: quote.currentPrice,
           pctFromHigh,
         }
+      }
+
+      case 'getInvestorTrend': {
+        const code = normalizeCode(String(input?.code ?? ''))
+        const days = clampInt(input?.days, 5, 1, 20)
+        const inv = await inquireInvestorByStock(appKey, appSecret, env, code)
+        const rows = Array.isArray(inv.rows) ? inv.rows.slice(0, days) : []
+        if (!rows.length && !inv.latest) {
+          return { error: '투자자 동향 데이터 없음' }
+        }
+
+        let foreignNetAmount = 0
+        let institutionNetAmount = 0
+        let foreignBuyDays = 0
+        let institutionBuyDays = 0
+
+        for (const r of rows) {
+          const fAmt = (Number(r.frgn_ntby_tr_pbmn) || 0) * 1_000_000
+          const iAmt = (Number(r.orgn_ntby_tr_pbmn) || 0) * 1_000_000
+          foreignNetAmount += fAmt
+          institutionNetAmount += iAmt
+          if (fAmt > 0) foreignBuyDays += 1
+          if (iAmt > 0) institutionBuyDays += 1
+        }
+
+        const usedDays = rows.length || days
+
+        return {
+          code,
+          days: usedDays,
+          foreign: {
+            cumulativeNet: foreignNetAmount,
+            avgDaily: usedDays ? Math.round(foreignNetAmount / usedDays) : 0,
+            buyDays: foreignBuyDays,
+          },
+          institute: {
+            cumulativeNet: institutionNetAmount,
+            avgDaily: usedDays ? Math.round(institutionNetAmount / usedDays) : 0,
+            buyDays: institutionBuyDays,
+          },
+          latest: inv.latest,
+        }
+      }
+
+      case 'getValuation': {
+        const q = await getKisQuote(String(input?.code ?? ''))
+        return {
+          code: q.code,
+          name: q.name,
+          per: q.per,
+          pbr: q.pbr,
+          eps: q.eps,
+          bps: q.bps,
+          dividendYield: q.dividendYield,
+        }
+      }
+
+      case 'getDailyChart': {
+        const code = normalizeCode(String(input?.code ?? ''))
+        const days = clampInt(input?.days, 20, 5, 100)
+        const bars = await inquireDailyBars(appKey, appSecret, env, code, days)
+        if (!bars.length) {
+          return { error: '일봉 데이터 없음' }
+        }
+
+        const closes = bars.map((c) => c.price ?? 0)
+        const max = Math.max(...closes)
+        const min = Math.min(...closes)
+        const first = closes[0]
+        const last = closes[closes.length - 1]
+        const changePct =
+          first > 0 ? Number((((last - first) / first) * 100).toFixed(2)) : null
+
+        const recentDesc = bars.slice(-5).reverse()
+
+        return {
+          code,
+          days: bars.length,
+          summary: {
+            startPrice: first,
+            endPrice: last,
+            changePct,
+            max,
+            min,
+          },
+          recent: recentDesc.map((c) => ({
+            date: c.ts,
+            label: c.label,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.price,
+            volume: c.volume,
+          })),
+        }
+      }
+
+      case 'getTopByVolume': {
+        const limit = clampInt(input?.limit, 10, 1, 30)
+        const stocks = await fetchTopByVolume(appKey, appSecret, env, limit)
+        return { limit, stocks }
+      }
+
+      case 'getTopByMomentum': {
+        const limit = clampInt(input?.limit, 10, 1, 30)
+        const stocks = await fetchTopByMomentum(appKey, appSecret, env, limit)
+        return { limit, stocks }
+      }
+
+      case 'getMarketIndices': {
+        return await fetchMarketIndices(appKey, appSecret, env)
+      }
+
+      case 'getMyRecentViews': {
+        if (!userId) return { error: '인증 정보 없음' }
+        return await fetchUserRecentViews(userId, appKey, appSecret, env)
+      }
+
+      case 'searchNews': {
+        const query = String(input?.query ?? '').trim()
+        const limit = clampInt(input?.limit, 5, 1, 10)
+        if (!query) return { query: '', count: 0, news: [] }
+        return await searchNewsForPro(query, limit)
+      }
+
+      case 'getDisclosures': {
+        const code = normalizeCode(String(input?.code ?? ''))
+        const days = clampInt(input?.days, 30, 7, 90)
+        return await getDisclosuresForPro(code, days)
+      }
+
+      case 'getAnalystReports': {
+        const code = normalizeCode(String(input?.code ?? ''))
+        let currentPrice = Number(input?.currentPrice)
+        if (!Number.isFinite(currentPrice)) {
+          try {
+            const q = await getKisQuote(code)
+            currentPrice = q.currentPrice
+          } catch {
+            currentPrice = NaN
+          }
+        }
+        return await getAnalystReportsForPro(code, currentPrice)
       }
 
       default:

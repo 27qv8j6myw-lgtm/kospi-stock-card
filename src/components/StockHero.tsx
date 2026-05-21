@@ -19,7 +19,7 @@ import type { IntradayInterval } from '../hooks/useKisChart'
 import { ChartMountShell } from './chart/ChartMountShell'
 import { Card } from './ui/Card'
 import { StatusBadge } from './ui/StatusBadge'
-import { strategyToBadgeStatus } from '../lib/strategyBadges'
+import { strategyToBadgeStatus, strategyToLabelKo } from '../lib/strategyBadges'
 import { formatKrwPrice, formatPercentDiff } from './PriceChart'
 
 const TIMEFRAMES: Timeframe[] = ['1D', '5D', '1M', '3M', '1Y']
@@ -97,7 +97,7 @@ export type StockHeroProps = {
   stock: StockHeroStock
   insight: StockHeroInsight
   chart: StockHeroChartProps
-  /** 메인 차트 블록 바로 아래 (AI 종합 요약 등) */
+  /** 메인 차트 블록 바로 아래 */
   chartFooter?: ReactNode
 }
 
@@ -374,7 +374,7 @@ function HeroChartInner({
       </div>
       <ChartMountShell height={280} className="mt-3">
         <ResponsiveContainer width="100%" height={280} minHeight={280} minWidth={0}>
-          <AreaChart data={data} margin={{ top: 8, right: 4, left: 4, bottom: 4 }}>
+          <AreaChart data={data} margin={{ top: 8, right: 15, left: 15, bottom: 4 }}>
             <defs>
               <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={lineColor} stopOpacity={0.08} />
@@ -540,7 +540,7 @@ function IntradayChartBlock({
 
       <ChartMountShell height={280} className="mt-3">
         <ResponsiveContainer width="100%" height={280} minHeight={280} minWidth={0}>
-          <AreaChart data={series} margin={{ top: 8, right: 4, left: 4, bottom: 4 }}>
+          <AreaChart data={series} margin={{ top: 8, right: 15, left: 15, bottom: 4 }}>
             <defs>
               <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor={lineColor} stopOpacity={0.08} />
@@ -594,12 +594,6 @@ function IntradayChartBlock({
                 stroke="#fff"
                 strokeWidth={2}
                 ifOverflow="visible"
-                label={{
-                  value: `${Math.round(last.value).toLocaleString('ko-KR')}원`,
-                  position: 'right',
-                  fill: lineColor,
-                  fontSize: 10,
-                }}
               />
             ) : null}
           </AreaChart>
@@ -690,7 +684,9 @@ export function StockHero({ stock, insight, chart, chartFooter }: StockHeroProps
       <div className="flex min-h-[280px] min-w-0 flex-col gap-8 lg:flex-row lg:items-stretch lg:min-h-[280px]">
         <div className="flex min-h-[280px] min-w-0 flex-1 flex-col lg:max-w-[min(100%,420px)]">
           <p className="text-sm text-secondary">한눈에 보기</p>
-          <h3 className="mt-1 text-[22px] font-bold leading-snug text-primary sm:text-[24px]">{insight.title}</h3>
+          <h3 className="mt-1 text-[22px] font-bold leading-snug text-primary sm:text-[24px]">
+            {insight.title}
+          </h3>
 
           <ul className="mt-4 space-y-0">
             <li className="flex min-w-0 items-center gap-2.5 py-3.5">
@@ -713,7 +709,7 @@ export function StockHero({ stock, insight, chart, chartFooter }: StockHeroProps
                   className="min-w-0 truncate text-right font-sans-en text-base font-semibold"
                   style={{ color: strategyValueColor(insight.strategy) }}
                 >
-                  {insight.strategy}
+                  {strategyToLabelKo(insight.strategy)}
                 </span>
               </div>
             </li>
@@ -729,41 +725,20 @@ export function StockHero({ stock, insight, chart, chartFooter }: StockHeroProps
                 </span>
               </div>
             </li>
-            <li className="flex min-w-0 items-center gap-2.5 py-3.5">
-              <Info className="size-5 shrink-0 text-[#9333EA]" strokeWidth={2} aria-hidden />
-              <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-                <span className="shrink-0 text-base font-semibold leading-snug text-primary">Reason</span>
-                <span
-                  className="min-w-0 max-w-[min(100%,200px)] truncate text-right text-base font-semibold text-primary sm:max-w-[min(52%,320px)]"
+            <li className="min-w-0 py-3.5">
+              <div className="mb-2 flex items-center gap-2.5">
+                <Info className="size-5 shrink-0 text-[#9333EA]" strokeWidth={2} aria-hidden />
+                <span className="text-base font-semibold leading-snug text-primary">종합 분석</span>
+              </div>
+              <div className="min-w-0 pl-8">
+                <p
+                  className="text-base font-medium leading-relaxed text-gray-700"
                   title={insight.reason}
                 >
                   {insight.reason}
-                </span>
+                </p>
               </div>
             </li>
-            {insight.entrySplitPrices &&
-            insight.entryRecommendedAction &&
-            insight.entryRecommendedAction !== 'avoid' ? (
-              <li className="border-t border-[#F3F4F6] py-3.5">
-                <p className="text-sm font-semibold text-primary">
-                  추천 분할 매수 가격
-                  {insight.entrySplitPrices.firstNote !== '현재가 즉시' ? (
-                    <span className="ml-1.5 font-normal text-secondary">
-                      · {insight.entrySplitPrices.firstNote}
-                    </span>
-                  ) : null}
-                </p>
-                <div className="mt-3 grid grid-cols-3 gap-2">
-                  <HeroSplitPriceCell
-                    label="1차"
-                    price={insight.entrySplitPrices.first}
-                    emphasize={insight.entrySplitPrices.firstNote === '현재가 즉시'}
-                  />
-                  <HeroSplitPriceCell label="2차 (-5%)" price={insight.entrySplitPrices.second} />
-                  <HeroSplitPriceCell label="3차 (-10%)" price={insight.entrySplitPrices.third} />
-                </div>
-              </li>
-            ) : null}
           </ul>
         </div>
 

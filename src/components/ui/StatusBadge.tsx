@@ -9,6 +9,16 @@ export type StatusBadgeStatus =
   | 'TAKE_PROFIT'
   | 'REJECT'
 
+const statusLabelKo: Record<StatusBadgeStatus, string> = {
+  BUY: '매수',
+  BUY_AGGRESSIVE: '적극매수',
+  BUY_MORE: 'BUY+',
+  HOLD: '보유',
+  WATCH: '관망',
+  TAKE_PROFIT: '익절',
+  REJECT: '제외',
+}
+
 const statusClass: Record<StatusBadgeStatus, string> = {
   BUY: 'bg-icon-green-bg text-icon-green',
   BUY_AGGRESSIVE: 'bg-[#DCFCE7] text-[#15803D]',
@@ -40,7 +50,7 @@ export function StatusBadge({ status, size = 'md', pill = true, className = '', 
       className={`inline-flex items-center justify-center uppercase ${statusClass[status]} ${sizeCls} ${radius} ${className}`.trim()}
       {...rest}
     >
-      {status === 'BUY_MORE' ? 'BUY+' : status === 'BUY_AGGRESSIVE' ? 'BUY++' : status}
+      {statusLabelKo[status]}
     </span>
   )
 }

@@ -30,3 +30,4 @@ dist-ssr
 .tmp-kis-token.json
 .vercel
 .data
+.env*.local

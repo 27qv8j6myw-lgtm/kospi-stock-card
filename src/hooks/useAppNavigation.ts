@@ -11,6 +11,8 @@ function normalizePathname(raw: string): string {
   if (raw === '/pro/chat') return '/pro/chat'
   const proChatId = raw.match(/^\/pro\/chat\/([0-9a-f-]{36})\/?$/i)
   if (proChatId) return `/pro/chat/${proChatId[1]}`
+  const proStock = raw.match(/^\/pro\/stock\/(\d{6})\/?$/)
+  if (proStock) return `/pro/stock/${proStock[1]}`
   if (raw === '/pro') return '/pro'
   if (raw === '/' || raw === '') return DEFAULT_HOME_PATH
   if (raw === '/stocks' || raw === '/stocks/') return DEFAULT_STOCK_PATH

@@ -25,12 +25,26 @@ export type EntryTreeStage =
   | 'buy_aggressive'
   | 'hold'
 
+export type EntryRecommendedAction = 'immediate' | 'partial' | 'wait' | 'avoid'
+
+export type EntrySplitPrices = {
+  first: number
+  second: number
+  third: number
+  firstNote: string
+}
+
 export type EntryTreeJudgment = {
   stage: EntryTreeStage
   stageLabel: string
   rationale: string
   fundamentalSignal: FundamentalSignal
+  recommendedAction: EntryRecommendedAction
+  splitPrices: EntrySplitPrices | null
 }
+
+/** 별칭 — 스펙 문서와 동일 이름 */
+export type EntryJudgment = EntryTreeJudgment
 
 export function assessFundamental(input: FundamentalInput): {
   signal: FundamentalSignal
@@ -98,111 +112,206 @@ export function entryDecisionToTreeStage(d: ExecutionEntryDecision): EntryTreeSt
   return rev ? (rev[0] as EntryTreeStage) : null
 }
 
+function mapRecommendedAction(finalStage: EntryTreeStage): EntryRecommendedAction {
+  if (finalStage === 'avoid') return 'avoid'
+  if (finalStage === 'take_full_profit' || finalStage === 'take_partial_profit') return 'avoid'
+  if (finalStage === 'buy_aggressive' || finalStage === 'buy_new') return 'immediate'
+  if (finalStage === 'buy_split' || finalStage === 'hold') return 'partial'
+  return 'wait'
+}
+
+function calculateSplitPrices(input: {
+  currentPrice: number
+  rsi: number
+  atrGap: number
+  fundamentalSignal: FundamentalSignal
+  stage: EntryTreeStage
+}): EntrySplitPrices | null {
+  const { currentPrice, rsi, atrGap, fundamentalSignal, stage } = input
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) return null
+
+  if (stage === 'avoid' || stage === 'take_full_profit' || stage === 'take_partial_profit') {
+    return null
+  }
+
+  let firstMultiplier = 1.0
+  let firstNote = '현재가 즉시'
+
+  if (fundamentalSignal !== 'strong') {
+    if (rsi >= 75 || atrGap >= 4.5) {
+      firstMultiplier = 0.97
+      firstNote = '-3% 조정 시'
+    } else if (rsi >= 70 || atrGap >= 3.5) {
+      firstMultiplier = 0.98
+      firstNote = '-2% 조정 시'
+    }
+  }
+
+  return {
+    first: Math.round(currentPrice * firstMultiplier),
+    second: Math.round(currentPrice * 0.95),
+    third: Math.round(currentPrice * 0.9),
+    firstNote,
+  }
+}
+
+function finalizeTreeJudgment(
+  base: Omit<EntryTreeJudgment, 'recommendedAction' | 'splitPrices'>,
+  ctx: { currentPrice: number; rsi: number; atrGap: number },
+): EntryTreeJudgment {
+  const splitPrices = calculateSplitPrices({
+    currentPrice: ctx.currentPrice,
+    rsi: ctx.rsi,
+    atrGap: ctx.atrGap,
+    fundamentalSignal: base.fundamentalSignal,
+    stage: base.stage,
+  })
+  return {
+    ...base,
+    recommendedAction: mapRecommendedAction(base.stage),
+    splitPrices,
+  }
+}
+
 export function judgeEntry(input: {
   structureScore: number
   executionScore: number
   rsi: number
   atrGap: number
   fundamental: FundamentalInput
+  currentPrice: number
 }): EntryTreeJudgment {
-  const { structureScore, executionScore, rsi, atrGap, fundamental } = input
+  const { structureScore, executionScore, rsi, atrGap, fundamental, currentPrice } = input
   const fund = assessFundamental(fundamental)
 
   if (structureScore < 50) {
-    return {
-      stage: 'avoid',
-      stageLabel: LABEL.avoid,
-      rationale: `구조 점수 ${structureScore}점 (50 미만)`,
-      fundamentalSignal: fund.signal,
-    }
+    return finalizeTreeJudgment(
+      {
+        stage: 'avoid',
+        stageLabel: LABEL.avoid,
+        rationale: `구조 점수 ${structureScore}점 (50 미만)`,
+        fundamentalSignal: fund.signal,
+      },
+      { currentPrice, rsi, atrGap },
+    )
   }
 
   if (rsi >= 90 || atrGap >= 7.5) {
-    return {
-      stage: 'take_full_profit',
-      stageLabel: LABEL.take_full_profit,
-      rationale:
-        rsi >= 90 ? `RSI ${rsi.toFixed(0)} 극단 과열` : `ATR 이격 ${atrGap.toFixed(1)} 임계 2배 초과`,
-      fundamentalSignal: fund.signal,
-    }
+    return finalizeTreeJudgment(
+      {
+        stage: 'take_full_profit',
+        stageLabel: LABEL.take_full_profit,
+        rationale:
+          rsi >= 90 ? `RSI ${rsi.toFixed(0)} 극단 과열` : `ATR 이격 ${atrGap.toFixed(1)} 임계 2배 초과`,
+        fundamentalSignal: fund.signal,
+      },
+      { currentPrice, rsi, atrGap },
+    )
   }
 
   if (rsi >= 80 || atrGap >= 5.5) {
     if (fund.signal === 'strong') {
       const upPct = ((fundamental.consensusAvg - fundamental.currentPrice) / fundamental.currentPrice) * 100
-      return {
-        stage: 'hold',
-        stageLabel: LABEL.hold,
-        rationale: `과열 신호 있으나 펀더멘털 강세 (컨센 +${upPct.toFixed(0)}% 여력)`,
+      return finalizeTreeJudgment(
+        {
+          stage: 'hold',
+          stageLabel: LABEL.hold,
+          rationale: `과열 신호 있으나 펀더멘털 강세 (컨센 +${upPct.toFixed(0)}% 여력)`,
+          fundamentalSignal: fund.signal,
+        },
+        { currentPrice, rsi, atrGap },
+      )
+    }
+    return finalizeTreeJudgment(
+      {
+        stage: 'take_partial_profit',
+        stageLabel: LABEL.take_partial_profit,
+        rationale: rsi >= 80 ? `RSI ${rsi.toFixed(0)} 과매수 영역` : `ATR 이격 ${atrGap.toFixed(1)} 임계 초과`,
         fundamentalSignal: fund.signal,
-      }
-    }
-    return {
-      stage: 'take_partial_profit',
-      stageLabel: LABEL.take_partial_profit,
-      rationale: rsi >= 80 ? `RSI ${rsi.toFixed(0)} 과매수 영역` : `ATR 이격 ${atrGap.toFixed(1)} 임계 초과`,
-      fundamentalSignal: fund.signal,
-    }
+      },
+      { currentPrice, rsi, atrGap },
+    )
   }
 
   if (rsi >= 70 || atrGap >= 3.5) {
     if (fund.signal === 'strong') {
-      return {
-        stage: 'buy_aggressive',
-        stageLabel: LABEL.buy_aggressive,
-        rationale: `펀더멘털 3박자 충족 (컨센 여력 + 영업이익률 ${fundamental.operatingMargin.toFixed(1)}% + PER 합리). 과열 구간 분할 진입 가능`,
-        fundamentalSignal: fund.signal,
-      }
+      return finalizeTreeJudgment(
+        {
+          stage: 'buy_aggressive',
+          stageLabel: LABEL.buy_aggressive,
+          rationale: `펀더멘털 3박자 충족 (컨센 여력 + 영업이익률 ${fundamental.operatingMargin.toFixed(1)}% + PER 합리). 과열 구간 분할 진입 가능`,
+          fundamentalSignal: fund.signal,
+        },
+        { currentPrice, rsi, atrGap },
+      )
     }
     if (fund.signal === 'moderate') {
-      return {
-        stage: 'hold',
-        stageLabel: LABEL.hold,
-        rationale: `과열 신호 있으나 펀더멘털 양호 (${fund.score}/3 충족)`,
+      return finalizeTreeJudgment(
+        {
+          stage: 'hold',
+          stageLabel: LABEL.hold,
+          rationale: `과열 신호 있으나 펀더멘털 양호 (${fund.score}/3 충족)`,
+          fundamentalSignal: fund.signal,
+        },
+        { currentPrice, rsi, atrGap },
+      )
+    }
+    return finalizeTreeJudgment(
+      {
+        stage: 'watch_overheat',
+        stageLabel: LABEL.watch_overheat,
+        rationale:
+          rsi >= 70 ? `RSI ${rsi.toFixed(0)} 과매수 + 펀더멘털 약함` : `ATR 이격 ${atrGap.toFixed(1)} + 펀더멘털 약함`,
         fundamentalSignal: fund.signal,
-      }
-    }
-    return {
-      stage: 'watch_overheat',
-      stageLabel: LABEL.watch_overheat,
-      rationale:
-        rsi >= 70 ? `RSI ${rsi.toFixed(0)} 과매수 + 펀더멘털 약함` : `ATR 이격 ${atrGap.toFixed(1)} + 펀더멘털 약함`,
-      fundamentalSignal: fund.signal,
-    }
+      },
+      { currentPrice, rsi, atrGap },
+    )
   }
 
   if (structureScore >= 75 && atrGap <= 2.5 && rsi <= 65 && executionScore >= 65) {
     if (fund.signal === 'strong') {
-      return {
-        stage: 'buy_aggressive',
-        stageLabel: LABEL.buy_aggressive,
-        rationale: `정상 구간 + 펀더멘털 3박자 충족. 비중 확대 가능`,
+      return finalizeTreeJudgment(
+        {
+          stage: 'buy_aggressive',
+          stageLabel: LABEL.buy_aggressive,
+          rationale: `정상 구간 + 펀더멘털 3박자 충족. 비중 확대 가능`,
+          fundamentalSignal: fund.signal,
+        },
+        { currentPrice, rsi, atrGap },
+      )
+    }
+    return finalizeTreeJudgment(
+      {
+        stage: 'buy_new',
+        stageLabel: LABEL.buy_new,
+        rationale: `구조 ${structureScore}/실행 ${executionScore} 양호 + 과열 신호 없음`,
         fundamentalSignal: fund.signal,
-      }
-    }
-    return {
-      stage: 'buy_new',
-      stageLabel: LABEL.buy_new,
-      rationale: `구조 ${structureScore}/실행 ${executionScore} 양호 + 과열 신호 없음`,
-      fundamentalSignal: fund.signal,
-    }
+      },
+      { currentPrice, rsi, atrGap },
+    )
   }
 
   if (structureScore >= 65 && atrGap <= 3.5) {
-    return {
-      stage: 'buy_split',
-      stageLabel: LABEL.buy_split,
-      rationale: `조건부 진입 가능. 비중 절반 + 손절 타이트`,
-      fundamentalSignal: fund.signal,
-    }
+    return finalizeTreeJudgment(
+      {
+        stage: 'buy_split',
+        stageLabel: LABEL.buy_split,
+        rationale: `조건부 진입 가능. 비중 절반 + 손절 타이트`,
+        fundamentalSignal: fund.signal,
+      },
+      { currentPrice, rsi, atrGap },
+    )
   }
 
-  return {
-    stage: 'hold',
-    stageLabel: LABEL.hold,
-    rationale: `명확한 진입/익절 신호 없음`,
-    fundamentalSignal: fund.signal,
-  }
+  return finalizeTreeJudgment(
+    {
+      stage: 'hold',
+      stageLabel: LABEL.hold,
+      rationale: `명확한 진입/익절 신호 없음`,
+      fundamentalSignal: fund.signal,
+    },
+    { currentPrice, rsi, atrGap },
+  )
 }
 
 export type FundamentalAssessment = ReturnType<typeof assessFundamental>

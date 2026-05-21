@@ -1,23 +1,87 @@
-import { SECTORS } from './sectorMaster.mjs'
+import {
+  ALL_STOCK_CODES,
+  SECTORS,
+  filterSectorWhitelistRows,
+  getSectorStockCodes,
+  resolveScreeningStockDisplayName,
+  sanitizePowerEquipmentInBundle,
+} from './sectorMaster.mjs'
 import { scoreSingleStock, fetchIndexScreeningContext } from './scoreStock.mjs'
 import { inquireKospiReturn5D } from '../kisClient.mjs'
-import { analyzeTopThree } from '../ai/screeningAnalysis.mjs'
+import { selectTopFiveWithAnalysis } from '../ai/screeningAnalysis.mjs'
+import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
+import { getCachedScreening, setCachedScreening, makeCacheKey } from '../lib/screeningCache.mjs'
+import { enrichWithConsensus } from './enrichWithConsensus.mjs'
 
-let cachedResult = null
-let cachedAt = 0
+/** @type {Map<string, { result: object, at: number }>} */
+const screeningRunCache = new Map()
 const CACHE_TTL_MS = 60 * 60 * 1000
+
+/**
+ * @param {string | null | undefined} userId
+ * @param {boolean} [skipTopFiveAi]
+ */
+async function screeningCacheScopeKey(userId, skipTopFiveAi = false) {
+  const hourKey = Math.floor(Date.now() / CACHE_TTL_MS)
+  const um = await getUserModel(userId)
+  const id = resolveModelId(um).replace(/[^a-z0-9._-]/gi, '')
+  const uidKey = userId ? String(userId) : 'anon'
+  const aiTag = skipTopFiveAi ? 'noai' : 'full'
+  return `top5-${uidKey}-${um}-${id}-${aiTag}-${hourKey}`
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 /**
  * @param {string} appKey
  * @param {string} appSecret
  * @param {'prod'|'vps'} env
+ * @param {string | null | undefined} userId — Bearer 로 식별된 사용자 (없으면 sonnet 기준 공유 캐시 키 `anon`)
+ * @param {{ skipTopFiveAi?: boolean, force?: boolean }} [opts] — AI 비활성 사용자: Anthropic TOP5 생략(룰 기반 TOP5만); force 시 캐시 무시
  */
-export async function runScreening(appKey, appSecret, env) {
-  if (cachedResult && Date.now() - cachedAt < CACHE_TTL_MS) {
-    return { ...cachedResult, source: 'cache' }
+export async function runScreening(appKey, appSecret, env, userId = null, opts = {}) {
+  const skipTopFiveAi = Boolean(opts.skipTopFiveAi)
+  const force = Boolean(opts.force)
+
+  if (skipTopFiveAi) {
+    const scopeKey = await screeningCacheScopeKey(userId, true)
+    const hit = screeningRunCache.get(scopeKey)
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS && !force) {
+      return sanitizePowerEquipmentInBundle({
+        ...hit.result,
+        source: 'cache',
+        screeningCacheKey: scopeKey,
+        cached: true,
+        cachedAt: typeof hit.result?.generatedAt === 'string' ? hit.result.generatedAt : null,
+      })
+    }
   }
 
-  console.log('[Screening v2] Starting fresh analysis for 40 stocks')
+  const userModel = await getUserModel(userId)
+  if (!skipTopFiveAi && !force) {
+    const hitDb = await getCachedScreening('global', userModel)
+    if (hitDb) {
+      return sanitizePowerEquipmentInBundle({
+        ...hitDb,
+        screeningUserModel: hitDb.screeningUserModel ?? userModel,
+        screeningAiModel: hitDb.screeningAiModel ?? resolveModelId(userModel),
+        source: 'cache',
+        cached: true,
+        cachedAt: hitDb.cachedAt ?? hitDb.generatedAt ?? null,
+        screeningCacheKey: makeCacheKey('global', userModel),
+      })
+    }
+  }
+
+  let memScopeKey = null
+  if (skipTopFiveAi) {
+    memScopeKey = await screeningCacheScopeKey(userId, true)
+  }
+
+  const coreJobCount = SECTORS.reduce((n, s) => n + getSectorStockCodes(s).length, 0)
+  console.log(`[Screening v2] Starting fresh analysis for ${coreJobCount} core stocks`)
   const startTime = Date.now()
 
   const [indexCtx, kospiReturn5D] = await Promise.all([
@@ -26,7 +90,7 @@ export async function runScreening(appKey, appSecret, env) {
   ])
 
   const jobs = SECTORS.flatMap((sector) =>
-    sector.stockCodes.map((code) => ({ sector, code })),
+    getSectorStockCodes(sector).map((code) => ({ sector, code })),
   )
 
   const CONCURRENCY = 5
@@ -50,10 +114,11 @@ export async function runScreening(appKey, appSecret, env) {
       }),
     )
     allResults.push(...batch.filter(Boolean))
+    await sleep(250)
   }
 
   const sectors = SECTORS.map((sector) => {
-    const stocks = allResults
+    const stocks = filterSectorWhitelistRows(allResults)
       .filter((r) => r.sectorId === sector.id)
       .sort((a, b) => b.totalScore - a.totalScore)
 
@@ -76,7 +141,7 @@ export async function runScreening(appKey, appSecret, env) {
       isLeading: false,
       topStocks: stocks.slice(0, 3).map((s) => ({
         code: s.code,
-        name: s.name,
+        name: resolveScreeningStockDisplayName(s.code, s.name, sector.label),
         score: s.totalScore,
       })),
     }
@@ -92,70 +157,148 @@ export async function runScreening(appKey, appSecret, env) {
     s.isLeading = leadingSectorIds.includes(s.id)
   }
 
-  const topFiveRaw = allResults
+  console.log(`[Screening v2] 1단계: ${allResults.length}종목 룰 점수`)
+  const candidatesRaw = filterSectorWhitelistRows(allResults)
     .slice()
     .sort((a, b) => b.totalScore - a.totalScore)
-    .slice(0, 5)
-
-  const topFive = topFiveRaw.map((s, idx) => ({
-    rank: idx + 1,
-    code: s.code,
-    name: s.name,
-    sectorLabel: s.sectorLabel,
-    sectorId: s.sectorId,
-    sectorIsLeading: leadingSectorIds.includes(s.sectorId),
-    score: s.totalScore,
-    expected1MPct: s.expected1MPct,
-    subScores: {
-      structure: Number(s.subScores?.structure) || 0,
-      execution: Number(s.subScores?.execution) || 0,
-      momentum: Number(s.subScores?.market) || 0,
-      supplyDemand: Number(s.subScores?.supplyDemand) || 0,
-    },
-    per: s.per,
-    consensusUpside: s.consensusUpside ?? 0,
-    fiveYearAvgPer: s.fiveYearAvgPer,
-  }))
-
-  /** TOP 3만 Anthropic 호출 (TOP 5 중 상위 3) — 번들 캐시 1h와 동기 */
-  let aiAnalyses = []
-  try {
-    const topThreeForAi = topFive.slice(0, 3).map((s) => ({
+    .slice(0, 15)
+    .map((s) => ({
       code: s.code,
-      name: s.name,
+      name: resolveScreeningStockDisplayName(s.code, s.name, s.sectorLabel),
       sector: s.sectorLabel,
-      score: s.score,
+      sectorId: s.sectorId,
+      score: s.totalScore,
       subScores: {
-        structure: s.subScores.structure,
-        execution: s.subScores.execution,
-        momentum: s.subScores.momentum,
-        supplyDemand: s.subScores.supplyDemand,
+        structure: Number(s.subScores?.structure) || 0,
+        execution: Number(s.subScores?.execution) || 0,
+        momentum: Number(s.subScores?.market) || 0,
+        supplyDemand: Number(s.subScores?.supplyDemand) || 0,
       },
-      per: s.per,
-      consensusUpside: s.consensusUpside,
-      fiveYearAvgPer: s.fiveYearAvgPer,
+      per: Number(s.per) || 0,
+      fiveYearAvgPer: s.fiveYearAvgPer ?? null,
+      operatingMargin: Number(s.operatingMargin) || 0,
+      consensusUpside: null,
+      currentPrice: Number(s.currentPrice) || 0,
+      return5D: Number(s.sectorReturn5D) || 0,
+      expected1MPct: Number(s.expected1MPct) || 0,
     }))
-    aiAnalyses = await analyzeTopThree(topThreeForAi)
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    console.error('[Screening v2] AI 분석 실패:', msg)
+
+  console.log('[Screening v2] 2단계: 상위 15개 컨센서스 호출')
+  const candidates = await enrichWithConsensus(candidatesRaw)
+
+  let aiTopFive = []
+  let screeningAiModel = resolveModelId('sonnet')
+  let screeningUserModel = 'sonnet'
+  if (!skipTopFiveAi) {
+    try {
+      console.log('[Screening v2] 3단계: AI TOP 5 선정')
+      const aiPack = await selectTopFiveWithAnalysis(candidates, userId, {})
+      aiTopFive = aiPack.items
+      screeningAiModel = aiPack.anthropicModel
+      screeningUserModel = aiPack.modelUsed
+      console.log(`[Screening v2] AI selected ${aiTopFive.length} stocks`)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.error('[Screening v2] AI selection failed:', msg)
+    }
+  } else {
+    console.log('[Screening v2] 3단계: AI TOP 5 생략 (ai_enabled=false)')
   }
+
+  const merged = aiTopFive
+    .map((ai) => {
+      const c = candidates.find((x) => x.code === ai.code)
+      if (!c) return null
+      return {
+        rank: Number.isFinite(Number(ai.rank)) ? Math.max(1, Math.round(Number(ai.rank))) : 99,
+        code: c.code,
+        name: resolveScreeningStockDisplayName(c.code, c.name, c.sector),
+        sectorLabel: c.sector || '—',
+        sectorId: c.sectorId,
+        sectorIsLeading: leadingSectorIds.includes(c.sectorId),
+        score: c.score,
+        expected1MPct: c.expected1MPct,
+        subScores: c.subScores,
+        per: c.per,
+        consensusUpside: c.consensusUpside,
+        fiveYearAvgPer: c.fiveYearAvgPer ?? undefined,
+        aiCandidateLabel: ai.candidateLabel,
+        aiHeadline: ai.headline,
+        aiSummary: ai.summary,
+        aiKeyDriver: ai.keyDriver,
+        aiRisk: ai.risk,
+        aiSplitPrices: Array.isArray(ai.splitPrices) ? ai.splitPrices.slice(0, 3).map((n) => Math.round(Number(n) || 0)) : [],
+        consensusEstimate: ai.consensusEstimate ?? null,
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, 5)
+    .map((row, idx) => ({ ...row, rank: idx + 1 }))
+
+  const topFive =
+    merged.length > 0
+      ? merged
+      : candidates.slice(0, 5).map((c, idx) => ({
+          rank: idx + 1,
+          code: c.code,
+          name: resolveScreeningStockDisplayName(c.code, c.name, c.sector),
+          sectorLabel: c.sector || '—',
+          sectorId: c.sectorId,
+          sectorIsLeading: leadingSectorIds.includes(c.sectorId),
+          score: c.score,
+          expected1MPct: c.expected1MPct,
+          subScores: c.subScores,
+          per: c.per,
+          consensusUpside: c.consensusUpside,
+          fiveYearAvgPer: c.fiveYearAvgPer ?? undefined,
+          aiCandidateLabel: '관망검토',
+          aiHeadline: '룰 상위 후보',
+          aiSummary: 'AI 응답 없음으로 룰 점수 상위 종목을 우선 표시.',
+          aiKeyDriver: '',
+          aiRisk: '',
+          aiSplitPrices: [],
+          consensusEstimate: null,
+        }))
 
   const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1)
 
+  const generatedAt = new Date().toISOString()
   const result = {
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     elapsedSec,
-    headlineSub: '룰 기반 점수 · 40종목',
+    headlineSub: `룰 기반 점수 · 코어 ${ALL_STOCK_CODES.length}종목`,
     sectors,
     topFive,
-    aiAnalyses,
+    aiAnalyses: [],
     analysesByCode: {},
     source: 'fresh',
+    screeningCacheKey: skipTopFiveAi ? memScopeKey : makeCacheKey('global', userModel),
+    screeningAiModel,
+    screeningUserModel,
+    top15Codes: candidates.map((c) => c.code).join(','),
+    cached: false,
+    cachedAt: generatedAt,
   }
 
-  cachedResult = result
-  cachedAt = Date.now()
+  if (skipTopFiveAi && memScopeKey) {
+    screeningRunCache.set(memScopeKey, { result, at: Date.now() })
+  } else if (!skipTopFiveAi) {
+    const payload = sanitizePowerEquipmentInBundle({
+      generatedAt: result.generatedAt,
+      elapsedSec: result.elapsedSec,
+      headlineSub: result.headlineSub,
+      sectors: result.sectors,
+      topFive: result.topFive,
+      aiAnalyses: result.aiAnalyses,
+      analysesByCode: result.analysesByCode,
+      screeningAiModel: result.screeningAiModel,
+      screeningUserModel: result.screeningUserModel,
+      top15Codes: result.top15Codes,
+    })
+    void setCachedScreening('global', userModel, payload, userId).catch(() => {})
+  }
+
   console.log(`[Screening v2] Completed in ${elapsedSec}s`)
-  return result
+  return sanitizePowerEquipmentInBundle(result)
 }

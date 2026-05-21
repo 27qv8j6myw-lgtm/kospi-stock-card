@@ -1,7 +1,9 @@
 import { inquireDomesticPrice, inquireInvestorByStock, inquireDailyBars } from '../kisClient.mjs'
+import { screeningStockNameKr } from './sectorMaster.mjs'
 
 /**
  * 스크리닝 점수용 입력 조합 (KIS 3종 + 시세 내 펀더멘털).
+ * KIS 호출은 `kisClient.mjs`에서 시세 30초·일봉/투자자 5분 TTL 캐시됨.
  * @param {string} appKey
  * @param {string} appSecret
  * @param {string} env
@@ -27,18 +29,25 @@ export async function buildScoringInput(appKey, appSecret, env, code6, opts = {}
   }
 
   const raw = basicInfo.raw && typeof basicInfo.raw === 'object' ? basicInfo.raw : {}
-  const nameFromApi =
+  const sectorKr = String(basicInfo.sector || raw.bstp_kor_isnm || '').trim()
+  let nameFromApi =
     basicInfo.nameKr ||
     raw.hts_kor_isnm ||
     raw.hts_kor_isnm1 ||
     raw.prdt_name ||
+    screeningStockNameKr(basicInfo.code) ||
     basicInfo.code
+  const trimmedName = String(nameFromApi).trim()
+  if (sectorKr && trimmedName && trimmedName === sectorKr) {
+    nameFromApi = screeningStockNameKr(basicInfo.code) || basicInfo.code
+  }
 
   return {
     basicInfo: {
       ...basicInfo,
       stockCode: basicInfo.code,
       stockName: nameFromApi,
+      sectorKr: sectorKr || basicInfo.sector || null,
     },
     dailyChart,
     investorTrading,

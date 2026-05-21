@@ -322,6 +322,7 @@ export async function generateMarketBriefingWithAi({
   strategy,
   news,
   reports,
+  model,
 }) {
   const promptPayload = {
     stockName,
@@ -346,6 +347,7 @@ export async function generateMarketBriefingWithAi({
     system:
       '너는 근거 기반 한국주식 애널리스트다. 단정적 표현을 피하고, 트리거와 펀더멘털을 분리해 설명한다.',
     user: prompt,
+    model,
   })
   return normalizeBriefing(json)
 }

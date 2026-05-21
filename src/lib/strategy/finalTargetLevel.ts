@@ -13,7 +13,10 @@ export function computeFinalTarget(i: ExecutionStrategyInputs): FinalTargetResul
   const caps: number[] = [ref * 1.15, ref + 3 * i.atr14]
   const c = i.consensusAvgTargetPrice
   if (c != null && c > 0) caps.push(c * 0.9)
-  const price = Math.round(Math.min(...caps))
+  const capped = Math.min(...caps)
+  // 컨센 캡이 현재가(진입가)보다 낮을 때 목표가 역전 방지 (롱 전략 최소 +5%)
+  const floor = Math.round(ref * 1.05)
+  const price = Math.round(Math.max(capped, floor))
   const pctFromEntry = Number((((price / ref) - 1) * 100).toFixed(1))
   return { price, pctFromEntry }
 }

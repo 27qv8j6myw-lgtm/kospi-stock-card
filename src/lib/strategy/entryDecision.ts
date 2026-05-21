@@ -47,6 +47,8 @@ export type EntryDecisionBundle = {
   fundamentalSignal: ReturnType<typeof assessFundamental>['signal']
   fund: ReturnType<typeof assessFundamental>
   reasonShort: string
+  /** 진입 트리 원본 (분할 매수가·recommendedAction 포함) */
+  judgment: ReturnType<typeof judgeEntry>
 }
 
 /**
@@ -61,6 +63,7 @@ export function computeEntryDecisionBundle(i: ExecutionStrategyInputs): EntryDec
     rsi: i.rsi14,
     atrGap: i.atrDistanceAbs,
     fundamental,
+    currentPrice: fundamental.currentPrice,
   })
   const decision = treeStageToKo(judgment.stage)
   const reasonShort = buildEntryReasonShort({
@@ -74,6 +77,7 @@ export function computeEntryDecisionBundle(i: ExecutionStrategyInputs): EntryDec
     fundamentalSignal: fund.signal,
     fund,
     reasonShort,
+    judgment,
   }
 }
 

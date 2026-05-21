@@ -50,7 +50,11 @@ export function InsightCard({
                 </span>
                 <span className="pt-0.5 text-sm text-secondary">{row.label}</span>
               </div>
-              <div className={`mt-2 min-w-0 pl-6 text-sm text-primary ${row.valueClassName ?? ''}`.trim()}>{row.value}</div>
+              <div
+                className={`mt-2 min-w-0 pl-6 text-sm leading-snug text-gray-700 ${row.valueClassName ?? ''}`.trim()}
+              >
+                {row.value}
+              </div>
             </li>
           ) : (
             <li
@@ -62,7 +66,7 @@ export function InsightCard({
               </span>
               <span className="min-w-0 flex-1 pt-0.5 text-sm text-secondary">{row.label}</span>
               <div
-                className={`max-w-[min(20rem,55%)] shrink-0 pt-0.5 text-right text-sm font-semibold text-primary ${row.valueClassName ?? ''}`.trim()}
+                className={`max-w-[min(20rem,55%)] shrink-0 pt-0.5 text-right text-sm font-semibold text-gray-700 ${row.valueClassName ?? ''}`.trim()}
               >
                 {row.value}
               </div>

@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 export type UseAutoRefreshOptions = {
   intervalMs: number
   enabled?: boolean
+  /** 기본 `fetch` 대신 사용 (예: `fetchWithAuth`) */
+  customFetch?: (url: string) => Promise<Response>
 }
 
 export type UseAutoRefreshResult<T> = {
@@ -23,6 +25,7 @@ export function useAutoRefresh<T>(
 ): UseAutoRefreshResult<T> {
   const intervalMs = opts.intervalMs
   const enabled = opts.enabled !== false
+  const customFetch = opts.customFetch
 
   const [data, setData] = useState<T | null>(null)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
@@ -60,7 +63,7 @@ export function useAutoRefresh<T>(
       inFlightRef.current = true
       if (!cancelled) setIsFetching(true)
       try {
-        const res = await fetch(url)
+        const res = customFetch ? await customFetch(url) : await fetch(url)
         const text = await res.text()
         let json: unknown = null
         try {
@@ -124,7 +127,7 @@ export function useAutoRefresh<T>(
       stopPolling()
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [url, intervalMs, enabled, reloadKey])
+  }, [url, intervalMs, enabled, reloadKey, customFetch])
 
   return { data, lastUpdated, isFetching, error, refetch }
 }

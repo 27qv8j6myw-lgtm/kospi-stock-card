@@ -67,6 +67,7 @@ export function StockNameSearch({
 
   const pick = (row: StockRow) => {
     onPick(row.c, row.n)
+    onChange('')
     setOpen(false)
     inputRef.current?.blur()
   }

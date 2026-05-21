@@ -1,8 +1,8 @@
 import type { LucideIcon } from 'lucide-react'
-import { Crown, LineChart, Shield, Target } from 'lucide-react'
+import { Crown, LineChart, Shield } from 'lucide-react'
 import { UserMenu } from '@/components/portfolio/UserMenu'
 import { useAuth } from '@/hooks/useAuth'
-import { isProUser } from '@/lib/proAccess'
+import { useIsProUser } from '@/hooks/useIsProUser'
 
 /**
  * 상단 탭 — 활성 상태는 `useState`가 아니라 **`pathname`에서만 derive**합니다.
@@ -17,24 +17,27 @@ export type MainTabsProps = {
 
 export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps) {
   const { user } = useAuth()
-  const showPro = isProUser(user?.email)
+  const { isProUser: showPro } = useIsProUser(user)
 
   const tabs: { id: string; label: string; icon: LucideIcon; path: string; pro?: boolean }[] = [
     { id: 'stocks', label: '종목 카드', icon: LineChart, path: '/' },
-    { id: 'screening', label: '섹터 스크리닝', icon: Target, path: '/screening' },
   ]
-  if (isAdmin) {
-    tabs.push({ id: 'admin', label: '관리', icon: Shield, path: '/admin' })
-  }
   if (showPro) {
     tabs.push({ id: 'pro', label: 'PRO', icon: Crown, path: '/pro', pro: true })
   }
+  if (isAdmin) {
+    tabs.push({ id: 'admin', label: '관리', icon: Shield, path: '/admin' })
+  }
 
   const isActive = (id: string) => {
-    if (id === 'screening') return pathname === '/screening' || pathname.startsWith('/screening/')
     if (id === 'admin') return pathname === '/admin' || pathname.startsWith('/admin/')
     if (id === 'pro')
-      return pathname === '/pro' || pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')
+      return (
+        pathname === '/pro' ||
+        pathname === '/pro/chat' ||
+        pathname.startsWith('/pro/chat/') ||
+        pathname.startsWith('/pro/stock/')
+      )
     if (id === 'stocks')
       return pathname === '/' || pathname === '' || /^\/stocks\/\d{6}\/?$/.test(pathname)
     return false

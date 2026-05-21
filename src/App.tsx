@@ -5,14 +5,14 @@ import { useIsBlocked } from './hooks/useIsBlocked'
 import { useIsAdmin } from './hooks/useIsAdmin'
 import Page from './stockCardPage/page'
 import DesignTestPage from './pages/DesignTestPage'
-import ScreeningPage from './pages/ScreeningPage'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import BlockedPage from './pages/BlockedPage'
 import AdminPage from './pages/AdminPage'
 import ProDashboard from './pages/ProDashboard'
 import ProChatPage from './pages/ProChatPage'
-import { isProUser } from './lib/proAccess'
+import ProStockCardPage from './pages/ProStockCardPage'
+import { useIsProUser } from './hooks/useIsProUser'
 // 격리: React #300 원인 후보 — ComparePage 비활성화 (복구 시 주석 해제)
 // import ComparePage from './compare/ComparePage'
 import { MainTabs } from './components/MainTabs'
@@ -27,17 +27,18 @@ function App() {
 
   /** 구체적 라우트 판별 — isHome 은 정확히 `/` 만 (다른 경로를 홈으로 취급하지 않음) */
   const stockMatch = pathname.match(/^\/stocks\/(\d+)/)
+  const proStockMatch = pathname.match(/^\/pro\/stock\/(\d{6})\/?$/)
   const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/')
-  const isScreening = pathname === '/screening' || pathname.startsWith('/screening/')
   const isProChat = pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')
-  const isPro = pathname === '/pro' || (pathname.startsWith('/pro/') && !isProChat)
-  const isProArea = isPro || isProChat
+  const isProStock = Boolean(proStockMatch)
+  const isPro =
+    pathname === '/pro' || (pathname.startsWith('/pro/') && !isProChat && !isProStock)
+  const isProArea = isPro || isProChat || isProStock
   const isHome = pathname === '/' || pathname === ''
-  const showPro = isProUser(user?.email)
+  const { isProUser: showPro, ready: proReady } = useIsProUser(user)
   const showMainTabs =
     isHome ||
     Boolean(stockMatch) ||
-    isScreening ||
     (isProArea && showPro) ||
     (isAdminRoleReady && isUserAdmin && isAdmin)
   useEffect(() => {
@@ -46,11 +47,11 @@ function App() {
   }, [pathname, stockMatch?.[1]])
 
   useEffect(() => {
-    if (!isProArea || showPro) return
+    if (!proReady || !isProArea || showPro) return
     replace('/')
-  }, [isProArea, showPro, replace])
+  }, [isProArea, showPro, proReady, replace])
 
-  if (loading) {
+  if (loading || (user && !proReady)) {
     return (
       <div className="flex min-h-svh items-center justify-center bg-app">
         <div className="text-sm text-gray-400">로딩 중...</div>
@@ -94,8 +95,8 @@ function App() {
     } else {
       mainContent = <HomePage />
     }
-  } else if (isScreening) {
-    mainContent = <ScreeningPage />
+  } else if (isProStock) {
+    mainContent = showPro ? <ProStockCardPage /> : <HomePage />
   } else if (isProChat) {
     mainContent = showPro ? <ProChatPage /> : <HomePage />
   } else if (isPro) {

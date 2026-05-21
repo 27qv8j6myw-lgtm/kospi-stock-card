@@ -3,16 +3,33 @@
  * 다크모드: v2에서 tokens + @theme 확장 예정.
  */
 
+html,
+body {
+  overflow-x: clip;
+  max-width: 100vw;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+img,
+video,
+iframe {
+  max-width: 100%;
+  height: auto;
+}
+
 html {
   color-scheme: light;
-  overflow-x: hidden;
   width: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100svh;
-  overflow-x: hidden;
   width: 100%;
   font-family: var(--family-sans-kr);
   font-size: 0.875rem; /* 14px — text-base */
@@ -21,6 +38,32 @@ body {
   text-rendering: optimizeLegibility;
   background-color: var(--bg-app);
   color: var(--fg-primary);
+}
+
+#root {
+  max-width: 100vw;
+  overflow-x: clip;
+}
+
+/** iPhone 노치·다이나믹 아일랜드 — Pro sticky 검색 등 */
+@supports (padding: env(safe-area-inset-top)) {
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+/** iOS search 입력 — 기본 스타일·자동완성 UI 완화 */
+input[type='search'].pro-search-input {
+  -webkit-appearance: none;
+  appearance: none;
+}
+input[type='search'].pro-search-input::-webkit-search-decoration,
+input[type='search'].pro-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 ::selection {
@@ -47,6 +90,28 @@ body {
   box-shadow: var(--shadow-card-elevated);
 }
 
+/** 시장 지표 스트립 — 모바일 무한 스크롤 */
+@keyframes ticker-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@media (max-width: 768px) {
+  .ticker-mobile-scroll {
+    animation: ticker-marquee 25s linear infinite;
+    width: fit-content;
+  }
+
+  .ticker-mobile-scroll:hover,
+  .ticker-mobile-scroll:active {
+    animation-play-state: paused;
+  }
+}
+
 /** 가로 오버플로·캐러셀: 스크롤바 숨김 (Tailwind `scrollbar-none` 보조) */
 .scrollbar-none {
   scrollbar-width: none;
@@ -59,4 +124,48 @@ body {
 
 .snap-x::-webkit-scrollbar {
   display: none;
+}
+
+/** 스크리닝 로딩 카드 (Sparkles pulse / 섹터 ring) */
+@keyframes subtle-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes ring-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  100% {
+    transform: scale(1.15);
+    opacity: 0;
+  }
+}
+
+@keyframes icon-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.92);
+  }
+}
+
+.pro-tab {
+  color: #d97706;
+}
+.pro-tab.active {
+  color: #92400e;
+  border-bottom-color: #d97706;
 }

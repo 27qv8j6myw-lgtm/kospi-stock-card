@@ -135,7 +135,7 @@ export function PriceTargets({
             >
               <CardHeader icon={<PeriodIcon label={target.label} />} label={target.label} />
 
-              <span className="mt-2 whitespace-nowrap font-sans-en text-xl font-bold tabular-nums text-primary">
+              <span className="mt-2 whitespace-nowrap font-sans-en text-lg font-bold tabular-nums text-primary">
                 {formatPriceFigure(target.targetPrice)}
               </span>
               <span

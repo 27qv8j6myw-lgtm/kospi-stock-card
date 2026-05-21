@@ -1,5 +1,9 @@
-import { runProChat, generateConversationTitle } from '../ai/proChat.mjs'
+import { runProChat } from '../ai/proChat.mjs'
+import { generateConversationTitle } from '../ai/proChatPrompt.mjs'
+import { runProChatStream } from '../ai/proChatStream.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
+import { registerAdminProRoutes } from './adminProRoutes.mjs'
+import { registerProStockRoutes } from './proStockRoutes.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -211,7 +215,11 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
         content: String(m.content ?? ''),
       }))
 
-      const { text: finalText, toolCalls: allToolCalls } = await runProChat(conversationMessages)
+      const { text: finalText, toolCalls: allToolCalls } = await runProChat(
+        conversationMessages,
+        userId,
+        supabaseService,
+      )
 
       const { error: insertAiErr } = await supabaseService.from('pro_messages').insert({
         conversation_id: conversationId,
@@ -258,12 +266,73 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
     }
   }
 
+  async function handleProChatStream(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const conversationId = String(req.body?.conversationId ?? '').trim()
+    const message = String(req.body?.message ?? '').trim()
+
+    if (!conversationId || !UUID_RE.test(conversationId)) {
+      res.status(400).json({ error: 'conversationId 필요' })
+      return
+    }
+    if (!message) {
+      res.status(400).json({ error: 'message 필요' })
+      return
+    }
+    if (message.length > 12_000) {
+      res.status(400).json({ error: '메시지가 너무 깁니다' })
+      return
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders()
+    }
+
+    /** @type {import('../ai/proChatStream.mjs').ProStreamSend} */
+    const send = (event, data) => {
+      res.write(`event: ${event}\n`)
+      res.write(`data: ${JSON.stringify(data)}\n\n`)
+      if (typeof res.flush === 'function') {
+        res.flush()
+      }
+    }
+
+    try {
+      await runProChatStream({
+        supabaseService,
+        conversationId,
+        message,
+        userId,
+        send,
+      })
+      res.end()
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e)
+      console.error('[Pro Stream]', e)
+      send('error', { message: errMsg })
+      res.end()
+    }
+  }
+
   /** Vercel 단일 세그먼트 API (hyphen) — 프로덕션 기본 */
   app.get('/api/pro-conversations', handleListConversations)
   app.post('/api/pro-conversations', handleCreateConversation)
   app.get('/api/pro-messages', handleListMessages)
   app.delete('/api/pro-conversation', handleDeleteConversation)
   app.post('/api/pro-chat', handleProChat)
+  app.post('/api/pro-chat-stream', handleProChatStream)
 
   /** 로컬·레거시 slash 별칭 */
   app.get('/api/pro/conversations', handleListConversations)
@@ -271,4 +340,8 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
   app.get('/api/pro/conversations/:id/messages', handleListMessages)
   app.delete('/api/pro/conversations/:id', handleDeleteConversation)
   app.post('/api/pro/chat', handleProChat)
+  app.post('/api/pro/chat-stream', handleProChatStream)
+
+  registerProStockRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerAdminProRoutes(app, { getSupabaseService, getUserIdFromRequest })
 }

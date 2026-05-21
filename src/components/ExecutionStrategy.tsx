@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   BarChart3,
   ClipboardList,
   Clock,
@@ -11,6 +12,7 @@ import {
   TrendingDown,
   TrendingUp,
 } from 'lucide-react'
+import { isBuyLikeEntry } from '../lib/strategy/scenarioValidator'
 import type { ExecutionPlan, StrategyRiskRewardMetrics, ThreeMonthStrategy } from '../types/stock'
 import {
   entryDecisionTooltip,
@@ -144,6 +146,26 @@ export function ExecutionStrategy({
   const slStop = Number(strategy.stopLossPct)
 
   const inactive = isInactiveEntry(strategy.entryDecision)
+  const buyLike = isBuyLikeEntry(strategy.entryDecision)
+  const targetWeird =
+    buyLike &&
+    !inactive &&
+    strategy.finalTargetPrice > 0 &&
+    currentPrice > 0 &&
+    strategy.finalTargetPrice < currentPrice
+  const stopLossWeird =
+    buyLike &&
+    !inactive &&
+    strategy.stopPrice > 0 &&
+    currentPrice > 0 &&
+    strategy.stopPrice >= currentPrice
+  const tp1Weird =
+    buyLike &&
+    !inactive &&
+    strategy.firstTakeProfitPrice > 0 &&
+    currentPrice > 0 &&
+    strategy.firstTakeProfitPrice < currentPrice
+
   const stopPrimary = inactive
     ? '진입 비추천'
     : `${krw(strategy.stopPrice)} (${formatSignedPct(Number.isFinite(slStop) ? slStop : NaN, 1)})`
@@ -197,12 +219,13 @@ export function ExecutionStrategy({
     },
     {
       id: 'stop',
-      label: '손절선',
+      label: stopLossWeird ? '손절선 ⚠' : '손절선',
       primary: stopPrimary,
       sub: strategy.stopReason,
       icon: Shield,
       iconColor: 'rose',
       tooltip: executionEducationTooltip('stopLoss'),
+      primaryClassName: stopLossWeird ? 'text-amber-800' : undefined,
     },
     {
       id: 'tp1',
@@ -212,15 +235,17 @@ export function ExecutionStrategy({
       icon: TrendingUp,
       iconColor: 'orange',
       tooltip: executionEducationTooltip('baseExecution'),
+      primaryClassName: tp1Weird ? 'text-amber-800' : undefined,
     },
     {
       id: 'final',
-      label: '최종 목표',
+      label: targetWeird ? '최종 목표 ⚠' : '최종 목표',
       primary: finalPrimary,
       sub: finalSub,
       icon: Flag,
       iconColor: 'purple',
       tooltip: executionEducationTooltip('planSummary'),
+      primaryClassName: targetWeird ? 'text-amber-800' : undefined,
     },
     {
       id: 'time',
@@ -299,6 +324,16 @@ export function ExecutionStrategy({
           </>
         ) : null}
       </p>
+
+      {(targetWeird || stopLossWeird || tp1Weird) && (
+        <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-3">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />
+          <p className="text-[11px] leading-relaxed text-amber-800">
+            목표가·손절 수준이 현재가와 맞지 않을 수 있습니다. 아래 수치는 자동 보정되었을 수 있으나, 매매
+            시 신중히 판단해 주세요.
+          </p>
+        </div>
+      )}
 
       <div className="mt-6 grid grid-cols-1 items-stretch gap-3 sm:grid-cols-2 sm:auto-rows-fr lg:grid-cols-3 lg:auto-rows-fr">
         {cards.map((c, idx) => {

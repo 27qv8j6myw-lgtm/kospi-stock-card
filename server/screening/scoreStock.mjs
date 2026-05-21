@@ -1,5 +1,5 @@
 import { buildScoringInput } from './buildScoringInput.mjs'
-import { screeningStockNameKr } from './sectorMaster.mjs'
+import { resolveScreeningStockDisplayName } from './sectorMaster.mjs'
 import {
   inquireChartByTimeframe,
   inquireDomesticPrice,
@@ -56,9 +56,8 @@ export async function scoreSingleStock(appKey, appSecret, env, code6, indexCtx) 
   const fromStockName = typeof bi.stockName === 'string' ? bi.stockName.trim() : ''
   const fromNameKr = typeof bi.nameKr === 'string' ? bi.nameKr.trim() : ''
   const fromApi = fromStockName || fromNameKr || nameFromRaw
-  const onlySixDigits = /^\d{6}$/.test(String(fromApi).replace(/\s/g, ''))
-  const nameLooksLikeCodeOnly = !fromApi || String(fromApi).trim() === code || onlySixDigits
-  const displayName = nameLooksLikeCodeOnly ? screeningStockNameKr(code) || code : String(fromApi).trim()
+  const sectorStr = String(bi.sector || '').trim()
+  const displayName = resolveScreeningStockDisplayName(code, fromApi, sectorStr)
 
   const quote = {
     price: Number(bi.price) || 0,
