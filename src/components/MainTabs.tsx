@@ -37,7 +37,9 @@ export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps)
         pathname === '/pro' ||
         pathname === '/pro/chat' ||
         pathname.startsWith('/pro/chat/') ||
-        pathname.startsWith('/pro/stock/')
+        pathname.startsWith('/pro/stock/') ||
+        pathname === '/pro/holdings' ||
+        pathname.startsWith('/pro/holdings/')
       )
     if (id === 'stocks')
       return pathname === '/' || pathname === '' || /^\/stocks\/\d{6}\/?$/.test(pathname)

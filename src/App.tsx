@@ -18,6 +18,7 @@ import { useIsProUser } from './hooks/useIsProUser'
 // 격리: React #300 원인 후보 — ComparePage 비활성화 (복구 시 주석 해제)
 // import ComparePage from './compare/ComparePage'
 import { MainTabs } from './components/MainTabs'
+import { consumeProDeepLink, saveProDeepLink } from './lib/proDeepLink'
 import { PRO_HOME_SKIP_REDIRECT_KEY } from './lib/proHomeRedirect'
 
 /** 탭·화면은 전부 URL(`pathname`) 기준 — `activeTab` 같은 별도 state 없음 */
@@ -64,7 +65,15 @@ function App() {
     replace('/')
   }, [isProArea, showPro, proReady, replace])
 
-  /** Pro 권한 — 앱 첫 진입(`/`) 시 Pro 대시보드로 */
+  /** Pro 딥링크 — 인증·pro 확인 후 `/`·`/pro`로 밀린 경우 원래 경로 복원 */
+  useEffect(() => {
+    if (!proReady || !showPro || loading) return
+    if (pathname !== '/' && pathname !== '' && pathname !== '/pro') return
+    const restore = consumeProDeepLink()
+    if (restore) replace(restore)
+  }, [proReady, showPro, loading, pathname, replace])
+
+  /** Pro 권한 — 앱 첫 진입(`/`) 시 Pro 대시보드로 (딥링크 복원 대상 제외) */
   useEffect(() => {
     if (!proReady || !showPro) return
     if (pathname !== '/' && pathname !== '') return
@@ -78,6 +87,11 @@ function App() {
     }
     replace('/pro')
   }, [proReady, showPro, pathname, replace])
+
+  useEffect(() => {
+    if (!showPro || !pathname.startsWith('/pro/') || pathname === '/pro') return
+    saveProDeepLink(pathname)
+  }, [pathname, showPro])
 
   if (loading || (user && !proReady)) {
     return (

@@ -10,7 +10,7 @@ import {
   registerStockMaster,
 } from '../lib/stockMasterKisLookup.mjs'
 import { calculateBollinger, calculateMACD, calculateRSI } from '../lib/technicalIndicators.mjs'
-import { executeTool } from '../lib/toolExecutor.mjs'
+import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
 import { getProStockSummaryExtras } from '../lib/proStockSummaryExtras.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 
@@ -452,6 +452,44 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
 
   app.post('/api/pro-holding-opus', handleProHoldingOpus)
 
+  async function handleProStockQuote(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const code = parseRouteStockCode(req.query?.code)
+    if (!code) {
+      res.status(400).json({ error: 'code 필요' })
+      return
+    }
+
+    try {
+      const q = await getKisQuote(code)
+      res.json({
+        quote: {
+          currentPrice: q.currentPrice,
+          change: q.change,
+          changePct: q.changePct,
+          openPrice: q.openPrice,
+          dayHigh: q.dayHigh,
+          dayLow: q.dayLow,
+          volume: q.volume,
+          tradingAmount: q.tradingAmount,
+        },
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[Pro Stock Quote]', message)
+      res.status(500).json({ error: message })
+    }
+  }
+
+  app.get('/api/pro-stock-quote', handleProStockQuote)
   app.get('/api/pro-stock-summary', handleProStockSummary)
   app.post('/api/pro-stock-analysis', handleProStockAnalysis)
   app.get('/api/pro-stock-chart', handleProStockChart)
@@ -461,6 +499,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
   app.delete('/api/pro-watchlist', handleDeleteWatchlist)
   app.get('/api/pro-watchlist-enriched', handleProWatchlistEnriched)
 
+  app.get('/api/pro/stock-quote', handleProStockQuote)
   app.get('/api/pro/stock-summary', handleProStockSummary)
   app.post('/api/pro/stock-analysis', handleProStockAnalysis)
   app.get('/api/pro/stock-chart', handleProStockChart)

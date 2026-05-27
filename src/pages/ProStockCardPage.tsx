@@ -17,6 +17,7 @@ import {
   type ProSummaryExtended,
   type TechnicalSnapshot,
 } from '@/lib/buildProStockCardSections'
+import { isKrxMarketOpen } from '@/lib/marketHours'
 import { proDesign } from '@/lib/proStockDesign'
 import { STOCK_CODE_PATH_RE } from '@/lib/stockCode'
 
@@ -143,6 +144,52 @@ export default function ProStockCardPage() {
       cancelled = true
     }
   }, [code, loadAnalysis])
+
+  useEffect(() => {
+    if (!code) return
+
+    let active = true
+
+    const fetchQuote = async () => {
+      if (!isKrxMarketOpen()) return
+      try {
+        const r = await authFetch(apiUrl(`/api/pro-stock-quote?code=${encodeURIComponent(code)}`))
+        if (!r.ok || !active) return
+        const d = (await r.json()) as {
+          quote?: {
+            currentPrice?: number | null
+            change?: number | null
+            changePct?: number | null
+            openPrice?: number | null
+            dayHigh?: number | null
+            dayLow?: number | null
+            volume?: number | null
+            tradingAmount?: number | null
+          }
+        }
+        if (!d.quote) return
+        setSummary((prev) =>
+          prev
+            ? {
+                ...prev,
+                quote: {
+                  ...prev.quote,
+                  ...d.quote,
+                },
+              }
+            : prev,
+        )
+      } catch {
+        // ignore poll errors
+      }
+    }
+
+    const interval = setInterval(() => void fetchQuote(), 10_000)
+    return () => {
+      active = false
+      clearInterval(interval)
+    }
+  }, [code])
 
   const displayName = summary?.name || urlName || code || '—'
   const pct = summary?.quote?.changePct ?? 0

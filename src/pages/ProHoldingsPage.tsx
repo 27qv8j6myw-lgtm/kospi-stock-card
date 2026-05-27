@@ -21,6 +21,7 @@ import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { formatKRWCompact } from '@/lib/format'
+import { isKrxMarketOpen } from '@/lib/marketHours'
 import { PRO_CONTENT_WRAP } from '@/lib/proStockDesign'
 
 type ProGroup = {
@@ -107,6 +108,18 @@ export default function ProHoldingsPage() {
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   )
 
+  const refreshQuotes = useCallback(async () => {
+    if (!isKrxMarketOpen()) return
+    try {
+      const r = await authFetch(apiUrl('/api/pro-holdings'))
+      if (!r.ok) return
+      const d = (await r.json()) as { holdings?: HoldingRow[] }
+      setHoldings(d.holdings || [])
+    } catch (e) {
+      console.error('[ProHoldings] quote refresh', e)
+    }
+  }, [])
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -149,6 +162,11 @@ export default function ProHoldingsPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  useEffect(() => {
+    const interval = setInterval(() => void refreshQuotes(), 15_000)
+    return () => clearInterval(interval)
+  }, [refreshQuotes])
 
   useEffect(() => {
     if (groups.length === 0) return

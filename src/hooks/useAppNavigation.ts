@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react'
+import { saveProDeepLink } from '@/lib/proDeepLink'
 
 const DEFAULT_HOME_PATH = '/'
 const DEFAULT_STOCK_PATH = '/stocks/000660'
@@ -41,6 +42,7 @@ if (typeof window !== 'undefined') {
     window.history.replaceState({}, '', next)
   }
   currentPathname = next
+  saveProDeepLink(next)
 }
 
 const listeners = new Set<() => void>()
@@ -78,6 +80,9 @@ function getSnapshot() {
 }
 
 function getServerSnapshot() {
+  if (typeof window !== 'undefined') {
+    return normalizePathname(window.location.pathname)
+  }
   return DEFAULT_HOME_PATH
 }
 

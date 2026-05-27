@@ -29,6 +29,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'pro-messages',
     'pro-conversation',
     'pro-chat-stream',
+    'pro-stock-quote',
     'pro-stock-summary',
     'pro-stock-analysis',
     'pro-stock-chart',
