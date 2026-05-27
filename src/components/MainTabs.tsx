@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 import { Crown, LineChart, Shield } from 'lucide-react'
 import { UserMenu } from '@/components/portfolio/UserMenu'
 import { useAuth } from '@/hooks/useAuth'
+import { PRO_HOME_SKIP_REDIRECT_KEY } from '@/lib/proHomeRedirect'
 import { useIsProUser } from '@/hooks/useIsProUser'
 
 /**
@@ -59,7 +60,16 @@ export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps)
                   key={tab.id}
                   type="button"
                   aria-label={tab.label}
-                  onClick={() => navigate(tab.path)}
+                  onClick={() => {
+                    if (tab.id === 'stocks' && showPro) {
+                      try {
+                        sessionStorage.setItem(PRO_HOME_SKIP_REDIRECT_KEY, '1')
+                      } catch {
+                        // ignore
+                      }
+                    }
+                    navigate(tab.path)
+                  }}
                   className={`flex shrink-0 items-center gap-2 border-b-2 px-4 py-3 text-sm font-medium transition-colors min-h-[44px] sm:min-h-0 ${
                     tab.pro
                       ? `pro-tab ${active ? 'active border-amber-600' : 'border-transparent'}`

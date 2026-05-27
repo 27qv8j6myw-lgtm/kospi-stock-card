@@ -3,6 +3,11 @@
  */
 import { createClient } from '@supabase/supabase-js'
 import { inquireDomesticPrice } from '../kisClient.mjs'
+import { isValidStockCode, normalizeKisIscd } from './stockCode.mjs'
+import { isValidStockDisplayName } from './stockDisplayName.mjs'
+import { resolveStockDisplayName } from './stockNameResolve.mjs'
+
+export { isValidStockDisplayName, pickStockDisplayName } from './stockDisplayName.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -31,18 +36,6 @@ function getKisEnv() {
 }
 
 /**
- * @param {string | null | undefined} name
- * @param {string} code6
- */
-export function isValidStockDisplayName(name, code6) {
-  const code = String(code6).replace(/\D/g, '').padStart(6, '0').slice(0, 6)
-  const s = String(name || '').trim()
-  if (!s || s === code) return false
-  if (/^\d{6}$/.test(s.replace(/\s/g, ''))) return false
-  return /[가-힣]/.test(s)
-}
-
-/**
  * @param {string | null | undefined} rawMarket
  */
 function normalizeMarket(rawMarket) {
@@ -59,19 +52,19 @@ function normalizeMarket(rawMarket) {
  * @returns {Promise<{ code: string, name: string, market: string, sector: string } | null>}
  */
 export async function fetchStockMetaFromKis(code6) {
-  const code = String(code6 || '')
-    .replace(/\D/g, '')
-    .padStart(6, '0')
-    .slice(0, 6)
-  if (!/^\d{6}$/.test(code)) return null
+  const code = normalizeKisIscd(code6)
+  if (!isValidStockCode(code)) return null
 
   const { appKey, appSecret, env } = getKisEnv()
   const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
-  const name =
-    quote.nameKr && String(quote.nameKr).trim() && String(quote.nameKr).trim() !== code
-      ? String(quote.nameKr).trim()
-      : null
-  if (!isValidStockDisplayName(name, code)) return null
+  const price = Number(quote.price)
+  if (!Number.isFinite(price) || price <= 0) return null
+
+  const kisNameRaw = quote.nameKr ? String(quote.nameKr).trim() : ''
+  const kisName =
+    kisNameRaw && kisNameRaw !== code && isValidStockDisplayName(kisNameRaw, code) ? kisNameRaw : null
+
+  const name = await resolveStockDisplayName(code, { kisName })
 
   return {
     code,

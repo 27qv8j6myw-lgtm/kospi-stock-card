@@ -1,11 +1,27 @@
+import { runHoldingOpusDiagnosis } from '../ai/proHoldingOpus.mjs'
 import { summarizeProNewsHeadlines } from '../ai/proNewsSummary.mjs'
 import { runProStockAnalysisStream } from '../ai/proStockAnalysis.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
 import { fetchProChartBars } from '../lib/proStockChart.mjs'
 import { resolveStockName } from '../lib/resolveStockName.mjs'
+import {
+  isValidStockDisplayName,
+  pickStockDisplayName,
+  registerStockMaster,
+} from '../lib/stockMasterKisLookup.mjs'
 import { calculateBollinger, calculateMACD, calculateRSI } from '../lib/technicalIndicators.mjs'
 import { executeTool } from '../lib/toolExecutor.mjs'
 import { getProStockSummaryExtras } from '../lib/proStockSummaryExtras.mjs'
+import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
+
+/**
+ * @param {unknown} raw
+ */
+function parseRouteStockCode(raw) {
+  const code = normalizeKisIscd(raw)
+  if (!isValidStockCode(code) || code === '000000') return null
+  return code
+}
 
 /**
  * @param {string} code6
@@ -45,17 +61,18 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
     if (!userId) return
 
-    const code = String(req.query?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-      .slice(0, 6)
-    if (!code || code === '000000') {
+    const code = parseRouteStockCode(req.query?.code)
+    if (!code) {
       res.status(400).json({ error: 'code 필요' })
       return
     }
 
     try {
-      const stockName = await resolveStockName(code)
+      const { data: master } = await supabaseService
+        .from('stocks_master')
+        .select('code, name, market, sector')
+        .eq('code', code)
+        .maybeSingle()
 
       const [quoteRaw, week52Raw, investorRaw, valuationRaw, disclosuresRaw, analystRaw] =
         await Promise.all([
@@ -68,6 +85,26 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
         ])
 
       const quote = toolData(quoteRaw)
+
+      let stockName = pickStockDisplayName(code, master?.name, quote?.name)
+      if (
+        !isValidStockDisplayName(master?.name, code) &&
+        isValidStockDisplayName(quote?.name, code)
+      ) {
+        void registerStockMaster(
+          {
+            code,
+            name: String(quote.name).trim(),
+            market: quote.market || master?.market || 'KOSPI',
+            sector: master?.sector || quote.sector || '—',
+          },
+          'Auto-register',
+        )
+      }
+      if (!isValidStockDisplayName(stockName, code) || stockName === code) {
+        stockName = await resolveStockName(code)
+      }
+      stockName = pickStockDisplayName(code, stockName, master?.name, quote?.name)
       const week52 = toolData(week52Raw)
       const investor = toolData(investorRaw)
       const valuation = toolData(valuationRaw)
@@ -134,9 +171,6 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
         newsSummary,
         disclosures: disclosures?.disclosures ?? [],
         analyst,
-        foreignHolding: extras.foreignHolding,
-        risk: extras.risk,
-        sector: extras.sector,
         earnings: extras.earnings,
         timestamp: new Date().toISOString(),
       })
@@ -157,12 +191,9 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
     if (!userId) return
 
-    const code = String(req.body?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-      .slice(0, 6)
+    const code = parseRouteStockCode(req.body?.code)
     const summary = req.body?.summary
-    if (!code || code === '000000') {
+    if (!code) {
       res.status(400).json({ error: 'code 필요' })
       return
     }
@@ -203,15 +234,12 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
     if (!userId) return
 
-    const code = String(req.query?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-      .slice(0, 6)
+    const code = parseRouteStockCode(req.query?.code)
     const period = String(req.query?.period ?? '1M').toUpperCase()
     const daysMap = { '1W': 7, '1M': 30, '3M': 90, '1Y': 252 }
     const days = daysMap[period] || 30
 
-    if (!code || code === '000000') {
+    if (!code) {
       res.status(400).json({ error: 'code 필요' })
       return
     }
@@ -236,11 +264,8 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
     if (!userId) return
 
-    const code = String(req.query?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-      .slice(0, 6)
-    if (!code || code === '000000') {
+    const code = parseRouteStockCode(req.query?.code)
+    if (!code) {
       res.status(400).json({ error: 'code 필요' })
       return
     }
@@ -294,11 +319,8 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
     if (!userId) return
 
-    const code = String(req.body?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-      .slice(0, 6)
-    if (!code || code === '000000') {
+    const code = parseRouteStockCode(req.body?.code)
+    if (!code) {
       res.status(400).json({ error: 'code 필요' })
       return
     }
@@ -327,10 +349,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
     if (!userId) return
 
-    const code = String(req.query?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-      .slice(0, 6)
+    const code = parseRouteStockCode(req.query?.code)
     if (!code) {
       res.status(400).json({ error: 'code 필요' })
       return
@@ -379,7 +398,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     try {
       const enriched = await Promise.all(
         items.map(async (item) => {
-          const code = String(item.code).replace(/\D/g, '').padStart(6, '0').slice(0, 6)
+          const code = parseRouteStockCode(item.code) || String(item.code)
           const [quoteRaw, name] = await Promise.all([
             executeTool('getStockQuote', { code }, userId).catch(() => null),
             resolveStockName(code).catch(() => code),
@@ -403,6 +422,35 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
       res.status(500).json({ error: message, watchlist: [] })
     }
   }
+
+  async function handleProHoldingOpus(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const holdingId = String(req.body?.holdingId ?? '').trim()
+    if (!holdingId) {
+      res.status(400).json({ error: 'holdingId 필요' })
+      return
+    }
+
+    try {
+      const payload = await runHoldingOpusDiagnosis(req, userId, holdingId)
+      res.json(payload)
+    } catch (e) {
+      const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[Holding OPUS]', message)
+      res.status(status >= 400 && status < 600 ? status : 500).json({ error: message })
+    }
+  }
+
+  app.post('/api/pro-holding-opus', handleProHoldingOpus)
 
   app.get('/api/pro-stock-summary', handleProStockSummary)
   app.post('/api/pro-stock-analysis', handleProStockAnalysis)

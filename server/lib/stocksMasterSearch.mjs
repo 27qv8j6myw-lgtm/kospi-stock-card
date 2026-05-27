@@ -2,7 +2,13 @@
  * `stocks_master` Supabase 조회 (service_role). Express 라우트에서 사용.
  */
 import { createClient } from '@supabase/supabase-js'
-import { lookupAndRegisterStock } from './stockMasterKisLookup.mjs'
+import {
+  isFullStockCodeQuery,
+  isPartialStockCodeQuery,
+  isValidStockCode,
+  normalizeStockCode,
+} from './stockCode.mjs'
+import { isValidStockDisplayName, lookupAndRegisterStock } from './stockMasterKisLookup.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -41,9 +47,9 @@ export async function searchStocksMaster(q, limit = 15) {
   }
 
   const esc = escapeIlike(trimmed)
-  const digits = trimmed.replace(/\D/g, '').slice(0, 6)
+  const upperQ = trimmed.toUpperCase()
   const namePattern = `%${esc}%`
-  const codePattern = digits ? `${digits}%` : null
+  const codePattern = isPartialStockCodeQuery(trimmed) ? `${escapeIlike(upperQ)}%` : null
 
   const [nameRes, codeRes] = await Promise.all([
     supabase.from('stocks_master').select('code,name,market,sector').ilike('name', namePattern).limit(80),
@@ -61,10 +67,8 @@ export async function searchStocksMaster(q, limit = 15) {
 
   const byCode = new Map()
   for (const r of [...(nameRes.data || []), ...(codeRes.data || [])]) {
-    const c = String(r.code || '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-    if (!/^\d{6}$/.test(c)) continue
+    const c = normalizeStockCode(r.code)
+    if (!isValidStockCode(c)) continue
     if (!byCode.has(c)) byCode.set(c, r)
   }
   const rows = [...byCode.values()]
@@ -76,32 +80,28 @@ export async function searchStocksMaster(q, limit = 15) {
    * @returns {number}
    */
   function rankScore(r) {
-    const code = String(r.code || '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
+    const code = normalizeStockCode(r.code)
     const name = String(r.name || '')
     const nameNorm = name.replace(/\s+/g, '')
     const nameLower = name.toLowerCase()
 
-    if (digits.length === 6 && code === digits.padStart(6, '0')) return 0
-    if (digits.length > 0 && code.startsWith(digits)) return 2
+    if (isFullStockCodeQuery(trimmed) && code === normalizeStockCode(trimmed)) return 0
+    if (upperQ && code.startsWith(upperQ)) return 2
     if (nameLower === qLower || nameNorm.toLowerCase() === qNorm.toLowerCase()) return 3
     if (nameLower.startsWith(qLower) || nameNorm.toLowerCase().startsWith(qNorm.toLowerCase())) return 5
-    if (code.startsWith(digits) && digits.length > 0) return 6
+    if (upperQ && code.startsWith(upperQ)) return 6
     if (nameLower.includes(qLower) || nameNorm.toLowerCase().includes(qNorm.toLowerCase())) return 8
     return 10
   }
 
   const items = rows
     .map((r) => ({
-      code: String(r.code || '')
-        .replace(/\D/g, '')
-        .padStart(6, '0'),
-      name: String(r.name || '').trim() || String(r.code),
+      code: normalizeStockCode(r.code),
+      name: String(r.name || '').trim() || normalizeStockCode(r.code),
       market: String(r.market || '').trim() || '—',
       sector: String(r.sector || '').trim() || '—',
     }))
-    .filter((r) => /^\d{6}$/.test(r.code))
+    .filter((r) => isValidStockCode(r.code))
     .sort((a, b) => {
       const ra = rankScore(a)
       const rb = rankScore(b)
@@ -120,24 +120,34 @@ export async function searchStocksMaster(q, limit = 15) {
     if (deduped.length >= limit) break
   }
 
-  const code6Exact =
-    digits.length === 6 ? digits.padStart(6, '0') : /^\d{6}$/.test(trimmed) ? trimmed : null
+  const codeExact = isFullStockCodeQuery(trimmed) ? normalizeStockCode(trimmed) : null
 
-  if (code6Exact && !deduped.some((r) => r.code === code6Exact)) {
+  const existingExact = codeExact ? deduped.find((r) => r.code === codeExact) : null
+  const needsKisFallback =
+    codeExact &&
+    (!existingExact || !isValidStockDisplayName(existingExact.name, codeExact))
+
+  if (needsKisFallback) {
     try {
-      const kisRow = await lookupAndRegisterStock(code6Exact, 'Auto-register-search')
+      const kisRow = await lookupAndRegisterStock(codeExact, 'Auto-register-search')
       if (kisRow) {
-        deduped.unshift({
+        const row = {
           code: kisRow.code,
           name: kisRow.name,
           market: kisRow.market,
           sector: kisRow.sector || '—',
-        })
-        if (deduped.length > limit) deduped.length = limit
+        }
+        if (existingExact) {
+          const idx = deduped.indexOf(existingExact)
+          if (idx >= 0) deduped[idx] = row
+        } else {
+          deduped.unshift(row)
+          if (deduped.length > limit) deduped.length = limit
+        }
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      console.warn('[stocks-search] KIS 조회 실패', code6Exact, msg)
+      console.warn('[stocks-search] KIS 조회 실패', codeExact, msg)
     }
   }
 
@@ -149,10 +159,8 @@ export async function searchStocksMaster(q, limit = 15) {
  * @returns {Promise<{ ok: true, item: { code: string, name: string, market: string, sector: string } | null } | { ok: false, error: string }>}
  */
 export async function getStockMasterByCode(code) {
-  const c = String(code ?? '')
-    .replace(/\D/g, '')
-    .padStart(6, '0')
-  if (!/^\d{6}$/.test(c)) {
+  const c = normalizeStockCode(code)
+  if (!isValidStockCode(c)) {
     return { ok: false, error: 'invalid code' }
   }
 
@@ -178,7 +186,7 @@ export async function getStockMasterByCode(code) {
   return {
     ok: true,
     item: {
-      code: c,
+      code: normalizeStockCode(data.code) || c,
       name: String(data.name || '').trim() || c,
       market: String(data.market || '').trim() || '—',
       sector: String(data.sector || '').trim() || '—',

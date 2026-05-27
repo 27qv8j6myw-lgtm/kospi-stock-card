@@ -6,6 +6,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { withCache } from './lib/kisCache.mjs'
+import { normalizeKisIscd } from './lib/stockCode.mjs'
 
 /** 시세류 TTL (ms) */
 const KIS_CACHE_TTL_QUOTE_MS = 30_000
@@ -81,7 +82,7 @@ function normalizeKisOutputRows(output) {
  */
 function resolveKoreanNameFromPriceOutput(o, iscd6) {
   if (!o || typeof o !== 'object') return null
-  const code = String(iscd6 || '').replace(/\D/g, '').padStart(6, '0')
+  const code = normalizeKisIscd(iscd6)
   const candidates = [
     o.hts_kor_isnm,
     o.hts_kor_isnm1,
@@ -106,6 +107,52 @@ function resolveKoreanNameFromPriceOutput(o, iscd6) {
     if (/(isnm|kornm|kor_nm|prdt.*nm|abrv|name)/i.test(k)) return t
   }
   return null
+}
+
+/**
+ * 주식현재가 시세 output 에서 외국인 보유/소진율 추출
+ * @param {Record<string, unknown>|null|undefined} o
+ * @returns {{ rate: number | null, qty: number | null }}
+ */
+function resolveForeignHoldingFromPriceOutput(o) {
+  if (!o || typeof o !== 'object') return { rate: null, qty: null }
+
+  const rateCandidates = [o.hts_frgn_ehrt, o.frgn_hldn_rate, o.frgn_ehrt]
+  let rate = null
+  for (const c of rateCandidates) {
+    const n = num(c)
+    if (n != null) {
+      rate = n
+      break
+    }
+  }
+
+  if (rate == null) {
+    for (const [k, v] of Object.entries(o)) {
+      if (!/frgn/i.test(k)) continue
+      if (!/(ehrt|hldn_rate|holding|소진)/i.test(k)) continue
+      if (/ntby/i.test(k)) continue
+      const n = num(v)
+      if (n != null && n >= 0 && n <= 100) {
+        rate = n
+        break
+      }
+    }
+  }
+
+  const qty = num(o.frgn_hldn_qty) ?? num(o.frgn_hldn_vol) ?? null
+  return { rate, qty }
+}
+
+/** @param {string} code6 @param {Record<string, unknown>|null|undefined} raw */
+export function logKisFrgnFields(code6, raw) {
+  if (!raw || typeof raw !== 'object') return
+  const code = normalizeKisIscd(code6)
+  const frgnFields = Object.keys(raw).filter((k) => k.toLowerCase().includes('frgn'))
+  console.log(`[KIS ${code}] 외국인 필드:`, frgnFields)
+  for (const k of frgnFields) {
+    console.log(`  ${k}: ${raw[k]}`)
+  }
 }
 
 function ymd(d) {
@@ -305,7 +352,7 @@ async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
 
 /** 국내 주식 현재가 시세 [v1_국내주식-008] */
 export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
-  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const iscd = normalizeKisIscd(code6)
   const cacheKey = `kis:quote:${env}:${iscd}`
   return await withCache(cacheKey, KIS_CACHE_TTL_QUOTE_MS, async () => {
       const data = await kisGet({
@@ -353,6 +400,10 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
       const debtRatio = firstRatioByKeyHint(o, /debt|lblt|liab|부채|tot_lblt|borr|gearing/i)
 
       const listedShares = num(o?.lstn_stcn)
+      const { rate: foreignHoldingRate, qty: foreignHoldingQty } = resolveForeignHoldingFromPriceOutput(o)
+      if (process.env.KIS_DEBUG_QUOTE === '1') {
+        logKisFrgnFields(iscd, o)
+      }
       const htsAvls = num(o?.hts_avls)
       let marketCap = null
       if (price != null && listedShares != null && listedShares > 0) {
@@ -384,6 +435,9 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
         debtRatio,
         marketCap,
         listedShares,
+        foreignHoldingRate,
+        foreignHoldingQty,
+        foreignNetBuy: num(o?.frgn_ntby_qty),
         raw: o,
       }
     })
@@ -422,7 +476,7 @@ function sumInvestorRows(rows, maxDays) {
 
 /** 국내 주식 현재가 투자자 [주식현재가 투자자] */
 export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
-  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const iscd = normalizeKisIscd(code6)
   const cacheKey = `kis:investor:${env}:${iscd}`
   return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
       const data = await kisGet({
@@ -490,7 +544,7 @@ async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
  * [국내주식] 기간별시세(일) — FHKST03010100
  */
 export async function inquireDailyBars(appKey, appSecret, env, code6, maxBars = 60) {
-  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const iscd = normalizeKisIscd(code6)
   const nReq = Math.max(5, Math.min(Number(maxBars) || 60, 430))
   const cacheKey = `kis:daily:${env}:${iscd}:${nReq}`
   return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
@@ -553,7 +607,7 @@ export async function inquireDailyBars(appKey, appSecret, env, code6, maxBars = 
 }
 
 async function inquireIntradayChart(appKey, appSecret, env, code6) {
-  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const iscd = normalizeKisIscd(code6)
   const now = new Date()
   const seoulHhmm00 = seoulNowHhmm00(now)
   const seoulNum = hhmmssToNum(seoulHhmm00)
@@ -726,9 +780,7 @@ export async function inquireTradeValueRankTop(appKey, appSecret, env, opts = {}
     })
     const rows = normalizeKisOutputRows(data.output)
     return rows.slice(0, limit).map((r) => {
-      const code = String(r.mksc_shrn_iscd ?? '')
-        .replace(/\D/g, '')
-        .padStart(6, '0')
+      const code = normalizeKisIscd(r.mksc_shrn_iscd ?? '')
       return {
         code,
         name: typeof r.hts_kor_isnm === 'string' ? r.hts_kor_isnm.trim() : '',
@@ -826,7 +878,7 @@ function firstNumByKeyHint(obj, hintRe) {
  * @returns {Promise<{ rows: Array<Record<string, unknown>>, summary: Record<string, unknown> | null }>}
  */
 export async function inquireDailyShortSale(appKey, appSecret, env, code6, opts = {}) {
-  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const iscd = normalizeKisIscd(code6)
   const days = Math.max(3, Math.min(Number(opts.days) || 10, 30))
   const end = new Date()
   const start = new Date()
@@ -858,7 +910,7 @@ export async function inquireDailyShortSale(appKey, appSecret, env, code6, opts 
  * @returns {Promise<Array<Record<string, unknown>>>}
  */
 export async function inquireDailyCreditBalance(appKey, appSecret, env, code6) {
-  const iscd = String(code6).replace(/\D/g, '').padStart(6, '0')
+  const iscd = normalizeKisIscd(code6)
   const cacheKey = `kis:credit-bal:${env}:${iscd}:${ymd(new Date())}`
   return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
     const data = await kisGet({
@@ -877,6 +929,192 @@ export async function inquireDailyCreditBalance(appKey, appSecret, env, code6) {
     })
     return normalizeKisOutputRows(data.output)
   })
+}
+
+/** KIS [0440] 기관계 하위 필드 합산 (FID_ETC_CLS 2/3 단독 호출은 output 0건) */
+const INSTITUTION_QTY_KEYS = [
+  'orgn_ntby_qty',
+  'bank_ntby_qty',
+  'insu_ntby_qty',
+  'mrbn_ntby_qty',
+  'fund_ntby_qty',
+  'etc_orgt_ntby_vol',
+]
+const INSTITUTION_AMT_KEYS = [
+  'orgn_ntby_tr_pbmn',
+  'bank_ntby_tr_pbmn',
+  'insu_ntby_tr_pbmn',
+  'mrbn_ntby_tr_pbmn',
+  'fund_ntby_tr_pbmn',
+  'etc_orgt_ntby_tr_pbmn',
+]
+
+/**
+ * @param {Record<string, unknown>} row
+ * @param {string[]} keys
+ */
+function sumRowFields(row, keys) {
+  let total = 0
+  for (const k of keys) {
+    total += num(row[k]) ?? 0
+  }
+  return total
+}
+
+/**
+ * @param {Record<string, unknown>} row
+ * @param {'foreign'|'institution'|'individual'} investorType
+ */
+function topFlowNetQty(row, investorType) {
+  if (investorType === 'foreign') return num(row.frgn_ntby_qty) ?? 0
+  if (investorType === 'institution') return sumRowFields(row, INSTITUTION_QTY_KEYS)
+  const ivtr = num(row.ivtr_ntby_qty)
+  if (ivtr != null && ivtr !== 0) return ivtr
+  const total = num(row.ntby_qty) ?? 0
+  const frgn = num(row.frgn_ntby_qty) ?? 0
+  const inst = sumRowFields(row, INSTITUTION_QTY_KEYS)
+  const etcCorp = num(row.etc_corp_ntby_vol) ?? 0
+  if (etcCorp !== 0) return etcCorp
+  return total - frgn - inst
+}
+
+/**
+ * @param {Record<string, unknown>} row
+ * @param {'foreign'|'institution'|'individual'} investorType
+ */
+function topFlowNetAmtKrw(row, investorType) {
+  if (investorType === 'foreign') {
+    return (num(row.frgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW
+  }
+  if (investorType === 'institution') {
+    return sumRowFields(row, INSTITUTION_AMT_KEYS) * INVESTOR_AMOUNT_UNIT_KRW
+  }
+  const ivtrAmt = (num(row.ivtr_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW
+  if (ivtrAmt !== 0) return ivtrAmt
+  const etcCorpAmt = (num(row.etc_corp_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW
+  if (etcCorpAmt !== 0) return etcCorpAmt
+  const totalAmt =
+    (num(row.frgn_ntby_tr_pbmn) ?? 0) * INVESTOR_AMOUNT_UNIT_KRW +
+    sumRowFields(row, INSTITUTION_AMT_KEYS) * INVESTOR_AMOUNT_UNIT_KRW
+  const price = num(row.stck_prpr) ?? 0
+  const residualQty = topFlowNetQty(row, 'individual')
+  if (totalAmt > 0 && residualQty !== 0) {
+    return Math.max(0, (num(row.ntby_qty) ?? 0) * price - totalAmt)
+  }
+  return residualQty * price
+}
+
+/**
+ * @param {Record<string, unknown>} row
+ * @param {number} idx
+ * @param {'foreign'|'institution'|'individual'} investorType
+ */
+function mapTopFlowRow(row, idx, investorType) {
+  const code = normalizeKisIscd(row.mksc_shrn_iscd ?? row.stck_shrn_iscd ?? '')
+  const name = typeof row.hts_kor_isnm === 'string' ? row.hts_kor_isnm.trim() : ''
+  return {
+    rank: idx + 1,
+    code,
+    name,
+    currentPrice: num(row.stck_prpr),
+    changePct: num(row.prdy_ctrt),
+    amount: topFlowNetQty(row, investorType),
+    amountKrw: topFlowNetAmtKrw(row, investorType),
+  }
+}
+
+/**
+ * @param {Array<Record<string, unknown>>} rows
+ * @param {'foreign'|'institution'|'individual'} investorType
+ * @param {'buy'|'sell'} tradeType
+ * @param {number} limit
+ */
+function rankTopFlowRows(rows, investorType, tradeType, limit) {
+  const take = Math.min(30, Math.max(1, Number(limit) || 10))
+  const scored = rows
+    .map((row) => ({
+      row,
+      score: topFlowNetAmtKrw(row, investorType),
+    }))
+    .filter(({ score }) => score !== 0)
+
+  scored.sort((a, b) => (tradeType === 'sell' ? a.score - b.score : b.score - a.score))
+  return scored.slice(0, take).map(({ row }, idx) => mapTopFlowRow(row, idx, investorType))
+}
+
+/**
+ * FID_ETC_CLS_CODE=0(전체) 1회 조회 후 투자자별 정렬 — 2/3 단독 호출은 KIS가 빈 output 반환
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {'buy'|'sell'} tradeType
+ * @param {number} [limit]
+ */
+async function fetchTopFlowRawRows(appKey, appSecret, env, tradeType) {
+  const rankSort = tradeType === 'sell' ? '1' : '0'
+  const data = await kisGet({
+    appKey,
+    appSecret,
+    env,
+    path: '/uapi/domestic-stock/v1/quotations/foreign-institution-total',
+    params: {
+      FID_COND_MRKT_DIV_CODE: 'V',
+      FID_COND_SCR_DIV_CODE: '16449',
+      FID_INPUT_ISCD: '0000',
+      FID_DIV_CLS_CODE: '1',
+      FID_RANK_SORT_CLS_CODE: rankSort,
+      FID_ETC_CLS_CODE: '0',
+    },
+    trId: 'FHPTJ04400000',
+    kind: 'KIS 수급상위',
+  })
+  return normalizeKisOutputRows(data.output)
+}
+
+/**
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {'buy'|'sell'} tradeType
+ * @param {number} [limit]
+ * @returns {Promise<Record<'foreign'|'institution'|'individual', Array<{ rank: number, code: string, name: string, currentPrice: number | null, changePct: number | null, amount: number, amountKrw: number }>>>}
+ */
+export async function getTopFlowStocksByInvestor(appKey, appSecret, env, tradeType = 'buy', limit = 10) {
+  const take = Math.min(30, Math.max(1, Number(limit) || 10))
+  const cacheKey = `kis:top-flow-all:${env}:${tradeType}:${take}`
+
+  return await withCache(cacheKey, 5 * 60_000, async () => {
+    const rows = await fetchTopFlowRawRows(appKey, appSecret, env, tradeType)
+    if (rows.length && process.env.KIS_DEBUG_TOP_FLOW === '1') {
+      console.log('[TopFlow] raw rows:', rows.length, 'keys:', Object.keys(rows[0] || {}))
+    }
+    return {
+      foreign: rankTopFlowRows(rows, 'foreign', tradeType, take),
+      institution: rankTopFlowRows(rows, 'institution', tradeType, take),
+      individual: rankTopFlowRows(rows, 'individual', tradeType, take),
+    }
+  })
+}
+
+/**
+ * 국내기관·외국인 매매종목가집계 상위 [국내주식-037] FHPTJ04400000
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {'foreign'|'institution'|'individual'} [investorType]
+ * @param {'buy'|'sell'} [tradeType]
+ * @param {number} [limit]
+ */
+export async function getTopFlowStocks(
+  appKey,
+  appSecret,
+  env,
+  investorType = 'foreign',
+  tradeType = 'buy',
+  limit = 10,
+) {
+  const all = await getTopFlowStocksByInvestor(appKey, appSecret, env, tradeType, limit)
+  return all[investorType] ?? all.foreign
 }
 
 export { firstNumByKeyHint }

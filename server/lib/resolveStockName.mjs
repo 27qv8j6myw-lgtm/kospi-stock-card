@@ -1,3 +1,4 @@
+import { normalizeKisIscd } from './stockCode.mjs'
 import { getStockMasterByCode } from './stocksMasterSearch.mjs'
 import { screeningStockNameKr } from '../screening/sectorMaster.mjs'
 import {
@@ -6,6 +7,7 @@ import {
   lookupAndRegisterStock,
   registerStockMaster,
 } from './stockMasterKisLookup.mjs'
+import { resolveStockDisplayName } from './stockNameResolve.mjs'
 
 export { isValidStockDisplayName } from './stockMasterKisLookup.mjs'
 
@@ -15,10 +17,7 @@ export { isValidStockDisplayName } from './stockMasterKisLookup.mjs'
  * @returns {Promise<string>}
  */
 export async function resolveStockName(code) {
-  const code6 = String(code || '')
-    .replace(/\D/g, '')
-    .padStart(6, '0')
-    .slice(0, 6)
+  const code6 = normalizeKisIscd(code)
 
   const master = await getStockMasterByCode(code6)
   if (master.ok && master.item && isValidStockDisplayName(master.item.name, code6)) {
@@ -34,6 +33,15 @@ export async function resolveStockName(code) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     console.warn(`[resolveStockName] KIS 실패 ${code6}:`, msg)
+  }
+
+  const external = await resolveStockDisplayName(code6, {})
+  if (isValidStockDisplayName(external, code6)) {
+    await registerStockMaster(
+      { code: code6, name: external, market: 'KOSPI', sector: '—' },
+      'Auto-register',
+    )
+    return external
   }
 
   const fromScreening = screeningStockNameKr(code6)

@@ -1,7 +1,6 @@
 import { buildEarningsIntel } from '../earningsIntel.mjs'
 import { fetchProChartBars } from './proStockChart.mjs'
 import { getCachedOrFetch } from './cacheHelper.mjs'
-import { fetchProRiskMetrics, fetchSectorRank } from './proStockRiskData.mjs'
 
 /**
  * @param {string} code6
@@ -38,30 +37,5 @@ export async function getProStockSummaryExtras(code6, quote, opts = {}) {
       }
     : null
 
-  const risk = await getCachedOrFetch(
-    `pro_risk:${code}`,
-    () => fetchProRiskMetrics(code, quote),
-    6,
-  )
-
-  const sector = await getCachedOrFetch(
-    `sector_rank:${code}`,
-    () => fetchSectorRank(code, quote),
-    6,
-  )
-
-  return {
-    foreignHolding: null,
-    risk: risk ?? {
-      shortRatio: null,
-      shortChange: null,
-      marginRatio: null,
-    },
-    sector: sector ?? {
-      rank: null,
-      total: null,
-      name: quote?.sector ? String(quote.sector).trim() : null,
-    },
-    earnings,
-  }
+  return { earnings }
 }

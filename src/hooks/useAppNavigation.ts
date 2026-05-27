@@ -11,8 +11,13 @@ function normalizePathname(raw: string): string {
   if (raw === '/pro/chat') return '/pro/chat'
   const proChatId = raw.match(/^\/pro\/chat\/([0-9a-f-]{36})\/?$/i)
   if (proChatId) return `/pro/chat/${proChatId[1]}`
-  const proStock = raw.match(/^\/pro\/stock\/(\d{6})\/?$/)
-  if (proStock) return `/pro/stock/${proStock[1]}`
+  const proStock = raw.match(/^\/pro\/stock\/([0-9A-Za-z]{6})\/?$/i)
+  if (proStock) return `/pro/stock/${proStock[1].toUpperCase()}`
+  const proHolding = raw.match(
+    /^\/pro\/holdings\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
+  )
+  if (proHolding) return `/pro/holdings/${proHolding[1]}`
+  if (raw === '/pro/holdings' || raw === '/pro/holdings/') return '/pro/holdings'
   if (raw === '/pro') return '/pro'
   if (raw === '/' || raw === '') return DEFAULT_HOME_PATH
   if (raw === '/stocks' || raw === '/stocks/') return DEFAULT_STOCK_PATH

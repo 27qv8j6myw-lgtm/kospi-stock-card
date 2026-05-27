@@ -1,4 +1,5 @@
 import { inquireDailyBars } from '../kisClient.mjs'
+import { isValidStockCode, normalizeKisIscd } from './stockCode.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -32,7 +33,10 @@ export function sortChartBarsChronological(rows) {
  * @param {number} days
  */
 export async function fetchProChartBars(code6, days) {
-  const code = String(code6).replace(/\D/g, '').padStart(6, '0').slice(0, 6)
+  const code = normalizeKisIscd(code6)
+  if (!isValidStockCode(code)) {
+    throw new Error('invalid code')
+  }
   const n = Math.max(5, Math.min(Number(days) || 30, 260))
   const { appKey, appSecret, env } = getKisEnv()
   const bars = await inquireDailyBars(appKey, appSecret, env, code, n)

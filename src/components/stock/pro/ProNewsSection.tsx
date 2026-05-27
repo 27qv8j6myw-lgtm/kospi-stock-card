@@ -1,5 +1,6 @@
 import { Newspaper, Sparkles } from 'lucide-react'
-import { PRO_ICON, formatNewsDate, getNewsSource, newsSectionMeta, proDesign } from '@/lib/proStockDesign'
+import { formatNewsDate, getNewsSource, newsSectionMeta, proDesign } from '@/lib/proStockDesign'
+import { ProSectionHeader } from './ProSectionHeader'
 
 type NewsItem = { title: string; link: string; pubDate?: string }
 
@@ -13,11 +14,11 @@ export function ProNewsSection({ news, newsSummary }: Props) {
 
   return (
     <div className="border-b border-gray-100 px-4 py-4 sm:px-5">
-      <div className="mb-3 flex items-center gap-2">
-        <Newspaper {...PRO_ICON} className="text-emerald-600" strokeWidth={1.8} />
-        <span className="text-[16px] font-bold text-gray-900">최근 뉴스</span>
-        <span className="ml-auto text-[11px] text-gray-400">{newsSectionMeta(news)}</span>
-      </div>
+      <ProSectionHeader
+        icon={<Newspaper size={24} className="text-emerald-600" strokeWidth={1.8} />}
+        title="최근 뉴스"
+        meta={newsSectionMeta(news)}
+      />
 
       {newsSummary ? (
         <div className={`${proDesign.whiteBox} mb-3`}>

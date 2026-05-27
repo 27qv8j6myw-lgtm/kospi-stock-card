@@ -1,6 +1,6 @@
 import { Sparkles } from 'lucide-react'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
-import { PRO_ICON } from '@/lib/proStockDesign'
+import { ProSectionHeader } from './ProSectionHeader'
 
 type Props = {
   analysis: string
@@ -10,13 +10,12 @@ type Props = {
 export function ProOpusSection({ analysis, loading }: Props) {
   return (
     <section className="border-b border-amber-200 bg-amber-50 px-5 py-4">
-      <div className="mb-3 flex items-center gap-2">
-        <Sparkles {...PRO_ICON} className="text-amber-600" />
-        <span className="text-[16px] font-bold text-amber-900">OPUS 종합 분석</span>
-        {loading ? (
-          <span className="ml-auto text-[12px] text-amber-700">분석 중...</span>
-        ) : null}
-      </div>
+      <ProSectionHeader
+        icon={<Sparkles size={24} className="text-amber-600" strokeWidth={1.8} />}
+        title="OPUS 종합 분석"
+        titleClassName="text-[18px] font-bold text-amber-900"
+        meta={loading ? '분석 중...' : undefined}
+      />
 
       <div className="rounded-md border border-gray-200 bg-white p-3">
         {analysis ? (

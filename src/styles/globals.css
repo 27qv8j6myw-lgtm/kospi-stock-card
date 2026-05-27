@@ -112,6 +112,14 @@ input[type='search'].pro-search-input::-webkit-search-cancel-button {
   }
 }
 
+@media (min-width: 768px) {
+  .ticker-pro-strip {
+    animation: none;
+    width: 100%;
+    justify-content: space-around;
+  }
+}
+
 /** 가로 오버플로·캐러셀: 스크롤바 숨김 (Tailwind `scrollbar-none` 보조) */
 .scrollbar-none {
   scrollbar-width: none;

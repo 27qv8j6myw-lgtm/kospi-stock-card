@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Check, Database, Loader2, Menu, Plus, Send, Sparkles, Trash2 } from 'lucide-react'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import {
   createProConversation,
@@ -360,7 +361,11 @@ export default function ProChatPage() {
   }, [conversationId, handleStreamEvent, input, loading, replace])
 
   return (
-    <div className="fixed inset-x-0 bottom-0 top-[56px] z-10 flex bg-white">
+    <div className="fixed inset-x-0 bottom-0 top-[56px] z-10 flex flex-col bg-white">
+      <div className="hidden w-full flex-shrink-0 md:block">
+        <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
+      </div>
+      <div className="mx-auto flex min-h-0 w-full max-w-[1200px] flex-1 overflow-hidden">
       <aside
         className={`${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
@@ -574,6 +579,7 @@ export default function ProChatPage() {
           onClick={() => setSidebarOpen(false)}
         />
       ) : null}
+      </div>
     </div>
   )
 }

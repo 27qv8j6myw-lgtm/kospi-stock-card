@@ -5,6 +5,7 @@
 import AdmZip from 'adm-zip'
 import { parseStringPromise } from 'xml2js'
 import { createClient } from '@supabase/supabase-js'
+import { isValidStockCode, normalizeStockCode } from './stockCode.mjs'
 
 const BATCH_SIZE = 500
 const DART_CORP_CODE_URL = 'https://opendart.fss.or.kr/api/corpCode.xml'
@@ -61,10 +62,8 @@ export async function fetchListedStocksFromDart(dartKey) {
 
   const byCode = new Map()
   for (const c of allCorps) {
-    const code = String(c?.stock_code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-    if (!/^\d{6}$/.test(code) || code === '000000') continue
+    const code = normalizeStockCode(String(c?.stock_code ?? '').trim())
+    if (!isValidStockCode(code) || code === '000000') continue
 
     const name = String(c?.corp_name ?? '').trim()
     if (!name) continue
@@ -147,10 +146,8 @@ export async function upsertStocksMasterChunk(stocks) {
 
   const rows = []
   for (const s of stocks) {
-    const code = String(s?.code ?? '')
-      .replace(/\D/g, '')
-      .padStart(6, '0')
-    if (!/^\d{6}$/.test(code) || code === '000000') continue
+    const code = normalizeStockCode(s?.code)
+    if (!isValidStockCode(code) || code === '000000') continue
     const name = String(s?.name ?? '').trim()
     if (!name) continue
     const corp_code = String(s?.corp_code ?? '').trim()

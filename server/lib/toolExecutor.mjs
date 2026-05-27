@@ -1,4 +1,10 @@
-import { inquireDomesticPrice, inquireDailyBars, inquireInvestorByStock } from '../kisClient.mjs'
+import {
+  inquireDomesticPrice,
+  inquireDailyBars,
+  inquireInvestorByStock,
+  logKisFrgnFields,
+} from '../kisClient.mjs'
+import { isValidStockCode, normalizeKisIscd } from './stockCode.mjs'
 import { searchStocksMaster } from './stocksMasterSearch.mjs'
 import {
   dividendYieldFromKisRaw,
@@ -34,10 +40,8 @@ function getKisEnv() {
 }
 
 function normalizeCode(raw) {
-  return String(raw || '')
-    .replace(/\D/g, '')
-    .padStart(6, '0')
-    .slice(0, 6)
+  const code = normalizeKisIscd(raw)
+  return isValidStockCode(code) ? code : ''
 }
 
 function clampInt(v, fallback, min, max) {
@@ -53,6 +57,17 @@ export async function getKisQuote(code6) {
   const code = normalizeCode(code6)
   const { appKey, appSecret, env } = getKisEnv()
   const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
+  const raw = quote.raw
+  if (process.env.KIS_DEBUG_QUOTE === '1' && raw && typeof raw === 'object') {
+    logKisFrgnFields(code, raw)
+  } else if (
+    quote.foreignHoldingRate == null &&
+    raw &&
+    typeof raw === 'object' &&
+    Object.keys(raw).some((k) => k.toLowerCase().includes('frgn'))
+  ) {
+    logKisFrgnFields(code, raw)
+  }
   const nameKr =
     quote.nameKr && String(quote.nameKr).trim() && String(quote.nameKr).trim() !== code
       ? String(quote.nameKr).trim()
@@ -77,7 +92,10 @@ export async function getKisQuote(code6) {
     bps: quote.bps,
     dividendYield: dividendYieldFromKisRaw(quote.raw),
     marketCap: quote.marketCap,
-    listedShares: quote.listedShares,
+    listedShares: quote.listedShares ?? null,
+    foreignHoldingRate: quote.foreignHoldingRate ?? null,
+    foreignHoldingQty: quote.foreignHoldingQty ?? null,
+    foreignNetBuy: quote.foreignNetBuy ?? null,
   }
 }
 
@@ -150,6 +168,10 @@ export async function executeTool(toolName, input, userId) {
           dayLow: q.dayLow,
           tradingAmount: q.tradingAmount ?? q.tradingValue,
           marketCap: q.marketCap,
+          listedShares: q.listedShares,
+          foreignHoldingRate: q.foreignHoldingRate,
+          foreignHoldingQty: q.foreignHoldingQty,
+          foreignNetBuy: q.foreignNetBuy,
         }
       }
 

@@ -134,7 +134,10 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
   const normalized = normalizeMarkdown(content)
   return (
     <div className="prose-chat max-w-none">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
+        components={components}
+      >
         {normalized}
       </ReactMarkdown>
     </div>

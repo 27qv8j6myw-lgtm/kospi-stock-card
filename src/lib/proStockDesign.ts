@@ -15,7 +15,10 @@ export const proDesign = {
   dataValue: 'text-[12px] font-bold text-gray-900 tabular-nums',
 } as const
 
-export const PRO_ICON = { size: 20, strokeWidth: 1.8 } as const
+export const PRO_ICON = { size: 24, strokeWidth: 1.8 } as const
+
+/** Pro 페이지 공통 가로 폭 (지수·검색·카드·대시보드) */
+export const PRO_CONTENT_WRAP = 'mx-auto w-full max-w-[1200px] px-3 sm:px-4'
 
 export function getNewsSource(link: string): string {
   try {

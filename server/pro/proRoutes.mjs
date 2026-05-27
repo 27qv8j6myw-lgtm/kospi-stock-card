@@ -2,7 +2,9 @@ import { runProChat } from '../ai/proChat.mjs'
 import { generateConversationTitle } from '../ai/proChatPrompt.mjs'
 import { runProChatStream } from '../ai/proChatStream.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
+import { fetchProTopFlow } from '../lib/proTopFlow.mjs'
 import { registerAdminProRoutes } from './adminProRoutes.mjs'
+import { registerProHoldingsRoutes } from './proHoldingsRoutes.mjs'
 import { registerProStockRoutes } from './proStockRoutes.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -342,6 +344,32 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
   app.post('/api/pro/chat', handleProChat)
   app.post('/api/pro/chat-stream', handleProChatStream)
 
+  async function handleProTopFlow(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    try {
+      const payload = await fetchProTopFlow(supabaseService, {
+        investor: req.query?.investor,
+        type: req.query?.type,
+      })
+      res.json(payload)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[Top Flow]', message)
+      res.status(500).json({ error: message })
+    }
+  }
+
+  app.get('/api/pro-top-flow', handleProTopFlow)
+
+  registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerProStockRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerAdminProRoutes(app, { getSupabaseService, getUserIdFromRequest })
 }

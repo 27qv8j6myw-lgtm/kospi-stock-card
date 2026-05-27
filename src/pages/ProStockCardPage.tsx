@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
 import {
   ProActionButtons,
   ProChartQuoteSection,
@@ -17,17 +18,23 @@ import {
   type TechnicalSnapshot,
 } from '@/lib/buildProStockCardSections'
 import { proDesign } from '@/lib/proStockDesign'
+import { STOCK_CODE_PATH_RE } from '@/lib/stockCode'
 
 function detectCodeFromPath(pathname: string): string | undefined {
-  const m = pathname.match(/^\/pro\/stock\/(\d{6})\/?$/)
-  return m?.[1]
+  const m = pathname.match(/^\/pro\/stock\/([^/]+)\/?$/)
+  const raw = m?.[1]
+  if (!raw || !STOCK_CODE_PATH_RE.test(raw)) return undefined
+  return raw.toUpperCase()
 }
 
-function useInitialStockName(): string | null {
+function useStockNameFromUrl(code: string | undefined): string | null {
+  const { pathname } = useAppNavigation()
   return useMemo(() => {
-    if (typeof window === 'undefined') return null
-    return new URLSearchParams(window.location.search).get('name')
-  }, [])
+    if (typeof window === 'undefined' || !code) return null
+    if (!pathname.includes(`/pro/stock/${code}`)) return null
+    const raw = new URLSearchParams(window.location.search).get('name')
+    return raw?.trim() || null
+  }, [pathname, code])
 }
 
 function changeClass(pct: number): string {
@@ -39,7 +46,7 @@ function changeClass(pct: number): string {
 export default function ProStockCardPage() {
   const { pathname } = useAppNavigation()
   const code = useMemo(() => detectCodeFromPath(pathname), [pathname])
-  const initialName = useInitialStockName()
+  const urlName = useStockNameFromUrl(code)
 
   const [summary, setSummary] = useState<ProSummaryExtended | null>(null)
   const [technical, setTechnical] = useState<TechnicalSnapshot>(null)
@@ -137,7 +144,7 @@ export default function ProStockCardPage() {
     }
   }, [code, loadAnalysis])
 
-  const displayName = summary?.name || initialName || code || '—'
+  const displayName = summary?.name || urlName || code || '—'
   const pct = summary?.quote?.changePct ?? 0
   const subtitleParts = [code, summary?.quote?.market, summary?.quote?.sector].filter(Boolean)
 
@@ -148,13 +155,14 @@ export default function ProStockCardPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
+      <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
       {code ? <ProStickySearch currentCode={code} /> : null}
 
       <div className={proDesign.page}>
         {loadingSummary ? (
           <div className={proDesign.card}>
             <div className="border-b border-gray-100 px-5 py-4">
-              <h1 className="text-[22px] font-bold text-gray-900">{initialName || code || '—'}</h1>
+              <h1 className="text-[22px] font-bold text-gray-900">{urlName || code || '—'}</h1>
               {code ? <p className="mt-1 text-[12px] text-gray-500">{code}</p> : null}
               <div className="flex justify-center py-10">
                 <div className="size-8 animate-spin rounded-full border-2 border-amber-400 border-t-transparent" />
@@ -168,14 +176,16 @@ export default function ProStockCardPage() {
           <div className={proDesign.card}>
             <div className="border-b border-gray-100 px-4 py-4 sm:px-5">
               <div className="mb-1 flex items-center gap-2">
-                <h1 className="text-[22px] font-bold tracking-tight text-gray-900">{displayName}</h1>
+                <h1 className="text-[22px] font-bold tracking-tight text-gray-900 md:text-[28px]">
+                  {displayName}
+                </h1>
                 <span className={proDesign.proBadge}>PRO</span>
               </div>
               {subtitleParts.length > 0 ? (
                 <p className="mb-3 text-[12px] text-gray-500">{subtitleParts.join(' · ')}</p>
               ) : null}
               <div className="flex items-baseline gap-2.5">
-                <span className="text-[28px] font-bold tabular-nums tracking-tight text-gray-900">
+                <span className="text-[28px] font-bold tabular-nums tracking-tight text-gray-900 md:text-[36px]">
                   {summary.quote?.currentPrice != null
                     ? `${summary.quote.currentPrice.toLocaleString()}원`
                     : '—'}
@@ -223,12 +233,6 @@ export default function ProStockCardPage() {
               icon={proSectionIcons.technical}
               title="기술 지표"
               cards={sections?.technical ?? []}
-            />
-
-            <ProSectionGrid
-              icon={proSectionIcons.risk}
-              title="시장 리스크"
-              cards={sections?.risk ?? []}
             />
 
             <ProNewsSection news={summary.news ?? []} newsSummary={summary.newsSummary} />

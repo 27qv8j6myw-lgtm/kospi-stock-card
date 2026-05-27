@@ -7,12 +7,12 @@ import { PriceGauge } from '@/components/stock/PriceGauge'
 import { StockChart, type ChartPeriod } from '@/components/stock/StockChart'
 import { VolumeGauge } from '@/components/stock/VolumeGauge'
 import type { IntradaySeriesPoint } from '@/types/intradayChart'
-import { PRO_ICON } from '@/lib/proStockDesign'
+import { ProSectionHeader } from './ProSectionHeader'
 
 export type ProChartTab = '당일' | ChartPeriod
 
 const TABS: ProChartTab[] = ['당일', '1W', '1M', '3M', '1Y']
-const CHART_COL_HEIGHT = 'h-[200px] md:h-[240px]'
+const CHART_COL_HEIGHT = 'h-[220px] md:h-[280px]'
 
 export type ProQuoteGaugeData = {
   currentPrice?: number | null
@@ -100,12 +100,12 @@ export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
 
   return (
     <section className="border-b border-gray-100 px-4 py-4 sm:px-5">
-      <div className="mb-3.5 flex items-center gap-2">
-        <TrendingUp {...PRO_ICON} className="text-blue-500" strokeWidth={1.8} />
-        <span className="text-[16px] font-bold text-gray-900">차트 &amp; 시세</span>
-      </div>
+      <ProSectionHeader
+        icon={<TrendingUp size={24} className="text-blue-500" strokeWidth={1.8} />}
+        title="차트 & 시세"
+      />
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.4fr_1fr] md:items-stretch md:gap-4">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-[1.6fr_1fr] md:items-stretch md:gap-5">
         <div className={`flex min-w-0 flex-col ${CHART_COL_HEIGHT}`}>
           <div className="mb-1.5 flex justify-end">
             <div className="flex gap-1">
@@ -147,7 +147,7 @@ export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
           <ChartIndexLabels period={period} chartData={chartData} />
         </div>
 
-        <div className="flex h-auto flex-col justify-between gap-3 md:h-[240px] md:gap-0">
+        <div className="flex h-auto flex-col justify-between gap-3 md:h-[280px] md:gap-0">
           <PriceGauge
             label="1일 범위"
             current={current}

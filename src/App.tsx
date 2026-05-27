@@ -12,10 +12,13 @@ import AdminPage from './pages/AdminPage'
 import ProDashboard from './pages/ProDashboard'
 import ProChatPage from './pages/ProChatPage'
 import ProStockCardPage from './pages/ProStockCardPage'
+import ProHoldingDetailPage from './pages/ProHoldingDetailPage'
+import ProHoldingsPage from './pages/ProHoldingsPage'
 import { useIsProUser } from './hooks/useIsProUser'
 // 격리: React #300 원인 후보 — ComparePage 비활성화 (복구 시 주석 해제)
 // import ComparePage from './compare/ComparePage'
 import { MainTabs } from './components/MainTabs'
+import { PRO_HOME_SKIP_REDIRECT_KEY } from './lib/proHomeRedirect'
 
 /** 탭·화면은 전부 URL(`pathname`) 기준 — `activeTab` 같은 별도 state 없음 */
 function App() {
@@ -27,13 +30,23 @@ function App() {
 
   /** 구체적 라우트 판별 — isHome 은 정확히 `/` 만 (다른 경로를 홈으로 취급하지 않음) */
   const stockMatch = pathname.match(/^\/stocks\/(\d+)/)
-  const proStockMatch = pathname.match(/^\/pro\/stock\/(\d{6})\/?$/)
+  const proStockMatch = pathname.match(/^\/pro\/stock\/([0-9A-Za-z]{6})\/?$/i)
+  const proHoldingMatch = pathname.match(
+    /^\/pro\/holdings\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
+  )
+  const isProHoldingsList = pathname === '/pro/holdings' || pathname === '/pro/holdings/'
   const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/')
   const isProChat = pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')
   const isProStock = Boolean(proStockMatch)
+  const isProHolding = Boolean(proHoldingMatch)
   const isPro =
-    pathname === '/pro' || (pathname.startsWith('/pro/') && !isProChat && !isProStock)
-  const isProArea = isPro || isProChat || isProStock
+    pathname === '/pro' ||
+    (pathname.startsWith('/pro/') &&
+      !isProChat &&
+      !isProStock &&
+      !isProHolding &&
+      !isProHoldingsList)
+  const isProArea = isPro || isProChat || isProStock || isProHolding || isProHoldingsList
   const isHome = pathname === '/' || pathname === ''
   const { isProUser: showPro, ready: proReady } = useIsProUser(user)
   const showMainTabs =
@@ -50,6 +63,21 @@ function App() {
     if (!proReady || !isProArea || showPro) return
     replace('/')
   }, [isProArea, showPro, proReady, replace])
+
+  /** Pro 권한 — 앱 첫 진입(`/`) 시 Pro 대시보드로 */
+  useEffect(() => {
+    if (!proReady || !showPro) return
+    if (pathname !== '/' && pathname !== '') return
+    try {
+      if (sessionStorage.getItem(PRO_HOME_SKIP_REDIRECT_KEY) === '1') {
+        sessionStorage.removeItem(PRO_HOME_SKIP_REDIRECT_KEY)
+        return
+      }
+    } catch {
+      // ignore
+    }
+    replace('/pro')
+  }, [proReady, showPro, pathname, replace])
 
   if (loading || (user && !proReady)) {
     return (
@@ -97,6 +125,10 @@ function App() {
     }
   } else if (isProStock) {
     mainContent = showPro ? <ProStockCardPage /> : <HomePage />
+  } else if (isProHoldingsList) {
+    mainContent = showPro ? <ProHoldingsPage /> : <HomePage />
+  } else if (isProHolding) {
+    mainContent = showPro ? <ProHoldingDetailPage /> : <HomePage />
   } else if (isProChat) {
     mainContent = showPro ? <ProChatPage /> : <HomePage />
   } else if (isPro) {

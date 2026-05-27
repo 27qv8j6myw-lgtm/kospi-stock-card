@@ -1,5 +1,11 @@
 import { fetchWithAuth } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
+import { isValidStockCode, normalizeKisIscd } from '@/lib/stockCode'
+
+function normalizeRouteCode(code: string): string | null {
+  const normalized = normalizeKisIscd(code)
+  return isValidStockCode(normalized) ? normalized : null
+}
 
 export type ProStockSummary = {
   code: string
@@ -37,8 +43,9 @@ export type ProStockSummary = {
 }
 
 export async function fetchProStockSummary(code: string): Promise<ProStockSummary | null> {
-  const normalized = code.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
-  const res = await fetchWithAuth(apiUrl(`/api/pro-stock-summary?code=${normalized}`))
+  const normalized = normalizeRouteCode(code)
+  if (!normalized) return null
+  const res = await fetchWithAuth(apiUrl(`/api/pro-stock-summary?code=${encodeURIComponent(normalized)}`))
   if (!res.ok) return null
   return (await res.json()) as ProStockSummary
 }
@@ -64,9 +71,10 @@ export async function fetchProStockChart(
   code: string,
   period: ChartPeriod,
 ): Promise<ChartBar[]> {
-  const normalized = code.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
+  const normalized = normalizeRouteCode(code)
+  if (!normalized) return []
   const res = await fetchWithAuth(
-    apiUrl(`/api/pro-stock-chart?code=${normalized}&period=${period}`),
+    apiUrl(`/api/pro-stock-chart?code=${encodeURIComponent(normalized)}&period=${period}`),
   )
   if (!res.ok) return []
   const d = (await res.json()) as { data?: ChartBar[] }
@@ -74,8 +82,9 @@ export async function fetchProStockChart(
 }
 
 export async function fetchProStockTechnical(code: string): Promise<ProTechnical | null> {
-  const normalized = code.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
-  const res = await fetchWithAuth(apiUrl(`/api/pro-stock-technical?code=${normalized}`))
+  const normalized = normalizeRouteCode(code)
+  if (!normalized) return null
+  const res = await fetchWithAuth(apiUrl(`/api/pro-stock-technical?code=${encodeURIComponent(normalized)}`))
   if (!res.ok) return null
   return (await res.json()) as ProTechnical
 }
@@ -88,7 +97,8 @@ export async function fetchProWatchlist(): Promise<ProWatchlistItem[]> {
 }
 
 export async function addProWatchlist(code: string, note?: string): Promise<boolean> {
-  const normalized = code.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
+  const normalized = normalizeRouteCode(code)
+  if (!normalized) return false
   const res = await fetchWithAuth(apiUrl('/api/pro-watchlist'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -98,8 +108,9 @@ export async function addProWatchlist(code: string, note?: string): Promise<bool
 }
 
 export async function removeProWatchlist(code: string): Promise<boolean> {
-  const normalized = code.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
-  const res = await fetchWithAuth(apiUrl(`/api/pro-watchlist?code=${normalized}`), {
+  const normalized = normalizeRouteCode(code)
+  if (!normalized) return false
+  const res = await fetchWithAuth(apiUrl(`/api/pro-watchlist?code=${encodeURIComponent(normalized)}`), {
     method: 'DELETE',
   })
   return res.ok
@@ -110,10 +121,15 @@ export async function streamProStockAnalysis(
   summary: ProStockSummary,
   onEvent: (event: string, data: unknown) => void,
 ): Promise<void> {
+  const normalized = normalizeRouteCode(code)
+  if (!normalized) {
+    throw new Error('invalid code')
+  }
+
   const res = await fetchWithAuth(apiUrl('/api/pro-stock-analysis'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, summary }),
+    body: JSON.stringify({ code: normalized, summary }),
   })
 
   if (!res.ok || !res.body) {
