@@ -11,7 +11,7 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
-import { ArrowLeft, Briefcase, FolderPlus } from 'lucide-react'
+import { ArrowLeft, Briefcase, Check, Filter, FolderPlus } from 'lucide-react'
 import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
 import { AddHoldingModal } from '@/components/pro/AddHoldingModal'
 import { DragHoldingPreview } from '@/components/pro/DragHoldingPreview'
@@ -44,14 +44,6 @@ type HoldingRow = {
   profit: number
   profitPct: number
   weight?: number
-}
-
-type Summary = {
-  totalEval: number
-  totalCost: number
-  totalProfit: number
-  totalProfitPct: number
-  count: number
 }
 
 function changeClass(n: number): string {
@@ -102,12 +94,13 @@ export default function ProHoldingsPage() {
   const { navigate } = useAppNavigation()
   const [holdings, setHoldings] = useState<HoldingRow[]>([])
   const [groups, setGroups] = useState<ProGroup[]>([])
-  const [summary, setSummary] = useState<Summary | null>(null)
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
   const [addToGroupId, setAddToGroupId] = useState<string | null>(null)
   const [portfolioRefreshKey, setPortfolioRefreshKey] = useState(0)
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string> | null>(null)
+  const [showGroupFilter, setShowGroupFilter] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -142,9 +135,8 @@ export default function ProHoldingsPage() {
       setGroups(gs)
 
       if (hRes.ok) {
-        const d = (await hRes.json()) as { holdings?: HoldingRow[]; summary?: Summary | null }
+        const d = (await hRes.json()) as { holdings?: HoldingRow[] }
         setHoldings(d.holdings || [])
-        setSummary(d.summary ?? null)
         setPortfolioRefreshKey((k) => k + 1)
       }
     } catch (e) {
@@ -158,25 +150,97 @@ export default function ProHoldingsPage() {
     void load()
   }, [load])
 
-  const groupedSections = useMemo(
-    () =>
-      groups.map((g) => ({
-        group: g,
-        items: holdings.filter((h) => h.group_id === g.id),
-      })),
-    [groups, holdings],
+  useEffect(() => {
+    if (groups.length === 0) return
+    setSelectedGroupIds((prev) => {
+      const allIds = groups.map((g) => g.id)
+      if (prev === null) return new Set(allIds)
+      const next = new Set(prev)
+      for (const id of allIds) {
+        if (!next.has(id)) next.add(id)
+      }
+      for (const id of next) {
+        if (!allIds.includes(id)) next.delete(id)
+      }
+      return next
+    })
+  }, [groups])
+
+  const isGroupVisible = useCallback(
+    (groupId: string) => selectedGroupIds === null || selectedGroupIds.has(groupId),
+    [selectedGroupIds],
   )
 
-  const capitalSummary = useMemo(() => {
-    const totalInitialCapital = groups.reduce((s, g) => s + (Number(g.initial_capital) || 0), 0)
-    const totalCash = groups.reduce((s, g) => s + (Number(g.cash_balance) || 0), 0)
-    const totalEval = summary?.totalEval || 0
-    const totalValue = totalCash + totalEval
-    const capitalProfit = totalInitialCapital > 0 ? totalValue - totalInitialCapital : 0
-    const capitalProfitPct =
-      totalInitialCapital > 0 ? (capitalProfit / totalInitialCapital) * 100 : null
-    return { totalInitialCapital, totalCash, capitalProfit, capitalProfitPct }
-  }, [groups, summary?.totalEval])
+  const visibleGroups = useMemo(
+    () => groups.filter((g) => isGroupVisible(g.id)),
+    [groups, isGroupVisible],
+  )
+
+  const visibleHoldings = useMemo(
+    () =>
+      holdings.filter(
+        (h) => h.group_id != null && (selectedGroupIds === null || selectedGroupIds.has(h.group_id)),
+      ),
+    [holdings, selectedGroupIds],
+  )
+
+  const vSummary = useMemo(() => {
+    const evalSum = visibleHoldings.reduce((s, h) => s + (Number(h.evalAmount) || 0), 0)
+    const costSum = visibleHoldings.reduce((s, h) => s + (Number(h.costAmount) || 0), 0)
+    const profit = evalSum - costSum
+    const profitPct = costSum > 0 ? (profit / costSum) * 100 : 0
+
+    const initialCapital = visibleGroups.reduce((s, g) => s + (Number(g.initial_capital) || 0), 0)
+    const cashBalance = visibleGroups.reduce((s, g) => s + (Number(g.cash_balance) || 0), 0)
+    const totalValue = cashBalance + evalSum
+    const capitalProfit = initialCapital > 0 ? totalValue - initialCapital : 0
+    const capitalProfitPct = initialCapital > 0 ? (capitalProfit / initialCapital) * 100 : null
+
+    return {
+      totalEval: evalSum,
+      totalCost: costSum,
+      totalProfit: profit,
+      totalProfitPct: profitPct,
+      count: visibleHoldings.length,
+      initialCapital,
+      cashBalance,
+      capitalProfit,
+      capitalProfitPct,
+    }
+  }, [visibleHoldings, visibleGroups])
+
+  const capitalSummary = useMemo(
+    () => ({
+      totalInitialCapital: vSummary.initialCapital,
+      totalCash: vSummary.cashBalance,
+      capitalProfit: vSummary.capitalProfit,
+      capitalProfitPct: vSummary.capitalProfitPct,
+    }),
+    [vSummary],
+  )
+
+  const allSelected =
+    groups.length > 0 &&
+    selectedGroupIds !== null &&
+    selectedGroupIds.size === groups.length &&
+    groups.every((g) => selectedGroupIds.has(g.id))
+
+  const toggleGroup = (groupId: string) => {
+    setSelectedGroupIds((prev) => {
+      const base = prev === null ? new Set(groups.map((g) => g.id)) : new Set(prev)
+      if (base.has(groupId)) base.delete(groupId)
+      else base.add(groupId)
+      return base
+    })
+  }
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedGroupIds(new Set())
+    } else {
+      setSelectedGroupIds(new Set(groups.map((g) => g.id)))
+    }
+  }
 
   const addToGroupName = groups.find((g) => g.id === addToGroupId)?.name
 
@@ -318,7 +382,74 @@ export default function ProHoldingsPage() {
           <Briefcase size={24} className="text-amber-600" strokeWidth={1.8} aria-hidden />
           <h1 className="text-[20px] font-bold text-gray-900">내 보유종목</h1>
 
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowGroupFilter((v) => !v)}
+                className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-700 hover:border-gray-400"
+              >
+                <Filter size={14} strokeWidth={2} aria-hidden />
+                그룹 보기
+                {!allSelected && selectedGroupIds ? (
+                  <span className="text-[10px] text-blue-600">({selectedGroupIds.size})</span>
+                ) : null}
+              </button>
+
+              {showGroupFilter ? (
+                <>
+                  <button
+                    type="button"
+                    className="fixed inset-0 z-10"
+                    aria-label="그룹 필터 닫기"
+                    onClick={() => setShowGroupFilter(false)}
+                  />
+                  <div className="absolute top-full right-0 z-20 mt-1 min-w-[160px] rounded-lg border border-gray-200 bg-white py-1 shadow-lg">
+                    <button
+                      type="button"
+                      onClick={toggleAll}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-gray-50"
+                    >
+                      <div
+                        className={`flex h-4 w-4 items-center justify-center rounded border ${
+                          allSelected ? 'border-gray-900 bg-gray-900' : 'border-gray-300'
+                        }`}
+                      >
+                        {allSelected ? (
+                          <Check size={11} className="text-white" strokeWidth={3} aria-hidden />
+                        ) : null}
+                      </div>
+                      <span className="font-bold">전체</span>
+                    </button>
+                    <div className="my-1 border-t border-gray-100" />
+                    {groups.map((g) => {
+                      const checked =
+                        selectedGroupIds === null || selectedGroupIds.has(g.id)
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() => toggleGroup(g.id)}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-[13px] hover:bg-gray-50"
+                        >
+                          <div
+                            className={`flex h-4 w-4 flex-shrink-0 items-center justify-center rounded border ${
+                              checked ? 'border-gray-900 bg-gray-900' : 'border-gray-300'
+                            }`}
+                          >
+                            {checked ? (
+                              <Check size={11} className="text-white" strokeWidth={3} aria-hidden />
+                            ) : null}
+                          </div>
+                          <span className="truncate">{g.name}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
             <button
               type="button"
               onClick={() => void addGroup()}
@@ -333,8 +464,9 @@ export default function ProHoldingsPage() {
         {holdings.length > 0 ? (
           <PortfolioAnalysis
             refreshKey={portfolioRefreshKey}
-            holdingsSummary={summary}
+            holdingsSummary={vSummary}
             capitalSummary={capitalSummary}
+            filterHoldings={visibleHoldings}
           />
         ) : null}
 
@@ -343,6 +475,10 @@ export default function ProHoldingsPage() {
         ) : groups.length === 0 ? (
           <div className="rounded-2xl border border-gray-200 bg-white py-12 text-center text-[13px] text-gray-400">
             그룹을 준비하는 중…
+          </div>
+        ) : visibleGroups.length === 0 ? (
+          <div className="rounded-2xl border border-gray-200 bg-white py-12 text-center text-[13px] text-gray-400">
+            표시할 그룹을 선택해주세요
           </div>
         ) : (
           <DndContext
@@ -353,22 +489,25 @@ export default function ProHoldingsPage() {
             onDragEnd={(e) => void handleDragEnd(e)}
           >
             <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2">
-              {groupedSections.map(({ group, items }) => (
-                <HoldingsGroupDroppable
-                  key={group.id}
-                  group={group}
-                  items={items}
-                  sub={subtotal(items, group)}
-                  formatKRW={formatKRWCompact}
-                  changeClass={changeClass}
-                  onDeleteGroup={deleteGroup}
-                  onRenameGroup={renameGroup}
-                  onSetCapital={setCapital}
-                  onAddStock={() => openAddModal(group.id)}
-                  onNavigate={navigate}
-                  onDeleteHolding={handleDeleteHolding}
-                />
-              ))}
+              {visibleGroups.map((group) => {
+                const items = visibleHoldings.filter((h) => h.group_id === group.id)
+                return (
+                  <HoldingsGroupDroppable
+                    key={group.id}
+                    group={group}
+                    items={items}
+                    sub={subtotal(items, group)}
+                    formatKRW={formatKRWCompact}
+                    changeClass={changeClass}
+                    onDeleteGroup={deleteGroup}
+                    onRenameGroup={renameGroup}
+                    onSetCapital={setCapital}
+                    onAddStock={() => openAddModal(group.id)}
+                    onNavigate={navigate}
+                    onDeleteHolding={handleDeleteHolding}
+                  />
+                )
+              })}
             </div>
 
             <DragOverlay>
