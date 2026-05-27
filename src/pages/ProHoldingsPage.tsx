@@ -370,19 +370,26 @@ export default function ProHoldingsPage() {
       <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
 
       <div className={`${PRO_CONTENT_WRAP} py-4 pb-12`}>
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-2">
           <button
             type="button"
             onClick={() => navigate('/pro')}
-            className="rounded-lg p-1.5 hover:bg-gray-100"
+            className="shrink-0 rounded-lg p-1.5 hover:bg-gray-100"
             aria-label="Pro 홈"
           >
             <ArrowLeft size={20} className="text-gray-600" />
           </button>
-          <Briefcase size={24} className="text-amber-600" strokeWidth={1.8} aria-hidden />
-          <h1 className="text-[20px] font-bold text-gray-900">내 보유종목</h1>
+          <Briefcase
+            size={24}
+            className="shrink-0 text-amber-600"
+            strokeWidth={1.8}
+            aria-hidden
+          />
+          <h1 className="min-w-0 flex-1 truncate text-[20px] font-bold text-gray-900 sm:flex-none">
+            내 보유종목
+          </h1>
 
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:ml-auto sm:w-auto">
             <div className="relative">
               <button
                 type="button"
