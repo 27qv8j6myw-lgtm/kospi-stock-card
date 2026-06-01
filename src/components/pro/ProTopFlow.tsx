@@ -169,7 +169,12 @@ function StockList({ stocks, tradeType, loading, compact, onNavigate }: StockLis
   )
 }
 
-export function ProTopFlow() {
+type ProTopFlowProps = {
+  /** 변경 시 수급 TOP 데이터 재조회 (당겨서 새로고침·포커스 복귀) */
+  refreshSignal?: number
+}
+
+export function ProTopFlow({ refreshSignal = 0 }: ProTopFlowProps) {
   const { navigate } = useAppNavigation()
   const loadIdRef = useRef(0)
   const [mobileInvestor, setMobileInvestor] = useState<Investor>('foreign')
@@ -232,12 +237,10 @@ export function ProTopFlow() {
     }
 
     void loadAll()
-    const interval = setInterval(() => void loadAll(), 5 * 60 * 1000)
     return () => {
       loadIdRef.current += 1
-      clearInterval(interval)
     }
-  }, [tradeType])
+  }, [tradeType, refreshSignal])
 
   const goStock = (code: string, name: string) => {
     navigate(`/pro/stock/${code}?name=${encodeURIComponent(name)}`)
@@ -252,13 +255,17 @@ export function ProTopFlow() {
             지금 많이 사고팔리는 종목
           </span>
 
-          <span className="hidden text-[11px] tabular-nums text-gray-400 sm:inline">
+          <span className="hidden text-[11px] tabular-nums text-gray-400 md:inline">
             {formatTime(updatedAt)} 기준
           </span>
 
-          <div className="ml-auto flex items-center gap-2">
-            <span className="text-[10px] tabular-nums text-gray-400 sm:hidden">
-              {formatTime(updatedAt)}
+          <span className="ml-auto text-[10px] tabular-nums text-gray-400 md:hidden">
+            {formatTime(updatedAt)}
+          </span>
+
+          <div className="ml-auto hidden items-center gap-2 md:flex">
+            <span className="text-[11px] tabular-nums text-gray-400">
+              {formatTime(updatedAt)} 기준
             </span>
 
             <div className="flex gap-0.5 rounded-md bg-gray-100 p-0.5">
@@ -284,21 +291,44 @@ export function ProTopFlow() {
           </div>
         </div>
 
-        <div className="mt-3 flex gap-1 md:hidden">
-          {INVESTORS.map((inv) => (
+        <div className="mt-3 flex items-center gap-2 md:hidden">
+          <div className="flex min-w-0 flex-1 gap-1">
+            {INVESTORS.map((inv) => (
+              <button
+                key={inv}
+                type="button"
+                onClick={() => setMobileInvestor(inv)}
+                className={`rounded px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                  mobileInvestor === inv
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-gray-100 text-gray-500'
+                }`}
+              >
+                {INVESTOR_META[inv].label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-shrink-0 gap-0.5 rounded bg-gray-100 p-0.5">
             <button
-              key={inv}
               type="button"
-              onClick={() => setMobileInvestor(inv)}
-              className={`rounded-md px-3 py-1.5 text-[12px] font-bold transition-colors ${
-                mobileInvestor === inv
-                  ? 'bg-gray-900 text-white'
-                  : 'border border-gray-200 bg-white text-gray-500'
+              onClick={() => setTradeType('buy')}
+              className={`rounded px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                tradeType === 'buy' ? 'bg-white text-red-600 shadow-sm' : 'text-gray-400'
               }`}
             >
-              {INVESTOR_META[inv].label}
+              순매수
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={() => setTradeType('sell')}
+              className={`rounded px-2 py-0.5 text-[10px] font-bold transition-colors ${
+                tradeType === 'sell' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-400'
+              }`}
+            >
+              순매도
+            </button>
+          </div>
         </div>
       </div>
 

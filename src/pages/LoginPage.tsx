@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { LoginSectorIconGrid } from '@/components/LoginSectorIconGrid'
 import { useAuth } from '@/hooks/useAuth'
 import { Loader2 } from 'lucide-react'
 
@@ -19,7 +20,11 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-svh items-center justify-center bg-white p-6">
+    <div className="flex min-h-svh flex-col items-center justify-center gap-8 bg-white p-6">
+      <div className="flex flex-col items-center text-center">
+        <LoginSectorIconGrid />
+        <h1 className="mt-5 text-2xl font-bold tracking-[0.14em] text-gray-900">SignAI</h1>
+      </div>
       <button
         type="button"
         onClick={handleSignIn}

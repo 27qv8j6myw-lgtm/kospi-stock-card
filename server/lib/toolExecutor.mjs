@@ -19,6 +19,8 @@ import {
   searchNewsForPro,
 } from './proResearchTools.mjs'
 import { registerStockMaster } from './stockMasterKisLookup.mjs'
+import { resolveStockName } from './resolveStockName.mjs'
+import { pickStockDisplayName } from './stockDisplayName.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -48,6 +50,17 @@ function clampInt(v, fallback, min, max) {
   const n = Number(v)
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, Math.round(n)))
+}
+
+/**
+ * @param {string} code6
+ * @param {...(string|null|undefined)} candidates
+ */
+async function resolveDisplayName(code6, ...candidates) {
+  const code = normalizeCode(code6)
+  if (!code) return ''
+  const fromMaster = await resolveStockName(code)
+  return pickStockDisplayName(code, ...candidates, fromMaster)
 }
 
 /**
@@ -142,11 +155,12 @@ export async function executeTool(toolName, input, userId) {
 
       case 'getStockQuote': {
         const q = await getKisQuote(String(input?.code ?? ''))
-        if (q.name && q.name !== q.code) {
+        const displayName = await resolveDisplayName(q.code, q.name)
+        if (displayName && displayName !== q.code) {
           void registerStockMaster(
             {
               code: q.code,
-              name: q.name,
+              name: displayName,
               market: q.market || 'KOSPI',
               sector: q.sector || '—',
             },
@@ -155,7 +169,7 @@ export async function executeTool(toolName, input, userId) {
         }
         return {
           code: q.code,
-          name: q.name,
+          name: displayName,
           market: q.market,
           sector: q.sector,
           currentPrice: q.currentPrice,
@@ -179,11 +193,14 @@ export async function executeTool(toolName, input, userId) {
         const code = normalizeCode(String(input?.code ?? ''))
         const week52 = await getKis52Week(code)
         const quote = await getKisQuote(code)
+        const displayName = await resolveDisplayName(code, quote.name)
         const pctFromHigh =
           week52.high52w > 0
             ? Number((((quote.currentPrice - week52.high52w) / week52.high52w) * 100).toFixed(1))
             : null
         return {
+          code,
+          name: displayName,
           high52w: week52.high52w,
           low52w: week52.low52w,
           currentPrice: quote.currentPrice,
@@ -215,9 +232,11 @@ export async function executeTool(toolName, input, userId) {
         }
 
         const usedDays = rows.length || days
+        const displayName = await resolveDisplayName(code)
 
         return {
           code,
+          name: displayName,
           days: usedDays,
           foreign: {
             cumulativeNet: foreignNetAmount,
@@ -235,9 +254,10 @@ export async function executeTool(toolName, input, userId) {
 
       case 'getValuation': {
         const q = await getKisQuote(String(input?.code ?? ''))
+        const displayName = await resolveDisplayName(q.code, q.name)
         return {
           code: q.code,
-          name: q.name,
+          name: displayName,
           per: q.per,
           pbr: q.pbr,
           eps: q.eps,
@@ -263,9 +283,11 @@ export async function executeTool(toolName, input, userId) {
           first > 0 ? Number((((last - first) / first) * 100).toFixed(2)) : null
 
         const recentDesc = bars.slice(-5).reverse()
+        const displayName = await resolveDisplayName(code)
 
         return {
           code,
+          name: displayName,
           days: bars.length,
           summary: {
             startPrice: first,

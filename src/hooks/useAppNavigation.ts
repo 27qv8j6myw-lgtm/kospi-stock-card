@@ -1,32 +1,60 @@
 import { useCallback, useSyncExternalStore } from 'react'
-import { saveProDeepLink } from '@/lib/proDeepLink'
+import { clearProDeepLink, saveProDeepLink } from '@/lib/proDeepLink'
 
 const DEFAULT_HOME_PATH = '/'
 const DEFAULT_STOCK_PATH = '/stocks/000660'
 
+/**
+ * @param {string} raw - pathname only (no ?query or #hash)
+ */
 function normalizePathname(raw: string): string {
-  if (raw === '/design-test' || raw.startsWith('/design-test/')) return raw
-  if (raw === '/compare' || raw.startsWith('/compare/')) return raw
-  if (raw === '/portfolio' || raw.startsWith('/portfolio/')) return DEFAULT_STOCK_PATH
-  if (raw === '/admin' || raw.startsWith('/admin/')) return raw
-  if (raw === '/pro/chat') return '/pro/chat'
-  const proChatId = raw.match(/^\/pro\/chat\/([0-9a-f-]{36})\/?$/i)
+  const pathOnly = raw.split('?')[0].split('#')[0] || '/'
+  if (pathOnly === '/design-test' || pathOnly.startsWith('/design-test/')) return pathOnly
+  if (pathOnly === '/compare' || pathOnly.startsWith('/compare/')) return pathOnly
+  if (pathOnly === '/portfolio' || pathOnly.startsWith('/portfolio/')) return DEFAULT_STOCK_PATH
+  if (pathOnly === '/admin' || pathOnly.startsWith('/admin/')) return pathOnly
+  if (pathOnly === '/pro/chat') return '/pro/chat'
+  const proChatId = pathOnly.match(/^\/pro\/chat\/([0-9a-f-]{36})\/?$/i)
   if (proChatId) return `/pro/chat/${proChatId[1]}`
-  const proStock = raw.match(/^\/pro\/stock\/([0-9A-Za-z]{6})\/?$/i)
+  const proStock = pathOnly.match(/^\/pro\/stock\/([0-9A-Za-z]{6})\/?$/i)
   if (proStock) return `/pro/stock/${proStock[1].toUpperCase()}`
-  const proHolding = raw.match(
+  const proHolding = pathOnly.match(
     /^\/pro\/holdings\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
   )
   if (proHolding) return `/pro/holdings/${proHolding[1]}`
-  if (raw === '/pro/holdings' || raw === '/pro/holdings/') return '/pro/holdings'
-  if (raw === '/pro') return '/pro'
-  if (raw === '/' || raw === '') return DEFAULT_HOME_PATH
-  if (raw === '/stocks' || raw === '/stocks/') return DEFAULT_STOCK_PATH
-  if (raw.startsWith('/stocks/')) {
-    const ok = /^\/stocks\/\d{6}\/?$/.test(raw)
+  if (pathOnly === '/pro/holdings' || pathOnly === '/pro/holdings/') return '/pro/holdings'
+  if (pathOnly === '/pro') return '/pro'
+  if (pathOnly === '/' || pathOnly === '') return DEFAULT_HOME_PATH
+  if (pathOnly === '/stocks' || pathOnly === '/stocks/') return DEFAULT_STOCK_PATH
+  if (pathOnly.startsWith('/stocks/')) {
+    const ok = /^\/stocks\/\d{6}\/?$/.test(pathOnly)
     if (!ok) return DEFAULT_STOCK_PATH
   }
-  return raw
+  return pathOnly
+}
+
+/**
+ * @param {string} to
+ * @returns {{ pathname: string, href: string }}
+ */
+function parseRouteTo(to: string): { pathname: string; href: string } {
+  if (typeof window === 'undefined') {
+    const pathname = normalizePathname(to)
+    return { pathname, href: pathname }
+  }
+  try {
+    const url = new URL(to, window.location.origin)
+    const pathname = normalizePathname(url.pathname)
+    return { pathname, href: `${pathname}${url.search}${url.hash}` }
+  } catch {
+    const pathname = normalizePathname(to)
+    return { pathname, href: pathname }
+  }
+}
+
+function currentBrowserHref(): string {
+  if (typeof window === 'undefined') return '/'
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`
 }
 
 /** App·HomePage 등 여러 컴포넌트가 같은 훅을 쓸 때 pathname 이 분리되지 않도록 단일 스토어 */
@@ -60,6 +88,9 @@ function onPopState() {
   if (next !== raw) {
     window.history.replaceState({}, '', next)
   }
+  if (next === '/pro') {
+    clearProDeepLink()
+  }
   currentPathname = next
   emit()
 }
@@ -91,27 +122,31 @@ export function useAppNavigation() {
 
   const navigate = useCallback((to: string) => {
     if (typeof window === 'undefined') return
-    const next = normalizePathname(to)
-    console.log('[navigate] 이동:', next)
-    console.trace('[navigate] 호출 위치')
-    if (next === window.location.pathname) {
-      currentPathname = next
-      emit()
-      window.dispatchEvent(new PopStateEvent('popstate'))
+    const { pathname: next, href } = parseRouteTo(to)
+    if (next === '/pro') {
+      clearProDeepLink()
+    }
+    if (href === currentBrowserHref()) {
+      if (currentPathname !== next) {
+        currentPathname = next
+        emit()
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' })
-      console.log('[navigate] 완료. 현재 URL:', window.location.pathname)
       return
     }
-    window.history.pushState({}, '', next)
-    window.dispatchEvent(new PopStateEvent('popstate'))
-    console.log('[navigate] 완료. 현재 URL:', window.location.pathname)
+    window.history.pushState({}, '', href)
+    currentPathname = next
+    emit()
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
 
   const replace = useCallback((to: string) => {
     if (typeof window === 'undefined') return
-    const next = normalizePathname(to)
-    window.history.replaceState({}, '', next)
+    const { pathname: next, href } = parseRouteTo(to)
+    if (next === '/pro') {
+      clearProDeepLink()
+    }
+    window.history.replaceState({}, '', href)
     currentPathname = next
     emit()
   }, [])

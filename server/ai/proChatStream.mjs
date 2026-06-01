@@ -1,10 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { STOCK_TOOLS } from '../lib/aiTools.mjs'
+import { logActivity } from '../lib/activityLogger.mjs'
+import { logChatStockViewFromTool } from '../lib/chatStockActivity.mjs'
 import { executeTool } from '../lib/toolExecutor.mjs'
+import { createAnthropicStream } from '../lib/anthropicTimed.mjs'
+import { logApiUsage, mergeUsage } from '../lib/usageLogger.mjs'
 import { buildEnhancedSystemPrompt, compressHistory } from './proChatPrompt.mjs'
 import { generateConversationTitle } from './proChatPrompt.mjs'
 
-const PRO_CHAT_MODEL = 'claude-opus-4-7'
+const PRO_CHAT_MODEL = 'claude-opus-4-8'
 const MAX_STREAM_ITERATIONS = 8
 const STREAM_MAX_TOKENS = 16000
 
@@ -19,9 +23,17 @@ const STREAM_MAX_TOKENS = 16000
  *   message: string,
  *   userId: string,
  *   send: ProStreamSend,
+ *   isRetry?: boolean,
  * }} opts
  */
-export async function runProChatStream({ supabaseService, conversationId, message, userId, send }) {
+export async function runProChatStream({
+  supabaseService,
+  conversationId,
+  message,
+  userId,
+  send,
+  isRetry = false,
+}) {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
   if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY 가 설정되지 않았습니다')
@@ -42,11 +54,14 @@ export async function runProChatStream({ supabaseService, conversationId, messag
     throw new Error('권한 없음')
   }
 
-  await supabaseService.from('pro_messages').insert({
-    conversation_id: conversationId,
-    role: 'user',
-    content: message,
-  })
+  if (!isRetry) {
+    await supabaseService.from('pro_messages').insert({
+      conversation_id: conversationId,
+      role: 'user',
+      content: message,
+    })
+    void logActivity(userId, 'chat', { conversationId }, true)
+  }
 
   const { data: history } = await supabaseService
     .from('pro_messages')
@@ -67,11 +82,15 @@ export async function runProChatStream({ supabaseService, conversationId, messag
   let fullText = ''
   const allToolCalls = []
   let iteration = 0
+  /** @type {Set<string>} */
+  const loggedChatStockCodes = new Set()
+  /** @type {{ input_tokens?: number, output_tokens?: number } | null} */
+  let totalUsage = null
 
   while (iteration < MAX_STREAM_ITERATIONS) {
     iteration += 1
 
-    const stream = client.messages.stream({
+    const stream = await createAnthropicStream(client, {
       model: PRO_CHAT_MODEL,
       max_tokens: STREAM_MAX_TOKENS,
       system: systemPrompt,
@@ -134,6 +153,10 @@ export async function runProChatStream({ supabaseService, conversationId, messag
 
     const final = await stream.finalMessage()
 
+    if (final.usage) {
+      totalUsage = mergeUsage(totalUsage, final.usage)
+    }
+
     if (toolUseBlocks.length === 0) {
       if (final.stop_reason === 'max_tokens') {
         const tail = '\n\n---\n*응답이 길어 여기서 잘렸을 수 있습니다. 「이어서」라고 입력하시면 이어서 작성합니다.*'
@@ -149,7 +172,12 @@ export async function runProChatStream({ supabaseService, conversationId, messag
     const toolResults = []
     for (const toolUse of toolUseBlocks) {
       send('tool_executing', { name: toolUse.name, input: toolUse.input })
-      const result = await executeTool(toolUse.name, toolUse.input, userId)
+      const toolInput =
+        toolUse.input && typeof toolUse.input === 'object' && !Array.isArray(toolUse.input)
+          ? /** @type {Record<string, unknown>} */ (toolUse.input)
+          : {}
+      logChatStockViewFromTool(userId, toolUse.name, toolInput, loggedChatStockCodes)
+      const result = await executeTool(toolUse.name, toolInput, userId)
       allToolCalls.push({ name: toolUse.name, input: toolUse.input, result })
       send('tool_result', { name: toolUse.name, result })
       toolResults.push({
@@ -160,6 +188,10 @@ export async function runProChatStream({ supabaseService, conversationId, messag
     }
 
     conversationMessages.push({ role: 'user', content: toolResults })
+  }
+
+  if (totalUsage) {
+    void logApiUsage(userId, 'chat-stream', PRO_CHAT_MODEL, totalUsage).catch(() => {})
   }
 
   if (!fullText.trim()) {

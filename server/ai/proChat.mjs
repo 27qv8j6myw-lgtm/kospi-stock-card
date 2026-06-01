@@ -41,5 +41,7 @@ export async function runProChat(messages, userId, supabaseService = null) {
     maxIterations: MAX_ITERATIONS,
     maxTokens: 4000,
     timeoutMs: PRO_CHAT_TIMEOUT_MS,
+    usageLog: userId ? { userId, endpoint: 'chat' } : undefined,
+    logChatStockViews: Boolean(userId),
   })
 }

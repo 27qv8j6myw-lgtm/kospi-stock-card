@@ -6,7 +6,7 @@ import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
 const CACHE_TTL_MS = 60 * 60 * 1000
 const cache = new Map()
 
-const DEFAULT_MODEL = 'claude-opus-4-7'
+const DEFAULT_MODEL = 'claude-opus-4-8'
 
 /** @returns {string} 실제 호출에 쓰는 Anthropic 모델 ID (환경 변수 기본) */
 export function scenarioAiModel() {

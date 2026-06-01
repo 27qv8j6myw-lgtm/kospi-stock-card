@@ -93,10 +93,10 @@ export function MarketIndicesStrip({ className, variant = 'pill' }: MarketIndice
 
   if (variant === 'pro') {
     return (
-      <div className={outerClass}>
-        <div className="overflow-hidden border-b border-gray-200 bg-white">
-          <div className="md:hidden overflow-hidden">
-            <div className="ticker-mobile-scroll flex items-center gap-6 whitespace-nowrap px-3 py-2">
+      <div className={`${outerClass} min-w-0 max-w-full`}>
+        <div className="w-full min-w-0 max-w-full overflow-x-clip border-b border-gray-200 bg-white">
+          <div className="ticker-pro-track md:hidden">
+            <div className="ticker-mobile-scroll flex items-center gap-6 whitespace-nowrap px-3 py-1.5">
               {indices.map((idx) => (
                 <IndexItem key={idx.key} idx={idx} compact />
               ))}
@@ -107,7 +107,7 @@ export function MarketIndicesStrip({ className, variant = 'pill' }: MarketIndice
               ))}
             </div>
           </div>
-          <div className="mx-auto hidden max-w-[1200px] items-center justify-between gap-4 px-4 py-2 md:flex">
+          <div className="mx-auto hidden w-full min-w-0 max-w-[1200px] items-center justify-between gap-4 px-4 py-1.5 md:flex">
             {indices.map((idx) => (
               <IndexItem key={idx.key} idx={idx} compact />
             ))}

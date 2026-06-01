@@ -1,12 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { createAnthropicStream } from '../lib/anthropicTimed.mjs'
+import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
+import { getSupabaseService } from '../lib/supabaseService.mjs'
+import { logApiUsage } from '../lib/usageLogger.mjs'
 
-const PRO_STOCK_MODEL = 'claude-opus-4-7'
+const PRO_STOCK_MODEL = 'claude-opus-4-8'
 
 /**
  * @param {Record<string, unknown>} summary
  * @param {string} code
+ * @param {string} [profileContext]
  */
-function buildAnalysisPrompt(summary, code) {
+function buildAnalysisPrompt(summary, code, profileContext = '') {
   const name = summary?.name ?? code
   const quote = /** @type {Record<string, unknown> | undefined} */ (summary?.quote)
   const news = Array.isArray(summary?.news) ? summary.news : []
@@ -24,7 +29,7 @@ function buildAnalysisPrompt(summary, code) {
   const market = quote?.market ?? '—'
   const sector = quote?.sector ?? '—'
 
-  return `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다. 아래 데이터만 근거로 종합 분석을 작성하세요. 특정 개인·고정 매매 룰·보유 종목을 가정하지 마세요.
+  return `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다. 아래 데이터만 근거로 종합 분석을 작성하세요. 특정 개인·고정 매매 룰·보유 종목을 가정하지 마세요.${profileContext}
 
 [종목] ${name} (${code})
 [시장] ${market}
@@ -70,7 +75,7 @@ ${
 ## [리스크] 주의 사항 2~3개
 
 [작성 규칙]
-- 정중한 존댓말, 이모지 금지
+- 정중한 존댓말, 이모지 금지 (단, 투자 프로필이 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외)
 - 가격·금액 범위: 하이픈(-) 대신 물결표(~) 사용
   예: "230,000~250,000원" (X "230,000-250,000원")
 - 기간 범위도 동일: "1~3개월" (X "1-3개월")
@@ -85,18 +90,28 @@ ${
 }
 
 /**
- * @param {{ summary: Record<string, unknown>, code: string, send: (event: string, data: unknown) => void }} opts
+ * @param {{ summary: Record<string, unknown>, code: string, userId?: string, send: (event: string, data: unknown) => void }} opts
  */
-export async function runProStockAnalysisStream({ summary, code, send }) {
+export async function runProStockAnalysisStream({ summary, code, userId, send }) {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
   if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY 가 설정되지 않았습니다')
   }
 
   const client = new Anthropic({ apiKey })
-  const prompt = buildAnalysisPrompt(summary, code)
 
-  const stream = await client.messages.stream({
+  let profileContext = ''
+  if (userId) {
+    const supabaseService = getSupabaseService()
+    if (supabaseService) {
+      const profile = await fetchProUserProfile(supabaseService, userId)
+      profileContext = buildProfileContextPrompt(profile)
+    }
+  }
+
+  const prompt = buildAnalysisPrompt(summary, code, profileContext)
+
+  const stream = await createAnthropicStream(client, {
     model: PRO_STOCK_MODEL,
     max_tokens: 4000,
     messages: [{ role: 'user', content: prompt }],
@@ -106,6 +121,11 @@ export async function runProStockAnalysisStream({ summary, code, send }) {
     if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
       send('text', { delta: event.delta.text })
     }
+  }
+
+  const final = await stream.finalMessage()
+  if (userId && final.usage) {
+    await logApiUsage(userId, 'stock-analysis', PRO_STOCK_MODEL, final.usage)
   }
 
   send('done', {})

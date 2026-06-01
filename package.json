@@ -16,7 +16,10 @@
     "build:stocks": "node scripts/build-kr-stocks.mjs",
     "fetch-stocks": "node scripts/fetch-dart-stocks.mjs",
     "seed:stocks-master": "node server/scripts/seedStocksMaster.mjs",
-    "sync:stocks-master": "node server/scripts/syncStocksMasterDart.mjs"
+    "sync:stocks-master": "node server/scripts/syncStocksMasterDart.mjs",
+    "generate:pwa-icons": "node scripts/generate-pwa-icons.mjs",
+    "refresh:stock-market": "node server/scripts/refreshStockMarket.mjs",
+    "refresh:stock-market:remote": "node server/scripts/refreshStockMarketRemote.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
@@ -34,6 +37,7 @@
     "next": "^15.5.18",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-is": "^19.2.6",
     "react-markdown": "^10.1.0",
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
@@ -58,11 +62,13 @@
     "globals": "^17.5.0",
     "hangul-romanization": "^1.0.1",
     "iconv-lite": "^0.7.2",
+    "sharp": "^0.34.5",
     "tailwindcss": "^4.2.4",
     "tsx": "^4.21.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.2",
     "vite": "^8.0.10",
+    "vite-plugin-pwa": "^1.3.0",
     "vitest": "^3.2.4",
     "wait-on": "^9.0.5"
   }

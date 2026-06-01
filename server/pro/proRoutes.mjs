@@ -1,11 +1,15 @@
+import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
 import { runProChat } from '../ai/proChat.mjs'
+import { logActivity } from '../lib/activityLogger.mjs'
 import { generateConversationTitle } from '../ai/proChatPrompt.mjs'
 import { runProChatStream } from '../ai/proChatStream.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
 import { fetchProTopFlow } from '../lib/proTopFlow.mjs'
 import { registerAdminProRoutes } from './adminProRoutes.mjs'
 import { registerProHoldingsRoutes } from './proHoldingsRoutes.mjs'
+import { registerProProfileRoutes } from './proProfileRoutes.mjs'
 import { registerProStockRoutes } from './proStockRoutes.mjs'
+import { registerProTrendsRoute } from './proTrends.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -248,13 +252,15 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
 
       await supabaseService.from('pro_conversations').update(updatePayload).eq('id', conversationId)
 
+      void logActivity(userId, 'chat', { conversationId }, true)
+
       res.json({
         text: finalText,
         toolCalls: allToolCalls,
         title: newTitle,
       })
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e)
+      const errMsg = mapAnthropicErrorForClient(e)
       console.error('[Pro Chat]', e)
       if (/ANTHROPIC_API_KEY|API_KEY/i.test(errMsg)) {
         res.status(503).json({ error: errMsg })
@@ -262,6 +268,10 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
       }
       if (/시간 초과|timeout/i.test(errMsg)) {
         res.status(504).json({ error: errMsg })
+        return
+      }
+      if (/혼잡/.test(errMsg)) {
+        res.status(503).json({ error: errMsg })
         return
       }
       res.status(500).json({ error: errMsg })
@@ -280,6 +290,7 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
 
     const conversationId = String(req.body?.conversationId ?? '').trim()
     const message = String(req.body?.message ?? '').trim()
+    const isRetry = req.body?.isRetry === true
 
     if (!conversationId || !UUID_RE.test(conversationId)) {
       res.status(400).json({ error: 'conversationId 필요' })
@@ -318,10 +329,11 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
         message,
         userId,
         send,
+        isRetry,
       })
       res.end()
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e)
+      const errMsg = mapAnthropicErrorForClient(e)
       console.error('[Pro Stream]', e)
       send('error', { message: errMsg })
       res.end()
@@ -369,7 +381,10 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
 
   app.get('/api/pro-top-flow', handleProTopFlow)
 
+  registerProTrendsRoute(app, { getSupabaseService, getUserIdFromRequest, requireProUser })
+
   registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerProProfileRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerProStockRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerAdminProRoutes(app, { getSupabaseService, getUserIdFromRequest })
 }

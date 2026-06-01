@@ -1,4 +1,6 @@
 import { runHoldingOpusDiagnosis } from '../ai/proHoldingOpus.mjs'
+import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
+import { logActivity } from '../lib/activityLogger.mjs'
 import { summarizeProNewsHeadlines } from '../ai/proNewsSummary.mjs'
 import { runProStockAnalysisStream } from '../ai/proStockAnalysis.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
@@ -121,7 +123,10 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
 
       let newsSummary = null
       if (newsList.length >= 3) {
-        newsSummary = await summarizeProNewsHeadlines(stockName, newsList)
+        newsSummary = await summarizeProNewsHeadlines(stockName, newsList, {
+          userId,
+          code,
+        })
       }
 
       const avgVolume20d = await calcAvgVolume20d(code)
@@ -146,19 +151,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
 
       const extras = await getProStockSummaryExtras(code, enrichedQuote)
 
-      void supabaseService
-        .from('activity_logs')
-        .insert({
-          user_id: userId,
-          action: 'view_stock',
-          metadata: { code, name: stockName },
-          is_pro: true,
-        })
-        .then(() => console.log(`[Pro Log] ${userId.slice(0, 8)} viewed ${code}`))
-        .catch((e) => {
-          const msg = e instanceof Error ? e.message : String(e)
-          console.warn('[Pro Log 실패]', msg)
-        })
+      void logActivity(userId, 'view_stock', { code, name: stockName, source: 'card' }, true)
 
       res.json({
         code,
@@ -214,10 +207,10 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     }
 
     try {
-      await runProStockAnalysisStream({ summary, code, send })
+      await runProStockAnalysisStream({ summary, code, userId, send })
       res.end()
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e)
+      const message = mapAnthropicErrorForClient(e)
       console.error('[Pro Stock Analysis]', e)
       send('error', { message })
       res.end()
@@ -441,11 +434,21 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
 
     try {
       const payload = await runHoldingOpusDiagnosis(req, userId, holdingId)
+      void logActivity(
+        userId,
+        'diagnosis',
+        { type: 'holding', holdingId, code: payload.code },
+        true,
+      )
       res.json(payload)
     } catch (e) {
       const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500
-      const message = e instanceof Error ? e.message : String(e)
-      console.error('[Holding OPUS]', message)
+      const message = mapAnthropicErrorForClient(e)
+      console.error('[Holding OPUS]', e)
+      if (/혼잡/.test(message)) {
+        res.status(503).json({ error: message })
+        return
+      }
       res.status(status >= 400 && status < 600 ? status : 500).json({ error: message })
     }
   }

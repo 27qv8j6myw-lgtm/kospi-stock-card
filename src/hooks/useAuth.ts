@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { supabase } from '@/lib/supabase'
-import { logActivity } from '@/lib/activityLog'
 
 export type UseAuthResult = {
   user: User | null
@@ -56,10 +55,6 @@ export function useAuth(): UseAuthResult {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, session) => {
       console.log('[useAuth] event:', event, session ? `user=${session.user.email}` : 'no session')
-
-      if (event === 'SIGNED_IN' && session?.user) {
-        void logActivity('login', { email: session.user.email })
-      }
 
       if (!cancelled) {
         setUser(session?.user ?? null)

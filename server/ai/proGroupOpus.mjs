@@ -91,6 +91,7 @@ ${summaryLines.join('\n')}
     maxTokens: 2000,
     timeoutMs: Number(process.env.PRO_GROUP_OPUS_TIMEOUT_MS) || 150_000,
     emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
+    usageLog: { userId, endpoint: 'group-diagnosis' },
   })
 
   return {

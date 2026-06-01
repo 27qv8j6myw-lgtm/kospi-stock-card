@@ -1,9 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
+import { supabase } from '@/lib/supabase'
 
 type SyncResult = {
   success: boolean
@@ -14,13 +15,27 @@ type StockRow = { code: string; name: string; corp_code?: string }
 
 const BATCH_SIZE = 500
 
-export function StocksMasterSync() {
+const SYNC_TITLE = '사전 빌드 종목 파일 → DB 반영 (약 2,500개, 30초)'
+
+function useStocksMasterSync() {
   const [syncing, setSyncing] = useState(false)
   const [phase, setPhase] = useState<'fetch' | 'batch' | null>(null)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [result, setResult] = useState<SyncResult | null>(null)
+  const [stockCount, setStockCount] = useState<number | null>(null)
 
-  const sync = async () => {
+  const loadStockCount = useCallback(async () => {
+    const { count, error } = await supabase
+      .from('stocks_master')
+      .select('*', { count: 'exact', head: true })
+    if (!error && count != null) setStockCount(count)
+  }, [])
+
+  useEffect(() => {
+    void loadStockCount()
+  }, [loadStockCount])
+
+  const sync = useCallback(async () => {
     if (
       !confirm(
         '사전 빌드 종목 파일을 stocks_master에 반영합니다 (약 30초).\n계속할까요?',
@@ -77,6 +92,7 @@ export function StocksMasterSync() {
         success: batchErrors.length === 0,
         message: `${inserted.toLocaleString()}/${total.toLocaleString()}개 동기화 완료${errNote}`,
       })
+      await loadStockCount()
     } catch (e) {
       setResult({
         success: false,
@@ -86,27 +102,34 @@ export function StocksMasterSync() {
       setSyncing(false)
       setPhase(null)
     }
-  }
+  }, [loadStockCount])
 
-  const pct =
-    progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0
+  const buttonLabel =
+    syncing && phase === 'fetch'
+      ? '로딩…'
+      : syncing && phase === 'batch' && progress.total > 0
+        ? `${progress.done.toLocaleString()}/${progress.total.toLocaleString()}`
+        : syncing
+          ? '동기화 중...'
+          : `종목 동기화${stockCount != null ? ` (${stockCount.toLocaleString()})` : ''}`
+
+  return { syncing, sync, result, buttonLabel }
+}
+
+/** 관리자 페이지 헤더 — 제목 옆 동기화 버튼 */
+export function AdminDashboardHeader() {
+  const { syncing, sync, result, buttonLabel } = useStocksMasterSync()
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-white p-5">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-[14px] font-bold text-gray-900">종목 마스터 동기화</h2>
-          <p className="mt-1 text-[11px] text-gray-500">
-            사전 빌드 종목 파일 → DB 반영 (약 2,500개, 30초). 데이터 갱신은{' '}
-            <code className="text-[10px]">npm run fetch-stocks</code> 후 배포.
-          </p>
-        </div>
-
+    <div className="mb-4">
+      <div className="mb-1 flex flex-wrap items-center gap-3">
+        <h1 className="text-[22px] font-bold text-gray-900">관리자 대시보드</h1>
         <button
           type="button"
           onClick={() => void sync()}
           disabled={syncing}
-          className="flex items-center gap-1.5 rounded-lg bg-gray-900 px-4 py-2 text-[12px] font-bold text-white hover:bg-gray-800 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-gray-900 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-gray-800 disabled:opacity-50"
+          title={SYNC_TITLE}
         >
           <RefreshCw
             size={13}
@@ -114,43 +137,19 @@ export function StocksMasterSync() {
             className={syncing ? 'animate-spin' : ''}
             aria-hidden
           />
-          <span>
-            {syncing
-              ? phase === 'fetch'
-                ? '종목 파일 로딩…'
-                : '등록 중…'
-              : '동기화'}
-          </span>
+          {buttonLabel}
         </button>
       </div>
-
-      {syncing && phase === 'batch' && progress.total > 0 ? (
-        <div className="mb-3">
-          <div className="mb-1 flex justify-between text-[10px] text-gray-500">
-            <span>
-              {progress.done.toLocaleString()} / {progress.total.toLocaleString()}
-            </span>
-            <span>{pct}%</span>
-          </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-gray-200">
-            <div
-              className="h-full bg-gray-900 transition-all"
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-        </div>
-      ) : null}
-
+      <p className="text-[12px] text-gray-500">
+        집계는 user_summary 기준입니다. 보유 평단·수량·평가금은 조회하지 않습니다.
+      </p>
       {result ? (
-        <div
-          className={`rounded-lg border p-3 text-[12px] ${
-            result.success
-              ? 'border-green-200 bg-green-50 text-green-800'
-              : 'border-red-200 bg-red-50 text-red-800'
-          }`}
+        <p
+          className={`mt-2 text-[12px] ${result.success ? 'text-green-700' : 'text-red-700'}`}
+          role="status"
         >
           {result.message}
-        </div>
+        </p>
       ) : null}
     </div>
   )

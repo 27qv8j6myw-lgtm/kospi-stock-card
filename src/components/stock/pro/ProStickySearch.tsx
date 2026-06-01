@@ -1,16 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
-import { MessageCircle, Search, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Search, X } from 'lucide-react'
+import { ProSearchBarActions } from '@/components/pro/ProSearchBarActions'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { proDesign } from '@/lib/proStockDesign'
-import { proSearchInputProps } from '@/lib/proSearchInputProps'
-
-type SearchRow = { code: string; name: string }
+import { proSearchInputProps, useProStockSearchPlaceholder } from '@/lib/proSearchInputProps'
+import {
+  fetchStockSearch,
+  parseStockSearchRows,
+  pickStockSearchTarget,
+  type ProStockSearchRow,
+} from '@/lib/proStockSearch'
 
 export function ProStickySearch({ currentCode }: { currentCode: string }) {
+  const searchPlaceholder = useProStockSearchPlaceholder('sticky')
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchRow[]>([])
+  const [results, setResults] = useState<ProStockSearchRow[]>([])
   const [showResults, setShowResults] = useState(false)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const { navigate } = useAppNavigation()
@@ -26,14 +32,7 @@ export function ProStickySearch({ currentCode }: { currentCode: string }) {
     debounceRef.current = setTimeout(() => {
       void authFetch(apiUrl(`/api/stocks-search?q=${encodeURIComponent(trimmed)}`))
         .then((r) => (r.ok ? r.json() : { results: [] }))
-        .then((d: { results?: SearchRow[]; items?: SearchRow[] }) => {
-          const rows = Array.isArray(d.results)
-            ? d.results
-            : Array.isArray(d.items)
-              ? d.items
-              : []
-          setResults(rows)
-        })
+        .then((d) => setResults(parseStockSearchRows(d)))
         .catch(() => setResults([]))
     }, 200)
 
@@ -42,10 +41,38 @@ export function ProStickySearch({ currentCode }: { currentCode: string }) {
     }
   }, [query])
 
+  const handleSearch = useCallback(async () => {
+    const trimmed = query.trim()
+    if (!trimmed) return
+
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+
+    setShowResults(true)
+    const rows = await fetchStockSearch(trimmed)
+    setResults(rows)
+
+    const target = pickStockSearchTarget(rows, trimmed)
+    if (target) {
+      navigate(`/pro/stock/${target.code}?name=${encodeURIComponent(target.name)}`)
+      setQuery('')
+      setResults([])
+      setShowResults(false)
+    }
+  }, [query, navigate])
+
   return (
-    <div className={proDesign.stickyBar}>
-      <div className={`${proDesign.contentWrap} flex items-center gap-2 py-3`}>
-        <div className="relative min-w-0 flex-1">
+    <div className={proDesign.proSearchBar}>
+      <div className={`${proDesign.contentWrap} flex items-center gap-2 py-2 sm:py-2.5`}>
+        <form
+          className="relative min-w-0 flex-1"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void handleSearch()
+          }}
+        >
           <Search
             size={14}
             className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
@@ -59,8 +86,8 @@ export function ProStickySearch({ currentCode }: { currentCode: string }) {
             }}
             onFocus={() => setShowResults(true)}
             onBlur={() => setTimeout(() => setShowResults(false), 200)}
-            placeholder="종목 검색 (예: 산일전기, 062040)"
-            className="pro-search-input w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-9 text-left text-[13px] text-gray-900 focus:border-amber-500 focus:bg-white focus:outline-none"
+            placeholder={searchPlaceholder}
+            className="pro-search-input w-full rounded-xl border border-gray-200 bg-gray-50 py-2.5 pl-9 pr-9 text-left text-base text-gray-900 focus:border-amber-500 focus:bg-white focus:outline-none md:text-[13px]"
           />
           {query ? (
             <button
@@ -77,7 +104,7 @@ export function ProStickySearch({ currentCode }: { currentCode: string }) {
           ) : null}
 
           {showResults && results.length > 0 ? (
-            <ul className="absolute top-full right-0 left-0 z-10 mt-1 max-h-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+            <ul className="absolute top-full right-0 left-0 z-50 mt-1 max-h-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
               {results.map((r) => (
                 <li key={r.code}>
                   <button
@@ -99,17 +126,9 @@ export function ProStickySearch({ currentCode }: { currentCode: string }) {
               ))}
             </ul>
           ) : null}
-        </div>
+        </form>
 
-        <button
-          type="button"
-          onClick={() => navigate('/pro/chat')}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gray-900 text-white hover:bg-gray-800"
-          title="AI 채팅"
-          aria-label="AI 채팅"
-        >
-          <MessageCircle size={16} strokeWidth={1.8} />
-        </button>
+        <ProSearchBarActions />
       </div>
     </div>
   )

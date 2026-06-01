@@ -1,12 +1,14 @@
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { normalizeKisIscd } from '../lib/stockCode.mjs'
 import { runOpusWithTools } from '../lib/opusEngine.mjs'
+import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
+import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { executeTool } from '../lib/toolExecutor.mjs'
 
 const HOLDING_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 보유 종목 진단 시 뉴스·공시·수급·재무·차트는 반드시 제공된 도구로 직접 조회한 뒤 종합 판단합니다.
 사용자가 제시한 평단·수익률·비중·보유기간 맥락을 반드시 반영하세요.
-정중한 존댓말, 이모지 금지. 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용 (예: 230,000~250,000원, 1~3개월).
+정중한 존댓말, 이모지 금지 (투자 프로필 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외). 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용 (예: 230,000~250,000원, 1~3개월).
 변동률 부호는 +/- 그대로 표기합니다.`
 
 /**
@@ -101,14 +103,20 @@ export async function runHoldingOpusDiagnosis(req, userId, holdingId) {
 
 필요한 데이터는 도구를 사용해 직접 조회하세요.`
 
+  const supabaseService = getSupabaseService()
+  const profile = supabaseService ? await fetchProUserProfile(supabaseService, userId) : {}
+  const profileContext = buildProfileContextPrompt(profile)
+  const system = HOLDING_OPUS_SYSTEM + profileContext
+
   const { text, toolCalls } = await runOpusWithTools({
     messages: [{ role: 'user', content: userMessage }],
-    system: HOLDING_OPUS_SYSTEM,
+    system,
     userId,
     maxIterations: 8,
     maxTokens: 2500,
     timeoutMs: Number(process.env.PRO_HOLDING_OPUS_TIMEOUT_MS) || 120_000,
     emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
+    usageLog: { userId, endpoint: 'holding-diagnosis' },
   })
 
   return {

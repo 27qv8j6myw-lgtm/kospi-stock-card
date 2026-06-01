@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
+import { logApiUsage } from '../lib/usageLogger.mjs'
 
-const NEWS_SUMMARY_MODEL = 'claude-opus-4-7'
+const NEWS_SUMMARY_MODEL = 'claude-opus-4-8'
 const NEWS_SUMMARY_TIMEOUT_MS = 25_000
 
 /**
@@ -26,9 +27,10 @@ function ensureCompleteSentence(text) {
 /**
  * @param {string} stockName
  * @param {Array<{ title?: string }>} news
+ * @param {{ userId?: string, code?: string }} [opts]
  * @returns {Promise<string | null>}
  */
-export async function summarizeProNewsHeadlines(stockName, news) {
+export async function summarizeProNewsHeadlines(stockName, news, opts = {}) {
   if (!Array.isArray(news) || news.length < 3) return null
 
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim()
@@ -72,6 +74,10 @@ ${titles}
       },
       NEWS_SUMMARY_TIMEOUT_MS,
     )
+
+    if (opts.userId && summaryResp.usage) {
+      await logApiUsage(opts.userId, 'news-summary', NEWS_SUMMARY_MODEL, summaryResp.usage)
+    }
 
     const block = summaryResp.content?.find((b) => b.type === 'text')
     const raw = block && 'text' in block ? String(block.text).trim() : ''

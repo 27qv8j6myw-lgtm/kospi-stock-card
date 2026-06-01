@@ -11,16 +11,20 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
-import { ArrowLeft, Briefcase, Check, Filter, FolderPlus } from 'lucide-react'
-import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
+import { ArrowLeft, Briefcase, Check, Filter, FolderPlus, Sparkles } from 'lucide-react'
 import { AddHoldingModal } from '@/components/pro/AddHoldingModal'
 import { DragHoldingPreview } from '@/components/pro/DragHoldingPreview'
+import { GroupDiagnosisModal } from '@/components/pro/GroupDiagnosisModal'
 import { HoldingsGroupDroppable } from '@/components/pro/HoldingsGroupDroppable'
+import { GroupSnapshotsChart } from '@/components/pro/GroupSnapshotsChart'
 import { PortfolioAnalysis } from '@/components/pro/PortfolioAnalysis'
+import { PullToRefreshScroll } from '@/components/pro/PullToRefreshScroll'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
+import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
+import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
-import { formatKRWCompact } from '@/lib/format'
+import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
 import { isKrxMarketOpen } from '@/lib/marketHours'
 import { PRO_CONTENT_WRAP } from '@/lib/proStockDesign'
 
@@ -30,6 +34,7 @@ type ProGroup = {
   sort_order?: number
   initial_capital?: number | null
   cash_balance?: number | null
+  realized_profit?: number | null
 }
 
 type HoldingRow = {
@@ -53,6 +58,10 @@ function changeClass(n: number): string {
   return 'text-gray-600'
 }
 
+function formatFullKRW(n: number): string {
+  return `${Math.round(n).toLocaleString('ko-KR')}원`
+}
+
 function subtotal(items: HoldingRow[], group?: ProGroup) {
   const evalSum = items.reduce((s, h) => s + (Number(h.evalAmount) || 0), 0)
   const costSum = items.reduce((s, h) => s + (Number(h.costAmount) || 0), 0)
@@ -61,9 +70,11 @@ function subtotal(items: HoldingRow[], group?: ProGroup) {
 
   const initialCapital = Number(group?.initial_capital) || 0
   const cashBalance = Number(group?.cash_balance) || 0
+  const realizedProfit = Number(group?.realized_profit) || 0
   const totalValue = cashBalance + evalSum
-  const capitalProfit = initialCapital > 0 ? totalValue - initialCapital : 0
-  const capitalProfitPct = initialCapital > 0 ? (capitalProfit / initialCapital) * 100 : null
+  const cumulativeProfit = profit + realizedProfit
+  const capitalProfit = cumulativeProfit
+  const capitalProfitPct = initialCapital > 0 ? (cumulativeProfit / initialCapital) * 100 : null
 
   return {
     evalSum,
@@ -71,6 +82,7 @@ function subtotal(items: HoldingRow[], group?: ProGroup) {
     profitPct,
     initialCapital,
     cashBalance,
+    realizedProfit,
     totalValue,
     capitalProfit,
     capitalProfitPct,
@@ -102,6 +114,9 @@ export default function ProHoldingsPage() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string> | null>(null)
   const [showGroupFilter, setShowGroupFilter] = useState(false)
+  const [showPortfolioDiagnosis, setShowPortfolioDiagnosis] = useState(false)
+  const [portfolioOpus, setPortfolioOpus] = useState<string | null>(null)
+  const [opusLoading, setOpusLoading] = useState(false)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -163,10 +178,8 @@ export default function ProHoldingsPage() {
     void load()
   }, [load])
 
-  useEffect(() => {
-    const interval = setInterval(() => void refreshQuotes(), 15_000)
-    return () => clearInterval(interval)
-  }, [refreshQuotes])
+  useVisibilityDataRefresh(load)
+  useKrxDataPolling(refreshQuotes)
 
   useEffect(() => {
     if (groups.length === 0) return
@@ -205,20 +218,41 @@ export default function ProHoldingsPage() {
   const vSummary = useMemo(() => {
     const evalSum = visibleHoldings.reduce((s, h) => s + (Number(h.evalAmount) || 0), 0)
     const costSum = visibleHoldings.reduce((s, h) => s + (Number(h.costAmount) || 0), 0)
-    const profit = evalSum - costSum
-    const profitPct = costSum > 0 ? (profit / costSum) * 100 : 0
+    const totalCostBasis = visibleHoldings.reduce(
+      (sum, h) => sum + Number(h.avg_price || 0) * Number(h.quantity || 0),
+      0,
+    )
+    const stockEval = visibleHoldings.reduce((sum, h) => {
+      const price = Number(
+        (h as HoldingRow & { price?: number; stck_prpr?: number }).currentPrice ??
+          (h as HoldingRow & { price?: number; stck_prpr?: number }).price ??
+          (h as HoldingRow & { price?: number; stck_prpr?: number }).stck_prpr ??
+          0,
+      )
+      return sum + price * Number(h.quantity || 0)
+    }, 0)
+    const profit = stockEval - totalCostBasis
+    const profitPct = totalCostBasis > 0 ? (profit / totalCostBasis) * 100 : null
 
     const initialCapital = visibleGroups.reduce((s, g) => s + (Number(g.initial_capital) || 0), 0)
     const cashBalance = visibleGroups.reduce((s, g) => s + (Number(g.cash_balance) || 0), 0)
-    const totalValue = cashBalance + evalSum
-    const capitalProfit = initialCapital > 0 ? totalValue - initialCapital : 0
-    const capitalProfitPct = initialCapital > 0 ? (capitalProfit / initialCapital) * 100 : null
+    const realizedProfit = visibleGroups.reduce((s, g) => s + (Number(g.realized_profit) || 0), 0)
+    const accountTotalAssets = stockEval + cashBalance
+    const cumulativeProfit = profit + realizedProfit
+    const cumulativeProfitPct = initialCapital > 0 ? (cumulativeProfit / initialCapital) * 100 : null
+    const capitalProfit = cumulativeProfit
+    const capitalProfitPct = cumulativeProfitPct
 
     return {
-      totalEval: evalSum,
+      totalEval: stockEval,
       totalCost: costSum,
+      totalCostBasis,
       totalProfit: profit,
       totalProfitPct: profitPct,
+      realizedProfit,
+      cumulativeProfit,
+      cumulativeProfitPct,
+      accountTotalAssets,
       count: visibleHoldings.length,
       initialCapital,
       cashBalance,
@@ -242,6 +276,45 @@ export default function ProHoldingsPage() {
     selectedGroupIds !== null &&
     selectedGroupIds.size === groups.length &&
     groups.every((g) => selectedGroupIds.has(g.id))
+
+  const portfolioDiagnosisTitle = useMemo(() => {
+    if (!groups.length || !selectedGroupIds || allSelected) {
+      return '포트폴리오 전체 진단'
+    }
+    return '선택 그룹 진단'
+  }, [groups.length, selectedGroupIds, allSelected])
+
+  const runPortfolioOpus = async () => {
+    if (visibleHoldings.length === 0) return
+
+    setShowPortfolioDiagnosis(true)
+    setOpusLoading(true)
+    setPortfolioOpus(null)
+
+    const groupIds =
+      selectedGroupIds && selectedGroupIds.size > 0 && !allSelected
+        ? Array.from(selectedGroupIds)
+        : null
+
+    try {
+      const r = await authFetch(apiUrl('/api/pro-portfolio-opus'), {
+        method: 'POST',
+        body: JSON.stringify({ groupIds }),
+      })
+      if (r.ok) {
+        const d = (await r.json()) as { analysis?: string }
+        setPortfolioOpus(d.analysis || '')
+      } else {
+        const err = (await r.json().catch(() => ({}))) as { error?: string }
+        setPortfolioOpus(friendlyProChatError(err.error || '진단에 실패했습니다'))
+      }
+    } catch (e) {
+      console.error('[ProHoldings] portfolio opus', e)
+      setPortfolioOpus('진단 요청에 실패했습니다')
+    } finally {
+      setOpusLoading(false)
+    }
+  }
 
   const toggleGroup = (groupId: string) => {
     setSelectedGroupIds((prev) => {
@@ -324,11 +397,26 @@ export default function ProHoldingsPage() {
     void load()
   }
 
-  const setCapital = async (groupId: string, capital: number, cash: number) => {
-    await authFetch(apiUrl('/api/pro-groups'), {
+  const setCapital = async (
+    groupId: string,
+    capital: number,
+    cash: number,
+    realizedProfit: number,
+  ) => {
+    const r = await authFetch(apiUrl('/api/pro-groups'), {
       method: 'PATCH',
-      body: JSON.stringify({ id: groupId, initialCapital: capital, cashBalance: cash }),
+      body: JSON.stringify({
+        id: groupId,
+        initialCapital: capital,
+        cashBalance: cash,
+        realizedProfit,
+      }),
     })
+    if (!r.ok) {
+      const err = (await r.json().catch(() => ({}))) as { error?: string }
+      window.alert(err.error || '그룹 설정 저장에 실패했습니다')
+      return
+    }
     void load()
   }
 
@@ -384,41 +472,59 @@ export default function ProHoldingsPage() {
   const activeHolding = activeId ? holdings.find((h) => h.id === activeId) : undefined
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
-
-      <div className={`${PRO_CONTENT_WRAP} py-4 pb-12`}>
-        <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-2">
+    <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
+      <PullToRefreshScroll
+        onRefresh={load}
+        className="max-md:min-h-[calc(100dvh-2rem)] max-md:overflow-y-auto md:contents"
+      >
+        <div className={`${PRO_CONTENT_WRAP} py-4 pb-12`}>
+        <div className="mb-4 flex items-center gap-2">
           <button
             type="button"
             onClick={() => navigate('/pro')}
-            className="shrink-0 rounded-lg p-1.5 hover:bg-gray-100"
+            className="flex-shrink-0 rounded-lg p-1.5 hover:bg-gray-100"
             aria-label="Pro 홈"
           >
             <ArrowLeft size={20} className="text-gray-600" />
           </button>
           <Briefcase
-            size={24}
-            className="shrink-0 text-amber-600"
+            size={22}
+            className="flex-shrink-0 text-amber-600"
             strokeWidth={1.8}
             aria-hidden
           />
-          <h1 className="min-w-0 flex-1 truncate text-[20px] font-bold text-gray-900 sm:flex-none">
+          <h1 className="min-w-0 flex-1 truncate text-[16px] font-bold text-gray-900 sm:text-[20px]">
             내 보유종목
           </h1>
 
-          <div className="flex w-full shrink-0 items-center justify-end gap-2 sm:ml-auto sm:w-auto">
-            <div className="relative">
+          <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">
+            <button
+              type="button"
+              onClick={() => void runPortfolioOpus()}
+              disabled={opusLoading || visibleHoldings.length === 0}
+              aria-label={opusLoading ? '진단 중' : '전체 진단'}
+              className="flex flex-shrink-0 items-center gap-1 rounded-lg bg-amber-100 px-2 py-1.5 text-[12px] font-bold text-amber-700 hover:bg-amber-200 disabled:opacity-50 sm:px-3"
+            >
+              <Sparkles size={14} strokeWidth={2} aria-hidden />
+              <span className="hidden sm:inline">
+                {opusLoading ? '진단 중...' : '전체 진단'}
+              </span>
+            </button>
+
+            <div className="relative flex-shrink-0">
               <button
                 type="button"
                 onClick={() => setShowGroupFilter((v) => !v)}
-                className="flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-[12px] font-bold text-gray-700 hover:border-gray-400"
+                aria-label="그룹 보기"
+                className="flex flex-shrink-0 items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-[12px] font-bold text-gray-700 hover:border-gray-400 sm:px-3"
               >
                 <Filter size={14} strokeWidth={2} aria-hidden />
-                그룹 보기
-                {!allSelected && selectedGroupIds ? (
-                  <span className="text-[10px] text-blue-600">({selectedGroupIds.size})</span>
-                ) : null}
+                <span className="hidden sm:inline">
+                  그룹 보기
+                  {!allSelected && selectedGroupIds ? (
+                    <span className="text-[10px] text-blue-600"> ({selectedGroupIds.size})</span>
+                  ) : null}
+                </span>
               </button>
 
               {showGroupFilter ? (
@@ -478,21 +584,25 @@ export default function ProHoldingsPage() {
             <button
               type="button"
               onClick={() => void addGroup()}
-              className="flex items-center gap-1 rounded-lg bg-gray-900 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-gray-800"
+              aria-label="그룹 추가"
+              className="flex flex-shrink-0 items-center gap-1 rounded-lg bg-gray-900 px-2 py-1.5 text-[12px] font-bold text-white hover:bg-gray-800 sm:px-3"
             >
               <FolderPlus size={14} strokeWidth={2} aria-hidden />
-              그룹 추가
+              <span className="hidden sm:inline">그룹 추가</span>
             </button>
           </div>
         </div>
 
         {holdings.length > 0 ? (
-          <PortfolioAnalysis
-            refreshKey={portfolioRefreshKey}
-            holdingsSummary={vSummary}
-            capitalSummary={capitalSummary}
-            filterHoldings={visibleHoldings}
-          />
+          <>
+            <PortfolioAnalysis
+              refreshKey={portfolioRefreshKey}
+              holdingsSummary={vSummary}
+              capitalSummary={capitalSummary}
+              filterHoldings={visibleHoldings}
+            />
+            <GroupSnapshotsChart selectedGroupIds={selectedGroupIds} allSelected={allSelected} />
+          </>
         ) : null}
 
         {loading ? (
@@ -522,7 +632,7 @@ export default function ProHoldingsPage() {
                     group={group}
                     items={items}
                     sub={subtotal(items, group)}
-                    formatKRW={formatKRWCompact}
+                    formatKRW={formatFullKRW}
                     changeClass={changeClass}
                     onDeleteGroup={deleteGroup}
                     onRenameGroup={renameGroup}
@@ -540,7 +650,8 @@ export default function ProHoldingsPage() {
             </DragOverlay>
           </DndContext>
         )}
-      </div>
+        </div>
+      </PullToRefreshScroll>
 
       {showAdd && addToGroupId ? (
         <AddHoldingModal
@@ -554,6 +665,19 @@ export default function ProHoldingsPage() {
             setShowAdd(false)
             setAddToGroupId(null)
             void load()
+          }}
+        />
+      ) : null}
+
+      {showPortfolioDiagnosis ? (
+        <GroupDiagnosisModal
+          groupName="포트폴리오"
+          title={portfolioDiagnosisTitle}
+          loading={opusLoading}
+          analysis={portfolioOpus}
+          onClose={() => {
+            setShowPortfolioDiagnosis(false)
+            setPortfolioOpus(null)
           }}
         />
       ) : null}

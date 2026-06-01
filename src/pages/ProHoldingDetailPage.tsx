@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
-import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
 import { ProOpusSection } from '@/components/stock/pro/ProOpusSection'
 import { ProStickySearch } from '@/components/stock/pro/ProStickySearch'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
@@ -163,9 +162,7 @@ export default function ProHoldingDetailPage() {
   const profitPct = opus?.profitPct ?? holding?.profitPct ?? 0
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
-
+    <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
       <div className={proDesign.stickyBar}>
         <div className={`${PRO_CONTENT_WRAP} py-3`}>
           <ProStickySearch currentCode={code} />

@@ -1,11 +1,13 @@
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { runOpusWithTools } from '../lib/opusEngine.mjs'
+import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
+import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
 
 const PORTFOLIO_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 포트폴리오 진단 시 각 보유 종목의 뉴스·공시·수급·섹터 동향을 반드시 제공된 도구로 직접 조회한 뒤 전체 관점에서 종합 판단합니다.
-정중한 존댓말, 이모지 금지. 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용.
+정중한 존댓말, 이모지 금지 (투자 프로필 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외). 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용.
 변동률 부호는 +/- 그대로 표기합니다.`
 
 /**
@@ -183,6 +185,16 @@ export async function buildPortfolioAnalysis(userSupabase, supabaseService, user
 }
 
 /**
+ * @param {unknown} raw
+ * @returns {string[] | null}
+ */
+function parseGroupIds(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return null
+  const ids = raw.map((id) => String(id ?? '').trim()).filter(Boolean)
+  return ids.length > 0 ? ids : null
+}
+
+/**
  * @param {import('express').Request} req
  * @param {string} userId
  */
@@ -194,10 +206,20 @@ export async function runPortfolioOpusDiagnosis(req, userId) {
     throw err
   }
 
-  const { data: holdings, error } = await userSupabase.from('pro_holdings').select('*')
+  const groupIds = parseGroupIds(req.body?.groupIds)
+
+  let holdingsQuery = userSupabase.from('pro_holdings').select('*')
+  if (groupIds) {
+    holdingsQuery = holdingsQuery.in('group_id', groupIds)
+  }
+
+  const { data: holdings, error } = await holdingsQuery
   if (error) throw error
   if (!holdings?.length) {
-    return { analysis: '보유종목이 없습니다.', toolsUsed: [] }
+    return {
+      analysis: groupIds ? '선택된 그룹에 종목이 없습니다.' : '보유종목이 없습니다.',
+      toolsUsed: [],
+    }
   }
 
   const summaryLines = await Promise.all(
@@ -214,7 +236,9 @@ export async function runPortfolioOpusDiagnosis(req, userId) {
     }),
   )
 
-  const userMessage = `제 포트폴리오 전체를 진단해주세요.
+  const scopeLabel = groupIds ? '선택한 그룹' : '전체'
+
+  const userMessage = `제 포트폴리오(${scopeLabel})를 진단해주세요.
 
 [보유 종목]
 ${summaryLines.join('\n')}
@@ -229,14 +253,20 @@ ${summaryLines.join('\n')}
 
 필요한 데이터는 도구를 사용해 직접 조회하세요.`
 
+  const supabaseService = getSupabaseService()
+  const profile = supabaseService ? await fetchProUserProfile(supabaseService, userId) : {}
+  const profileContext = buildProfileContextPrompt(profile)
+  const system = PORTFOLIO_OPUS_SYSTEM + profileContext
+
   const { text, toolCalls } = await runOpusWithTools({
     messages: [{ role: 'user', content: userMessage }],
-    system: PORTFOLIO_OPUS_SYSTEM,
+    system,
     userId,
     maxIterations: 12,
     maxTokens: 3000,
     timeoutMs: Number(process.env.PRO_PORTFOLIO_OPUS_TIMEOUT_MS) || 180_000,
     emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
+    usageLog: { userId, endpoint: 'portfolio-diagnosis' },
   })
 
   return {

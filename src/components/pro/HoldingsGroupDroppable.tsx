@@ -1,19 +1,39 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { Plus, Sparkles, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
+import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
 import { GroupDiagnosisModal } from './GroupDiagnosisModal'
 import { SortableHoldingRow } from './SortableHoldingRow'
+
+function formatAmountInput(raw: string, allowNegative = false): string {
+  const trimmed = raw.trim()
+  const negative = allowNegative && trimmed.startsWith('-')
+  const digits = trimmed.replace(/[^\d]/g, '')
+  if (!digits) return negative ? '-' : ''
+  const formatted = Number(digits).toLocaleString('ko-KR')
+  return negative ? `-${formatted}` : formatted
+}
+
+function amountToInput(n: number | null | undefined, allowNegative = false): string {
+  const num = Number(n) || 0
+  if (!num) return ''
+  if (num < 0 && allowNegative) {
+    return `-${Math.abs(Math.round(num)).toLocaleString('ko-KR')}`
+  }
+  return Math.round(num).toLocaleString('ko-KR')
+}
 
 export type HoldingsGroupInfo = {
   id: string
   name: string
   initial_capital?: number | null
   cash_balance?: number | null
+  realized_profit?: number | null
 }
 
 export type HoldingDnDRow = {
@@ -35,6 +55,7 @@ export type GroupSubtotal = {
   profitPct: number
   initialCapital: number
   cashBalance: number
+  realizedProfit: number
   totalValue: number
   capitalProfit: number
   capitalProfitPct: number | null
@@ -48,7 +69,7 @@ type Props = {
   changeClass: (n: number) => string
   onDeleteGroup: (id: string) => void
   onRenameGroup: (id: string, name: string) => void
-  onSetCapital: (groupId: string, capital: number, cash: number) => void
+  onSetCapital: (groupId: string, capital: number, cash: number, realizedProfit: number) => void
   onAddStock: () => void
   onNavigate: (path: string) => void
   onDeleteHolding: (holdingId: string) => void
@@ -74,6 +95,10 @@ export function HoldingsGroupDroppable({
   const [editingCapital, setEditingCapital] = useState(false)
   const [capitalInput, setCapitalInput] = useState('')
   const [cashInput, setCashInput] = useState('')
+  const [realizedProfitInput, setRealizedProfitInput] = useState('')
+  const capitalInputRef = useRef<HTMLInputElement | null>(null)
+  const cashInputRef = useRef<HTMLInputElement | null>(null)
+  const realizedProfitInputRef = useRef<HTMLInputElement | null>(null)
   const [showDiagnosis, setShowDiagnosis] = useState(false)
   const [diagnosis, setDiagnosis] = useState<string | null>(null)
   const [diagLoading, setDiagLoading] = useState(false)
@@ -90,16 +115,25 @@ export function HoldingsGroupDroppable({
     setEditing(false)
   }
 
-  const openCapitalEdit = () => {
-    setCapitalInput(String(group.initial_capital || ''))
-    setCashInput(String(group.cash_balance || ''))
+  const openCapitalEdit = (focus?: 'capital' | 'cash' | 'realized') => {
+    setCapitalInput(amountToInput(group.initial_capital))
+    setCashInput(amountToInput(group.cash_balance))
+    setRealizedProfitInput(amountToInput(group.realized_profit, true))
     setEditingCapital(true)
+    if (focus) {
+      requestAnimationFrame(() => {
+        if (focus === 'capital') capitalInputRef.current?.focus()
+        else if (focus === 'cash') cashInputRef.current?.focus()
+        else realizedProfitInputRef.current?.focus()
+      })
+    }
   }
 
   const saveCapital = () => {
     const cap = parseFloat(capitalInput.replace(/,/g, '')) || 0
     const cash = parseFloat(cashInput.replace(/,/g, '')) || 0
-    onSetCapital(group.id, cap, cash)
+    const realizedProfit = parseFloat(realizedProfitInput.replace(/,/g, '')) || 0
+    onSetCapital(group.id, cap, cash, realizedProfit)
     setEditingCapital(false)
   }
 
@@ -118,7 +152,7 @@ export function HoldingsGroupDroppable({
         setDiagnosis(d.analysis || '')
       } else {
         const err = (await r.json().catch(() => ({}))) as { error?: string }
-        setDiagnosis(err.error || '분석에 실패했습니다')
+        setDiagnosis(friendlyProChatError(err.error || '분석에 실패했습니다'))
       }
     } catch {
       setDiagnosis('분석 요청에 실패했습니다')
@@ -160,7 +194,10 @@ export function HoldingsGroupDroppable({
               }}
               className="min-w-0 truncate text-left text-[13px] font-bold text-gray-900 hover:text-blue-600"
             >
-              {group.name}
+              <span className="inline-flex items-center gap-1">
+                <span className="truncate">{group.name}</span>
+                <Pencil size={11} className="text-gray-400" strokeWidth={1.9} aria-hidden />
+              </span>
             </button>
           )}
           <span className="flex-shrink-0 text-[10px] text-gray-400">{items.length}</span>
@@ -210,20 +247,27 @@ export function HoldingsGroupDroppable({
             ) : (
               <button
                 type="button"
-                onClick={openCapitalEdit}
+                onClick={() => openCapitalEdit()}
                 className="text-blue-500 underline"
               >
-                원금 설정
+                그룹 설정
               </button>
             )}
           </div>
-          {sub.initialCapital > 0 ? (
+          {!editingCapital ? (
             <button
               type="button"
-              onClick={openCapitalEdit}
-              className="ml-auto text-[10px] text-gray-400 hover:text-gray-600"
+              onClick={() => openCapitalEdit()}
+              className="ml-auto flex flex-shrink-0 cursor-pointer items-center gap-1"
+              aria-label="원금/예수금/수익 수정"
             >
-              원금 {formatKRW(sub.initialCapital)} · 현금 {formatKRW(sub.cashBalance)} ✏
+              <span className="text-[11px] text-gray-500">원금/예수금/수익</span>
+              <Pencil
+                size={11}
+                className="text-gray-400 hover:text-gray-600"
+                strokeWidth={1.9}
+                aria-hidden
+              />
             </button>
           ) : null}
         </div>
@@ -231,26 +275,72 @@ export function HoldingsGroupDroppable({
         {editingCapital ? (
           <div className="space-y-2 border-b border-blue-100 bg-blue-50 px-3 py-2.5">
             <div className="flex items-center gap-2">
-              <span className="w-14 text-[11px] text-gray-600">최초원금</span>
+              <span className="w-20 text-[11px] text-gray-600">총 투입원금</span>
               <input
-                type="number"
+                ref={capitalInputRef}
+                type="text"
                 inputMode="numeric"
                 value={capitalInput}
-                onChange={(e) => setCapitalInput(e.target.value)}
-                placeholder="10000000"
+                onChange={(e) => setCapitalInput(formatAmountInput(e.target.value))}
+                placeholder="10,000,000"
                 className="flex-1 rounded border border-gray-300 px-2 py-1 text-[12px] tabular-nums"
               />
+              <button
+                type="button"
+                onClick={() => capitalInputRef.current?.focus()}
+                aria-label="총 투입원금 수정"
+              >
+                <Pencil
+                  size={11}
+                  className="cursor-pointer text-gray-400 hover:text-gray-600"
+                  strokeWidth={1.9}
+                  aria-hidden
+                />
+              </button>
             </div>
             <div className="flex items-center gap-2">
-              <span className="w-14 text-[11px] text-gray-600">현금잔고</span>
+              <span className="w-20 text-[11px] text-gray-600">예수금</span>
               <input
-                type="number"
+                ref={cashInputRef}
+                type="text"
                 inputMode="numeric"
                 value={cashInput}
-                onChange={(e) => setCashInput(e.target.value)}
+                onChange={(e) => setCashInput(formatAmountInput(e.target.value))}
                 placeholder="0"
                 className="flex-1 rounded border border-gray-300 px-2 py-1 text-[12px] tabular-nums"
               />
+              <button type="button" onClick={() => cashInputRef.current?.focus()} aria-label="예수금 수정">
+                <Pencil
+                  size={11}
+                  className="cursor-pointer text-gray-400 hover:text-gray-600"
+                  strokeWidth={1.9}
+                  aria-hidden
+                />
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-20 text-[11px] text-gray-600">실현수익(출금)</span>
+              <input
+                ref={realizedProfitInputRef}
+                type="text"
+                inputMode="numeric"
+                value={realizedProfitInput}
+                onChange={(e) => setRealizedProfitInput(formatAmountInput(e.target.value, true))}
+                placeholder="0"
+                className="flex-1 rounded border border-gray-300 px-2 py-1 text-[12px] tabular-nums"
+              />
+              <button
+                type="button"
+                onClick={() => realizedProfitInputRef.current?.focus()}
+                aria-label="실현수익(출금) 수정"
+              >
+                <Pencil
+                  size={11}
+                  className="cursor-pointer text-gray-400 hover:text-gray-600"
+                  strokeWidth={1.9}
+                  aria-hidden
+                />
+              </button>
             </div>
             <div className="flex justify-end gap-2">
               <button
@@ -269,7 +359,7 @@ export function HoldingsGroupDroppable({
               </button>
             </div>
             <p className="text-[10px] text-gray-400">
-              현금잔고 = 익절 후 안 쓴 현금. 원금대비 = (현금+평가액)/원금
+              누적수익 = 평가손익 + 실현수익(출금), 수익률 = 누적수익 / 총 투입원금
             </p>
           </div>
         ) : null}

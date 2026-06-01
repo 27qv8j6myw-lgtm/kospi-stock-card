@@ -1,14 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
-import { DollarSign, MessageCircle, Search, Sparkles, Star, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Search, Sparkles, Star, X } from 'lucide-react'
+import { ProSearchBarActions } from '@/components/pro/ProSearchBarActions'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
-import { proSearchInputProps } from '@/lib/proSearchInputProps'
-import { PRO_CONTENT_WRAP, proDesign } from '@/lib/proStockDesign'
-import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
+import { proSearchInputProps, useProStockSearchPlaceholder } from '@/lib/proSearchInputProps'
+import {
+  PRO_CONTENT_WRAP,
+  PRO_DASHBOARD_SCROLL_OFFSET,
+  proDesign,
+} from '@/lib/proStockDesign'
 import { ProTopFlow } from '@/components/pro/ProTopFlow'
-
-type SearchRow = { code: string; name: string; market?: string }
+import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
+import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
+import { removeProWatchlist } from '@/lib/proStockApi'
+import {
+  fetchStockSearch,
+  parseStockSearchRows,
+  pickStockSearchTarget,
+  type ProStockSearchRow,
+} from '@/lib/proStockSearch'
 
 type WatchlistItem = {
   code: string
@@ -19,18 +30,49 @@ type WatchlistItem = {
 
 export default function ProDashboard() {
   const { navigate } = useAppNavigation()
+  const searchPlaceholder = useProStockSearchPlaceholder('dashboard')
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchRow[]>([])
+  const [results, setResults] = useState<ProStockSearchRow[]>([])
   const [showResults, setShowResults] = useState(false)
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([])
+  const [removingCode, setRemovingCode] = useState<string | null>(null)
+  const [topFlowRefresh, setTopFlowRefresh] = useState(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  useEffect(() => {
+  const loadWatchlist = useCallback(() => {
     void authFetch(apiUrl('/api/pro-watchlist-enriched'))
       .then((r) => (r.ok ? r.json() : { watchlist: [] }))
       .then((d: { watchlist?: WatchlistItem[] }) => setWatchlist(d.watchlist || []))
       .catch(() => setWatchlist([]))
   }, [])
+
+  useEffect(() => {
+    loadWatchlist()
+  }, [loadWatchlist])
+
+  const refetchQuotes = useCallback(() => {
+    loadWatchlist()
+  }, [loadWatchlist])
+
+  const refetchAll = useCallback(() => {
+    loadWatchlist()
+    setTopFlowRefresh((n) => n + 1)
+  }, [loadWatchlist])
+
+  useVisibilityDataRefresh(refetchAll)
+  useKrxDataPolling(refetchQuotes)
+
+  const removeFromWatchlist = async (code: string) => {
+    if (removingCode) return
+    setRemovingCode(code)
+    const prev = watchlist
+    setWatchlist((list) => list.filter((w) => w.code !== code))
+    const ok = await removeProWatchlist(code)
+    if (!ok) {
+      setWatchlist(prev)
+    }
+    setRemovingCode(null)
+  }
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -43,14 +85,7 @@ export default function ProDashboard() {
     debounceRef.current = setTimeout(() => {
       void authFetch(apiUrl(`/api/stocks-search?q=${encodeURIComponent(trimmed)}`))
         .then((r) => (r.ok ? r.json() : { results: [] }))
-        .then((d: { results?: SearchRow[]; items?: SearchRow[] }) => {
-          const rows = Array.isArray(d.results)
-            ? d.results
-            : Array.isArray(d.items)
-              ? d.items
-              : []
-          setResults(rows)
-        })
+        .then((d) => setResults(parseStockSearchRows(d)))
         .catch(() => setResults([]))
     }, 200)
 
@@ -59,20 +94,45 @@ export default function ProDashboard() {
     }
   }, [query])
 
-  return (
-    <div className="min-h-screen bg-gray-50">
-      <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
+  const handleSearch = useCallback(async () => {
+    const trimmed = query.trim()
+    if (!trimmed) return
 
-      <div className={proDesign.stickyBar}>
-        <div className={`${PRO_CONTENT_WRAP} flex items-center gap-2 py-3`}>
-          <div className="relative min-w-0 flex-1">
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+
+    setShowResults(true)
+    const rows = await fetchStockSearch(trimmed)
+    setResults(rows)
+
+    const target = pickStockSearchTarget(rows, trimmed)
+    if (target) {
+      navigate(`/pro/stock/${target.code}?name=${encodeURIComponent(target.name)}`)
+      setQuery('')
+      setResults([])
+      setShowResults(false)
+    }
+  }, [query, navigate])
+
+  return (
+    <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
+      <div className={proDesign.proSearchBar}>
+        <div className={`${PRO_CONTENT_WRAP} flex items-center gap-2 py-2 sm:py-2.5`}>
+          <form
+            className="relative min-w-0 flex-1"
+            onSubmit={(e) => {
+              e.preventDefault()
+              void handleSearch()
+            }}
+          >
             <Search
               size={16}
               className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
             />
             <input
               {...proSearchInputProps}
-              autoFocus
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value)
@@ -80,8 +140,8 @@ export default function ProDashboard() {
               }}
               onFocus={() => setShowResults(true)}
               onBlur={() => setTimeout(() => setShowResults(false), 200)}
-              placeholder="종목명 또는 코드 (예: 산일전기, 062040)"
-              className="pro-search-input w-full rounded-2xl border border-gray-200 bg-gray-50 py-3 pl-11 pr-10 text-[14px] focus:border-amber-500 focus:bg-white focus:outline-none"
+              placeholder={searchPlaceholder}
+              className="pro-search-input w-full rounded-2xl border border-gray-200 bg-gray-50 py-3 pl-11 pr-10 text-base focus:border-amber-500 focus:bg-white focus:outline-none md:text-[14px]"
             />
             {query ? (
               <button
@@ -98,7 +158,7 @@ export default function ProDashboard() {
             ) : null}
 
             {showResults && results.length > 0 ? (
-              <div className="absolute top-full right-0 left-0 z-10 mt-2 max-h-80 overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-xl">
+              <div className="absolute top-full right-0 left-0 z-50 mt-2 max-h-80 overflow-y-auto rounded-2xl border border-gray-200 bg-white shadow-xl">
                 {results.map((r) => (
                   <button
                     key={r.code}
@@ -120,32 +180,14 @@ export default function ProDashboard() {
                 ))}
               </div>
             ) : null}
-          </div>
+          </form>
 
-          <button
-            type="button"
-            onClick={() => navigate('/pro/holdings')}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white transition-colors hover:border-gray-400"
-            title="내 보유종목"
-            aria-label="내 보유종목"
-          >
-            <DollarSign size={18} className="text-gray-700" strokeWidth={2} />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => navigate('/pro/chat')}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gray-900 text-white hover:bg-gray-800"
-            title="AI 채팅"
-            aria-label="AI 채팅"
-          >
-            <MessageCircle size={16} strokeWidth={1.8} />
-          </button>
+          <ProSearchBarActions size="md" />
         </div>
       </div>
 
-      <div className={`${PRO_CONTENT_WRAP} space-y-4 py-4 pb-12`}>
-        <div className="flex flex-col items-center py-6">
+      <div className={`${PRO_CONTENT_WRAP} space-y-4 py-4 pb-12 ${PRO_DASHBOARD_SCROLL_OFFSET}`}>
+        <div className="flex flex-col items-center py-5 md:py-6">
           <div className="mb-2 inline-flex items-center gap-2">
             <Sparkles size={24} className="text-amber-600" strokeWidth={1.8} />
             <h1 className="text-[24px] font-bold leading-none text-gray-900">Pro 모드</h1>
@@ -155,7 +197,7 @@ export default function ProDashboard() {
           </p>
         </div>
 
-        <ProTopFlow />
+        <ProTopFlow refreshSignal={topFlowRefresh} />
 
         <div>
           <div className="mb-3 flex items-center gap-1.5">
@@ -177,42 +219,56 @@ export default function ProDashboard() {
           ) : (
             <div className="grid grid-cols-2 gap-2">
               {watchlist.map((item) => (
-                <button
+                <div
                   key={item.code}
-                  type="button"
-                  onClick={() =>
-                    navigate(
-                      `/pro/stock/${item.code}?name=${encodeURIComponent(item.name || item.code)}`,
-                    )
-                  }
-                  className="rounded-xl border border-gray-200 bg-white p-3 text-left transition-all hover:border-amber-300 hover:shadow-sm"
+                  className="flex items-start gap-1 rounded-xl border border-gray-200 bg-white p-3 transition-all hover:border-amber-300 hover:shadow-sm"
                 >
-                  <div className="mb-1 flex items-center justify-between">
-                    <div className="truncate text-[12px] font-bold text-gray-900">
-                      {item.name || item.code}
-                    </div>
-                    <span className="ml-1 flex-shrink-0 text-[10px] tabular-nums text-gray-400">
-                      {item.code}
-                    </span>
-                  </div>
-                  {item.currentPrice != null ? (
-                    <div className="flex items-baseline gap-1.5">
-                      <span className="text-[13px] font-bold tabular-nums text-gray-900">
-                        {item.currentPrice.toLocaleString()}원
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigate(
+                        `/pro/stock/${item.code}?name=${encodeURIComponent(item.name || item.code)}`,
+                      )
+                    }
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <div className="mb-1 flex items-center justify-between gap-1">
+                      <div className="truncate text-[12px] font-bold text-gray-900">
+                        {item.name || item.code}
+                      </div>
+                      <span className="shrink-0 text-[10px] tabular-nums text-gray-400">
+                        {item.code}
                       </span>
-                      {item.changePct != null ? (
-                        <span
-                          className={`text-[10px] font-semibold ${
-                            item.changePct > 0 ? 'text-red-600' : 'text-blue-600'
-                          }`}
-                        >
-                          {item.changePct > 0 ? '+' : ''}
-                          {item.changePct.toFixed(2)}%
-                        </span>
-                      ) : null}
                     </div>
-                  ) : null}
-                </button>
+                    {item.currentPrice != null ? (
+                      <div className="flex items-baseline gap-1.5">
+                        <span className="text-[13px] font-bold tabular-nums text-gray-900">
+                          {item.currentPrice.toLocaleString()}원
+                        </span>
+                        {item.changePct != null ? (
+                          <span
+                            className={`text-[10px] font-semibold ${
+                              item.changePct > 0 ? 'text-red-600' : 'text-blue-600'
+                            }`}
+                          >
+                            {item.changePct > 0 ? '+' : ''}
+                            {item.changePct.toFixed(2)}%
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={removingCode === item.code}
+                    onClick={() => void removeFromWatchlist(item.code)}
+                    className="shrink-0 rounded p-0.5 text-amber-400 hover:text-gray-300 disabled:opacity-50"
+                    title="즐겨찾기 해제"
+                    aria-label={`${item.name || item.code} 즐겨찾기 해제`}
+                  >
+                    <Star size={16} fill="currentColor" strokeWidth={2} aria-hidden />
+                  </button>
+                </div>
               ))}
             </div>
           )}

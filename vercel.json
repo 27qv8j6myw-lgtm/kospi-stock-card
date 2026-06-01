@@ -12,8 +12,20 @@
     },
     "api/admin-sync-stocks-batch.mjs": {
       "maxDuration": 30
+    },
+    "api/refresh-stock-market-batch.mjs": {
+      "maxDuration": 300
+    },
+    "api/cron-snapshot.mjs": {
+      "maxDuration": 300
     }
   },
+  "crons": [
+    {
+      "path": "/api/cron-snapshot",
+      "schedule": "40 6 * * 1-5"
+    }
+  ],
   "rewrites": [
     {
       "source": "/((?!api/).*)",

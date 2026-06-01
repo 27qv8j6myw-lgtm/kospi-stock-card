@@ -1062,7 +1062,7 @@ app.get('/api/health', (_req, res) => {
     aiProvider: aiCfg ? 'anthropic' : null,
     aiBriefingPost: Boolean(aiCfg),
     kisEnv: process.env.KIS_ENV || 'vps',
-    anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-4-7',
+    anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-4-8',
     anthropicResearchModel: process.env.ANTHROPIC_RESEARCH_MODEL || 'claude-sonnet-4-5',
     anthropicSummaryModel: process.env.ANTHROPIC_SUMMARY_MODEL || 'claude-sonnet-4-5',
     aiModel: aiCfg?.model ?? null,

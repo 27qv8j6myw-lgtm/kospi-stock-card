@@ -37,6 +37,10 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'pro-watchlist',
     'pro-watchlist-enriched',
     'pro-top-flow',
+    'pro-trends',
+    'pro-profile',
+    'pro-group-snapshots',
+    'cron-snapshot',
     'pro-holding-opus',
     'pro-holdings',
     'pro-holding-detail',
@@ -52,6 +56,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'admin-pro-stats-hours',
     'admin-pro-watchlist-stats',
     'admin-logs',
+    'admin-usage-stats',
     'admin-sync-stocks-fetch',
     'admin-sync-stocks-batch',
   ]

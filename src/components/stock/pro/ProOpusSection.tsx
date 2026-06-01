@@ -1,5 +1,6 @@
 import { Sparkles } from 'lucide-react'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
+import { ProProfileSetupHint } from '@/components/pro/ProProfileSetupHint'
 import { ProSectionHeader } from './ProSectionHeader'
 
 type Props = {
@@ -19,7 +20,10 @@ export function ProOpusSection({ analysis, loading }: Props) {
 
       <div className="rounded-md border border-gray-200 bg-white p-3">
         {analysis ? (
-          <MarkdownMessage content={analysis} />
+          <>
+            <MarkdownMessage content={analysis} />
+            <ProProfileSetupHint />
+          </>
         ) : (
           <div className="flex h-16 items-center justify-center">
             <div className="size-5 animate-spin rounded-full border-2 border-amber-600 border-t-transparent" />

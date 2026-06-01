@@ -4,9 +4,11 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { STOCK_TOOLS } from './aiTools.mjs'
 import { createAnthropicMessage } from './anthropicTimed.mjs'
+import { logChatStockViewFromTool } from './chatStockActivity.mjs'
 import { executeTool } from './toolExecutor.mjs'
+import { logApiUsage, mergeUsage } from './usageLogger.mjs'
 
-export const OPUS_TOOL_MODEL = 'claude-opus-4-7'
+export const OPUS_TOOL_MODEL = 'claude-opus-4-8'
 
 /**
  * @typedef {object} OpusToolRunOptions
@@ -18,6 +20,8 @@ export const OPUS_TOOL_MODEL = 'claude-opus-4-7'
  * @property {number} [timeoutMs]
  * @property {typeof STOCK_TOOLS} [tools]
  * @property {string} [emptyText]
+ * @property {{ userId: string, endpoint: string, model?: string }} [usageLog]
+ * @property {boolean} [logChatStockViews] Pro 채팅 종목 도구 → view_stock (source: chat)
  */
 
 /**
@@ -43,6 +47,10 @@ export async function runOpusWithTools(opts) {
   let conversationMessages = [...opts.messages]
   const toolCallsLog = []
   let finalText = ''
+  /** @type {Set<string> | null} */
+  const loggedChatStockCodes = opts.logChatStockViews && userId ? new Set() : null
+  /** @type {{ input_tokens?: number, output_tokens?: number } | null} */
+  let totalUsage = null
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     const response = await createAnthropicMessage(
@@ -56,6 +64,10 @@ export async function runOpusWithTools(opts) {
       },
       timeoutMs,
     )
+
+    if (opts.usageLog && response.usage) {
+      totalUsage = mergeUsage(totalUsage, response.usage)
+    }
 
     const toolUses = response.content.filter((c) => c.type === 'tool_use')
 
@@ -73,8 +85,15 @@ export async function runOpusWithTools(opts) {
     /** @type {import('@anthropic-ai/sdk').ToolResultBlockParam[]} */
     const toolResults = []
     for (const toolUse of toolUses) {
-      const result = await executeTool(toolUse.name, toolUse.input, userId)
-      toolCallsLog.push({ name: toolUse.name, input: toolUse.input, result })
+      const toolInput =
+        toolUse.input && typeof toolUse.input === 'object' && !Array.isArray(toolUse.input)
+          ? /** @type {Record<string, unknown>} */ (toolUse.input)
+          : {}
+      if (opts.logChatStockViews) {
+        logChatStockViewFromTool(userId, toolUse.name, toolInput, loggedChatStockCodes)
+      }
+      const result = await executeTool(toolUse.name, toolInput, userId)
+      toolCallsLog.push({ name: toolUse.name, input: toolInput, result })
       toolResults.push({
         type: 'tool_result',
         tool_use_id: toolUse.id,
@@ -87,6 +106,15 @@ export async function runOpusWithTools(opts) {
 
   if (!finalText) {
     finalText = emptyText
+  }
+
+  if (opts.usageLog && totalUsage) {
+    void logApiUsage(
+      opts.usageLog.userId,
+      opts.usageLog.endpoint,
+      opts.usageLog.model || OPUS_TOOL_MODEL,
+      totalUsage,
+    ).catch(() => {})
   }
 
   return { text: finalText, toolCalls: toolCallsLog }

@@ -7,6 +7,8 @@ create table if not exists public.pro_groups (
   created_at timestamptz not null default now()
 );
 
+alter table public.pro_groups add column if not exists realized_profit numeric default 0;
+
 alter table public.pro_holdings add column if not exists group_id uuid references public.pro_groups (id) on delete set null;
 
 create index if not exists pro_groups_user_id_idx on public.pro_groups (user_id);

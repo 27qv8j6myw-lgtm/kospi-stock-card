@@ -39,7 +39,9 @@ export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps)
         pathname.startsWith('/pro/chat/') ||
         pathname.startsWith('/pro/stock/') ||
         pathname === '/pro/holdings' ||
-        pathname.startsWith('/pro/holdings/')
+        pathname.startsWith('/pro/holdings/') ||
+        pathname === '/pro/trends' ||
+        pathname.startsWith('/pro/trends/')
       )
     if (id === 'stocks')
       return pathname === '/' || pathname === '' || /^\/stocks\/\d{6}\/?$/.test(pathname)
@@ -47,8 +49,8 @@ export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps)
   }
 
   return (
-    <header className="sticky top-0 z-50 border-b border-default bg-card/95 backdrop-blur-sm">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6">
+    <header className="w-full min-w-0 max-w-full border-b border-default bg-card/95 backdrop-blur-sm">
+      <div className="mx-auto w-full min-w-0 max-w-6xl px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-3 pb-px">
           <nav
             className="-mx-4 flex min-w-0 max-w-full flex-1 gap-1 overflow-x-auto overflow-y-hidden px-4 sm:mx-0 sm:px-0"
@@ -86,7 +88,6 @@ export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps)
               )
             })}
           </nav>
-          {/* 사용자 메뉴: 아바타·이름(데스크탑)·로그아웃만 — AI 모델 배지 없음 */}
           <UserMenu />
         </div>
       </div>

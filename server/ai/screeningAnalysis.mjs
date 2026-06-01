@@ -7,7 +7,7 @@ import { getStockMasterByCode } from '../lib/stocksMasterSearch.mjs'
 import { resolveScreeningStockDisplayName } from '../screening/sectorMaster.mjs'
 
 /** TOP5·섹터 선정·후보 보충 — `SCREENING_AI_MODEL` / `SCREENING_CANDIDATE_AI_MODEL` 로 롤백 가능 */
-export const SCREENING_AI_DEFAULT_MODEL = 'claude-opus-4-7'
+export const SCREENING_AI_DEFAULT_MODEL = 'claude-opus-4-8'
 
 /** 섹터 선정·추가 후보 (기본 Opus, 자동 스크리닝과 동일 깊이) */
 export const SCREENING_CANDIDATE_AI_MODEL =

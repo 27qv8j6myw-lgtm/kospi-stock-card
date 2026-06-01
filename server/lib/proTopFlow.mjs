@@ -4,6 +4,7 @@
 import { getTopFlowStocks, getTopFlowStocksByInvestor } from '../kisClient.mjs'
 import { getCachedOrFetch } from './cacheHelper.mjs'
 import { isValidStockDisplayName, pickStockDisplayName } from './stockMasterKisLookup.mjs'
+import { screeningStockNameKr } from '../screening/sectorMaster.mjs'
 
 function cleanEnv(s) {
   if (s == null || typeof s !== 'string') return ''
@@ -55,7 +56,12 @@ async function enrichTopFlowNames(supabaseService, stocks) {
 
   const enriched = stocks.map((item) => {
     const master = masterMap[item.code]
-    const name = pickStockDisplayName(item.code, master?.name, item.name)
+    const name = pickStockDisplayName(
+      item.code,
+      master?.name,
+      item.name,
+      screeningStockNameKr(item.code),
+    )
 
     if (master?.name && isValidStockDisplayName(master.name, item.code)) {
       return {

@@ -94,20 +94,34 @@ export async function searchStocksMaster(q, limit = 15) {
     return 10
   }
 
+  /**
+   * @param {string | null | undefined} market
+   */
+  function isTradingMarket(market) {
+    if (market == null) return false
+    const m = String(market).trim()
+    return m.length > 0 && m !== '—'
+  }
+
   const items = rows
     .map((r) => ({
       code: normalizeStockCode(r.code),
       name: String(r.name || '').trim() || normalizeStockCode(r.code),
       market: String(r.market || '').trim() || '—',
       sector: String(r.sector || '').trim() || '—',
+      _marketRaw: r.market,
     }))
     .filter((r) => isValidStockCode(r.code))
     .sort((a, b) => {
+      const aTrade = isTradingMarket(a._marketRaw)
+      const bTrade = isTradingMarket(b._marketRaw)
+      if (aTrade !== bTrade) return aTrade ? -1 : 1
       const ra = rankScore(a)
       const rb = rankScore(b)
       if (ra !== rb) return ra - rb
       return a.code.localeCompare(b.code)
     })
+    .map(({ _marketRaw: _m, ...rest }) => rest)
     .slice(0, Math.min(40, limit * 4))
 
   /** 중복 코드 제거 (첫 정렬 순 유지) */

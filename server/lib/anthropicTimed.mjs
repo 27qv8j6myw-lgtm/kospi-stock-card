@@ -1,5 +1,7 @@
+import { callWithRetry } from './anthropicRetry.mjs'
+
 /**
- * Anthropic messages.create 래퍼 — SDK timeout 옵션.
+ * Anthropic messages.create 래퍼 — timeout + overloaded 재시도.
  * @param {import('@anthropic-ai/sdk').default} client
  * @param {import('@anthropic-ai/sdk').MessageCreateParams} params
  * @param {number} [timeoutMs]
@@ -8,7 +10,7 @@
 export async function createAnthropicMessage(client, params, timeoutMs = 60_000) {
   const ms = Number(timeoutMs) > 0 ? Number(timeoutMs) : 60_000
   try {
-    return await client.messages.create(params, { timeout: ms })
+    return await callWithRetry(() => client.messages.create(params, { timeout: ms }))
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     const name = e instanceof Error ? e.name : ''
@@ -17,6 +19,16 @@ export async function createAnthropicMessage(client, params, timeoutMs = 60_000)
     }
     throw e
   }
+}
+
+/**
+ * messages.stream 시작 — HTTP 연결/초기 응답 overloaded 시 재시도.
+ * @param {import('@anthropic-ai/sdk').default} client
+ * @param {import('@anthropic-ai/sdk').MessageStreamParams} params
+ * @returns {Promise<import('@anthropic-ai/sdk').MessageStream>}
+ */
+export async function createAnthropicStream(client, params) {
+  return callWithRetry(() => Promise.resolve(client.messages.stream(params)))
 }
 
 /** 스크리닝 Opus 호출 기본 타임아웃 (ms) */

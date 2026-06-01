@@ -67,7 +67,7 @@ export async function getUserModel(userId) {
  */
 export function resolveModelId(model) {
   const m = String(model || '').toLowerCase()
-  return m === 'opus' ? 'claude-opus-4-7' : 'claude-sonnet-4-5'
+  return m === 'opus' ? 'claude-opus-4-8' : 'claude-sonnet-4-5'
 }
 
 /**

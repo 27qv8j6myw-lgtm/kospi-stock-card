@@ -10,7 +10,8 @@ export function isValidStockDisplayName(name, code6) {
   if (!s || s === code) return false
   if (/^[0-9A-Z]{6}$/i.test(s.replace(/\s/g, ''))) return false
   if (/[가-힣]/.test(s)) return true
-  return /^[A-Za-z0-9][A-Za-z0-9.\-&+]*$/.test(s) && s.length >= 2
+  /** LS ELECTRIC 등 공백 포함 영문 종목명 */
+  return /^[A-Za-z0-9][A-Za-z0-9.\-&+ ]*$/.test(s) && s.replace(/\s/g, '').length >= 2
 }
 
 /**

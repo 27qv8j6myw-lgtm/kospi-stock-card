@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { MarketIndicesStrip } from '@/components/home/MarketIndicesStrip'
 import {
   ProActionButtons,
   ProChartQuoteSection,
@@ -8,8 +7,12 @@ import {
   ProSectionGrid,
   ProStickySearch,
 } from '@/components/stock/pro'
+import { PullToRefreshScroll } from '@/components/pro/PullToRefreshScroll'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
+import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
+import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
 import { authFetch } from '@/lib/api'
+import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
 import { apiUrl } from '@/lib/apiBase'
 import {
   buildProStockCardSections,
@@ -18,7 +21,7 @@ import {
   type TechnicalSnapshot,
 } from '@/lib/buildProStockCardSections'
 import { isKrxMarketOpen } from '@/lib/marketHours'
-import { proDesign } from '@/lib/proStockDesign'
+import { PRO_STOCK_SCROLL_OFFSET, proDesign } from '@/lib/proStockDesign'
 import { STOCK_CODE_PATH_RE } from '@/lib/stockCode'
 
 function detectCodeFromPath(pathname: string): string | undefined {
@@ -90,9 +93,12 @@ export default function ProStockCardPage() {
           }
           if (!dataStr) continue
           try {
-            const parsed = JSON.parse(dataStr) as { delta?: string }
+            const parsed = JSON.parse(dataStr) as { delta?: string; message?: string }
             if (eventName === 'text' && parsed.delta) {
               setAnalysis((prev) => prev + parsed.delta)
+            }
+            if (eventName === 'error') {
+              setAnalysis(friendlyProChatError(parsed.message || '분석에 실패했습니다'))
             }
           } catch {
             // ignore malformed chunk
@@ -110,86 +116,89 @@ export default function ProStockCardPage() {
     if (code) window.scrollTo(0, 0)
   }, [code])
 
-  useEffect(() => {
-    if (!code) return
-
-    let cancelled = false
-    setLoadingSummary(true)
-    setSummary(null)
-    setTechnical(null)
-    setAnalysis('')
-
-    void authFetch(apiUrl(`/api/pro-stock-summary?code=${code}`))
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: ProSummaryExtended | null) => {
-        if (cancelled) return
-        setSummary(d)
-        if (d) void loadAnalysis(d, code)
-      })
-      .catch((e) => console.error('Summary error:', e))
-      .finally(() => {
-        if (!cancelled) setLoadingSummary(false)
-      })
-
-    void authFetch(apiUrl(`/api/pro-stock-technical?code=${code}`))
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d: TechnicalSnapshot) => {
-        if (!cancelled) setTechnical(d)
-      })
-      .catch(() => {
-        if (!cancelled) setTechnical(null)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [code, loadAnalysis])
-
-  useEffect(() => {
-    if (!code) return
-
-    let active = true
-
-    const fetchQuote = async () => {
-      if (!isKrxMarketOpen()) return
-      try {
-        const r = await authFetch(apiUrl(`/api/pro-stock-quote?code=${encodeURIComponent(code)}`))
-        if (!r.ok || !active) return
-        const d = (await r.json()) as {
-          quote?: {
-            currentPrice?: number | null
-            change?: number | null
-            changePct?: number | null
-            openPrice?: number | null
-            dayHigh?: number | null
-            dayLow?: number | null
-            volume?: number | null
-            tradingAmount?: number | null
-          }
+  const pollQuote = useCallback(async () => {
+    if (!code || !isKrxMarketOpen()) return
+    try {
+      const r = await authFetch(apiUrl(`/api/pro-stock-quote?code=${encodeURIComponent(code)}`))
+      if (!r.ok) return
+      const d = (await r.json()) as {
+        quote?: {
+          currentPrice?: number | null
+          change?: number | null
+          changePct?: number | null
+          openPrice?: number | null
+          dayHigh?: number | null
+          dayLow?: number | null
+          volume?: number | null
+          tradingAmount?: number | null
         }
-        if (!d.quote) return
-        setSummary((prev) =>
-          prev
-            ? {
-                ...prev,
-                quote: {
-                  ...prev.quote,
-                  ...d.quote,
-                },
-              }
-            : prev,
-        )
-      } catch {
-        // ignore poll errors
       }
-    }
-
-    const interval = setInterval(() => void fetchQuote(), 10_000)
-    return () => {
-      active = false
-      clearInterval(interval)
+      if (!d.quote) return
+      setSummary((prev) =>
+        prev
+          ? {
+              ...prev,
+              quote: {
+                ...prev.quote,
+                ...d.quote,
+              },
+            }
+          : prev,
+      )
+    } catch {
+      // ignore poll errors
     }
   }, [code])
+
+  const reloadSnapshot = useCallback(
+    async (opts?: { withAnalysis?: boolean }) => {
+      if (!code) return
+      setLoadingSummary(true)
+      if (opts?.withAnalysis) {
+        setSummary(null)
+        setTechnical(null)
+        setAnalysis('')
+      }
+
+      try {
+        const [summaryRes, techRes] = await Promise.all([
+          authFetch(apiUrl(`/api/pro-stock-summary?code=${code}`)),
+          authFetch(apiUrl(`/api/pro-stock-technical?code=${code}`)),
+        ])
+
+        const summaryData = summaryRes.ok
+          ? ((await summaryRes.json()) as ProSummaryExtended | null)
+          : null
+        const techData = techRes.ok ? ((await techRes.json()) as TechnicalSnapshot) : null
+
+        setSummary(summaryData)
+        setTechnical(techData)
+
+        if (opts?.withAnalysis && summaryData) {
+          void loadAnalysis(summaryData, code)
+        }
+
+        await pollQuote()
+      } catch (e) {
+        console.error('Summary error:', e)
+      } finally {
+        setLoadingSummary(false)
+      }
+    },
+    [code, loadAnalysis, pollQuote],
+  )
+
+  useEffect(() => {
+    if (!code) return
+    void reloadSnapshot({ withAnalysis: true })
+  }, [code, reloadSnapshot])
+
+  const refetchData = useCallback(async () => {
+    await reloadSnapshot({ withAnalysis: false })
+  }, [reloadSnapshot])
+
+  useVisibilityDataRefresh(refetchData)
+  useKrxDataPolling(pollQuote)
 
   const displayName = summary?.name || urlName || code || '—'
   const pct = summary?.quote?.changePct ?? 0
@@ -201,11 +210,13 @@ export default function ProStockCardPage() {
   )
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <MarketIndicesStrip variant="pro" className="mb-0 w-full" />
+    <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
       {code ? <ProStickySearch currentCode={code} /> : null}
 
-      <div className={proDesign.page}>
+      <PullToRefreshScroll
+        onRefresh={refetchData}
+        className={`${proDesign.page} ${PRO_STOCK_SCROLL_OFFSET} max-md:overflow-y-auto max-md:overscroll-y-contain`}
+      >
         {loadingSummary ? (
           <div className={proDesign.card}>
             <div className="border-b border-gray-100 px-5 py-4">
@@ -287,7 +298,7 @@ export default function ProStockCardPage() {
             <ProActionButtons code={code} name={summary.name || code} />
           </div>
         )}
-      </div>
+      </PullToRefreshScroll>
     </div>
   )
 }

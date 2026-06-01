@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { useAppNavigation } from './hooks/useAppNavigation'
 import { useAuth } from './hooks/useAuth'
 import { useIsBlocked } from './hooks/useIsBlocked'
@@ -14,12 +14,21 @@ import ProChatPage from './pages/ProChatPage'
 import ProStockCardPage from './pages/ProStockCardPage'
 import ProHoldingDetailPage from './pages/ProHoldingDetailPage'
 import ProHoldingsPage from './pages/ProHoldingsPage'
+import ProTrendsPage from './pages/ProTrendsPage'
 import { useIsProUser } from './hooks/useIsProUser'
 // 격리: React #300 원인 후보 — ComparePage 비활성화 (복구 시 주석 해제)
 // import ComparePage from './compare/ComparePage'
 import { MainTabs } from './components/MainTabs'
+import { PWAUpdatePrompt } from './components/PWAUpdatePrompt'
+import { MarketIndicesStrip } from './components/home/MarketIndicesStrip'
 import { consumeProDeepLink, saveProDeepLink } from './lib/proDeepLink'
 import { PRO_HOME_SKIP_REDIRECT_KEY } from './lib/proHomeRedirect'
+
+/** `key={pathname}` 시 `/pro/chat` → `/pro/chat/:id` 전환마다 채팅 페이지가 리마운트되어 스트림 UI가 끊김 */
+function mainContentMountKey(pathname: string): string {
+  if (pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')) return '/pro/chat'
+  return pathname
+}
 
 /** 탭·화면은 전부 URL(`pathname`) 기준 — `activeTab` 같은 별도 state 없음 */
 function App() {
@@ -28,6 +37,8 @@ function App() {
   const blocked = useIsBlocked()
   const { pathname, navigate, replace } = useAppNavigation()
   const { isAdmin: isUserAdmin, ready: isAdminRoleReady } = useIsAdmin(user)
+  const prevPathnameRef = useRef(pathname)
+  const appChromeRef = useRef<HTMLDivElement>(null)
 
   /** 구체적 라우트 판별 — isHome 은 정확히 `/` 만 (다른 경로를 홈으로 취급하지 않음) */
   const stockMatch = pathname.match(/^\/stocks\/(\d+)/)
@@ -36,6 +47,7 @@ function App() {
     /^\/pro\/holdings\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
   )
   const isProHoldingsList = pathname === '/pro/holdings' || pathname === '/pro/holdings/'
+  const isProTrends = pathname === '/pro/trends' || pathname.startsWith('/pro/trends/')
   const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/')
   const isProChat = pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')
   const isProStock = Boolean(proStockMatch)
@@ -46,8 +58,10 @@ function App() {
       !isProChat &&
       !isProStock &&
       !isProHolding &&
-      !isProHoldingsList)
-  const isProArea = isPro || isProChat || isProStock || isProHolding || isProHoldingsList
+      !isProHoldingsList &&
+      !isProTrends)
+  const isProArea =
+    isPro || isProChat || isProStock || isProHolding || isProHoldingsList || isProTrends
   const isHome = pathname === '/' || pathname === ''
   const { isProUser: showPro, ready: proReady } = useIsProUser(user)
   const showMainTabs =
@@ -65,10 +79,18 @@ function App() {
     replace('/')
   }, [isProArea, showPro, proReady, replace])
 
-  /** Pro 딥링크 — 인증·pro 확인 후 `/`·`/pro`로 밀린 경우 원래 경로 복원 */
+  /** Pro 딥링크 — 로그인·리다이렉트로 `/`·`/pro`에 온 경우만 복원 (채팅 → `/pro` 뒤로가기는 복원 금지) */
   useEffect(() => {
+    const prev = prevPathnameRef.current
+    prevPathnameRef.current = pathname
+
     if (!proReady || !showPro || loading) return
     if (pathname !== '/' && pathname !== '' && pathname !== '/pro') return
+
+    if (prev.startsWith('/pro/chat') && pathname === '/pro') {
+      return
+    }
+
     const restore = consumeProDeepLink()
     if (restore) replace(restore)
   }, [proReady, showPro, loading, pathname, replace])
@@ -92,6 +114,37 @@ function App() {
     if (!showPro || !pathname.startsWith('/pro/') || pathname === '/pro') return
     saveProDeepLink(pathname)
   }, [pathname, showPro])
+
+  /** 상단 탭·(선택) 지수바 fixed — 본문 padding-top (--app-chrome-height) */
+  const showFixedChrome = showMainTabs && !isProChat
+  /** Pro 채팅 데스크탑 — 상단 탭(md:block) 높이를 --app-chrome-height 로 측정 */
+  const measureAppChrome = showMainTabs
+  /** 종목카드·Pro 종목카드·관리 — 고정 영역은 탭만 (지수는 페이지 본문 또는 미표시) */
+  const chromeTabsOnly = Boolean(stockMatch) || isAdmin || isProStock
+  const showIndicesInChrome = isProArea && showPro && !chromeTabsOnly && !isProChat
+
+  useEffect(() => {
+    const el = appChromeRef.current
+    if (!el || !measureAppChrome) {
+      document.documentElement.style.setProperty('--app-chrome-height', '0px')
+      return
+    }
+
+    const measure = () => {
+      const h = el.getBoundingClientRect().height
+      document.documentElement.style.setProperty('--app-chrome-height', `${h}px`)
+    }
+
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+      document.documentElement.style.setProperty('--app-chrome-height', '0px')
+    }
+  }, [measureAppChrome, showIndicesInChrome, isProArea, showPro, isUserAdmin, pathname])
 
   if (loading || (user && !proReady)) {
     return (
@@ -145,6 +198,8 @@ function App() {
     mainContent = showPro ? <ProHoldingDetailPage /> : <HomePage />
   } else if (isProChat) {
     mainContent = showPro ? <ProChatPage /> : <HomePage />
+  } else if (isProTrends) {
+    mainContent = showPro ? <ProTrendsPage /> : <HomePage />
   } else if (isPro) {
     mainContent = showPro ? <ProDashboard /> : <HomePage />
   } else if (isHome) {
@@ -154,13 +209,43 @@ function App() {
   }
 
   return (
-    <div className="min-h-svh min-w-0 max-w-[100vw] bg-app pb-[max(env(safe-area-inset-bottom),0.75rem)]">
+    <>
+    <div
+      className={`min-w-0 w-full max-w-full ${
+        isProChat
+          ? 'pro-chat-app-root flex h-full min-h-0 w-full flex-col overflow-hidden bg-white md:h-svh md:max-h-svh'
+          : 'min-h-svh bg-app pb-[max(env(safe-area-inset-bottom),0.75rem)]'
+      }`}
+    >
       {showMainTabs ? (
-        <MainTabs pathname={pathname} navigate={navigate} isAdmin={isUserAdmin} />
+        <div
+          ref={appChromeRef}
+          className={`safe-top z-40 w-full min-w-0 max-w-full border-b border-gray-100 bg-white ${
+            isProChat ? 'hidden md:block' : ''
+          } fixed top-0 left-0 right-0`}
+        >
+          <MainTabs pathname={pathname} navigate={navigate} isAdmin={isUserAdmin} />
+          {showIndicesInChrome ? (
+            <MarketIndicesStrip variant="pro" className="mb-0 w-full min-w-0 max-w-full" />
+          ) : null}
+        </div>
       ) : null}
       {/* {isCompare ? <ComparePage /> : null} */}
-      <div className="overflow-x-hidden">{mainContent}</div>
+      <div
+        key={mainContentMountKey(pathname)}
+        className={`w-full min-w-0 max-w-full ${
+          showFixedChrome
+            ? 'app-main-below-chrome'
+            : isProChat
+              ? 'pro-chat-page-shell min-h-0 flex-1'
+              : ''
+        }`}
+      >
+        {mainContent}
+      </div>
     </div>
+    <PWAUpdatePrompt />
+    </>
   )
 }
 

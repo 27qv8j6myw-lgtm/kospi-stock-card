@@ -83,7 +83,7 @@ export function ProSearch() {
           }}
           onFocus={() => setOpen(true)}
           placeholder="종목 검색 (자동 종합 분석)"
-          className="pro-search-input w-full rounded-xl border border-gray-300 bg-white py-2.5 pl-9 pr-3 text-[13px] focus:border-amber-500 focus:outline-none"
+          className="pro-search-input w-full rounded-xl border border-gray-300 bg-white py-2.5 pl-9 pr-3 text-base focus:border-amber-500 focus:outline-none md:text-[13px]"
         />
       </div>
 

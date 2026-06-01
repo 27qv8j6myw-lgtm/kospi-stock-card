@@ -4,7 +4,9 @@ import {
   buildPortfolioAnalysis,
   runPortfolioOpusDiagnosis,
 } from '../ai/proPortfolioAnalysis.mjs'
+import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
+import { logActivity } from '../lib/activityLogger.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
 import { getKisQuote } from '../lib/toolExecutor.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
@@ -213,6 +215,7 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
         .single()
 
       if (error) throw error
+      void logActivity(userId, 'add_holding', { code, name: name || code, groupId }, true)
       res.json({ ok: true, holding: data })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
@@ -372,6 +375,9 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
     }
     if (req.body?.cashBalance !== undefined) {
       updates.cash_balance = Number(req.body.cashBalance) || 0
+    }
+    if (req.body?.realizedProfit !== undefined) {
+      updates.realized_profit = Number(req.body.realizedProfit) || 0
     }
 
     if (Object.keys(updates).length === 0) {
@@ -647,11 +653,18 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
 
     try {
       const payload = await runPortfolioOpusDiagnosis(req, userId)
+      const groupIds = Array.isArray(req.body?.groupIds) ? req.body.groupIds : null
+      void logActivity(
+        userId,
+        'diagnosis',
+        { type: 'portfolio', groupIds: groupIds?.length ? groupIds : null },
+        true,
+      )
       res.json(payload)
     } catch (e) {
       const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500
-      const message = e instanceof Error ? e.message : String(e)
-      console.error('[Portfolio OPUS]', message)
+      const message = mapAnthropicErrorForClient(e)
+      console.error('[Portfolio OPUS]', e)
       if (/ANTHROPIC_API_KEY|API_KEY/i.test(message)) {
         res.status(503).json({ error: message })
         return
@@ -660,7 +673,61 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
         res.status(504).json({ error: message })
         return
       }
+      if (/혼잡/.test(message)) {
+        res.status(503).json({ error: message })
+        return
+      }
       res.status(status >= 400 && status < 600 ? status : 500).json({ error: message })
+    }
+  }
+
+  async function handleGetGroupSnapshots(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const userSupabase = createUserSupabaseFromRequest(req)
+    if (!userSupabase) {
+      res.status(401).json({ error: '인증 토큰 필요' })
+      return
+    }
+
+    const groupId = String(req.query?.groupId ?? '').trim()
+
+    try {
+      const { data: groupRows, error: groupErr } = await userSupabase
+        .from('pro_groups')
+        .select('id, name, sort_order')
+        .order('sort_order', { ascending: true })
+        .order('created_at', { ascending: true })
+
+      if (groupErr) throw groupErr
+
+      let snapQuery = userSupabase
+        .from('pro_group_snapshots')
+        .select('group_id, snapshot_date, stock_value, total_value, initial_capital, return_pct')
+        .order('snapshot_date', { ascending: true })
+
+      if (groupId) {
+        snapQuery = snapQuery.eq('group_id', groupId)
+      }
+
+      const { data: snapshots, error: snapErr } = await snapQuery
+      if (snapErr) throw snapErr
+
+      res.json({
+        groups: (groupRows || []).map((g) => ({ id: g.id, name: g.name })),
+        snapshots: snapshots || [],
+      })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[Group Snapshots GET]', e)
+      res.status(500).json({ error: message })
     }
   }
 
@@ -682,17 +749,22 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
 
     try {
       const payload = await runGroupOpusDiagnosis(req, userId, groupId)
+      void logActivity(userId, 'diagnosis', { type: 'group', groupId }, true)
       res.json(payload)
     } catch (e) {
       const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500
-      const message = e instanceof Error ? e.message : String(e)
-      console.error('[Group OPUS]', message)
+      const message = mapAnthropicErrorForClient(e)
+      console.error('[Group OPUS]', e)
       if (/ANTHROPIC_API_KEY|API_KEY/i.test(message)) {
         res.status(503).json({ error: message })
         return
       }
       if (/시간 초과|timeout/i.test(message)) {
         res.status(504).json({ error: message })
+        return
+      }
+      if (/혼잡/.test(message)) {
+        res.status(503).json({ error: message })
         return
       }
       res.status(status >= 400 && status < 600 ? status : 500).json({ error: message })
@@ -710,6 +782,7 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
   app.post('/api/pro-holdings', handlePostHolding)
   app.delete('/api/pro-holdings', handleDeleteHolding)
   app.post('/api/pro-holdings-ocr', handleHoldingsOcr)
+  app.get('/api/pro-group-snapshots', handleGetGroupSnapshots)
   app.get('/api/pro-portfolio-analysis', handlePortfolioAnalysis)
   app.post('/api/pro-portfolio-opus', handlePortfolioOpus)
   app.post('/api/pro-group-opus', handleGroupOpus)

@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import type { Components } from 'react-markdown'
 import type { ReactNode } from 'react'
 import { AlertCircle, BarChart3, Lightbulb, Newspaper, ShieldAlert, Target } from 'lucide-react'
@@ -129,7 +130,7 @@ function normalizeMarkdown(content: string): string {
     .replace(/^(#{1,6})([^\s#\n])/gm, '$1 $2')
 }
 
-export function MarkdownMessage({ content }: MarkdownMessageProps) {
+export const MarkdownMessage = memo(function MarkdownMessage({ content }: MarkdownMessageProps) {
   if (!content) return null
   const normalized = normalizeMarkdown(content)
   return (
@@ -142,4 +143,4 @@ export function MarkdownMessage({ content }: MarkdownMessageProps) {
       </ReactMarkdown>
     </div>
   )
-}
+})

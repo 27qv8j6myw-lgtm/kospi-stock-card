@@ -31,3 +31,13 @@ export function consumeProDeepLink(): string | null {
   }
   return p
 }
+
+/** Pro 홈(`/pro`)으로 나갈 때 저장된 채팅 경로 복원 방지 */
+export function clearProDeepLink(): void {
+  if (typeof window === 'undefined') return
+  try {
+    sessionStorage.removeItem(STORAGE_KEY)
+  } catch {
+    // ignore
+  }
+}
