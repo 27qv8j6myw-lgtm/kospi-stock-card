@@ -237,9 +237,16 @@ export async function fetchRealtimePrices(codes, opts = {}) {
 
   const uniqueCodes = [
     ...new Set(
-      (codes || []).map((c) => String(c).replace(/\D/g, '').padStart(6, '0')),
+      (codes || [])
+        .map((c) => {
+          const norm = String(c).trim().toUpperCase()
+          if (/^[0-9A-Z]{6}$/.test(norm)) return norm
+          const digits = String(c).replace(/\D/g, '').padStart(6, '0')
+          return /^\d{6}$/.test(digits) ? digits : ''
+        })
+        .filter(Boolean),
     ),
-  ].filter((c) => /^\d{6}$/.test(c))
+  ]
 
   const BATCH = 5
   for (let i = 0; i < uniqueCodes.length; i += BATCH) {

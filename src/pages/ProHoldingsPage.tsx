@@ -26,6 +26,14 @@ import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
 import { isKrxMarketOpen } from '@/lib/marketHours'
+import {
+  enrichHoldingsWithQuotes,
+  fetchProHoldingsQuotes,
+  holdingCodeKeys,
+  mergeQuoteMaps,
+  type HoldingQuote,
+  type HoldingWithQuotes,
+} from '@/lib/proHoldingsQuotes'
 import { PRO_CONTENT_WRAP } from '@/lib/proStockDesign'
 
 type ProGroup = {
@@ -37,60 +45,10 @@ type ProGroup = {
   realized_profit?: number | null
 }
 
-type HoldingRow = {
-  id: string
-  code: string
-  name: string
-  quantity: number
-  avg_price: number
-  group_id: string | null
-  currentPrice: number
-  evalAmount: number
-  costAmount: number
-  profit: number
-  profitPct: number
-  weight?: number
-  changePct?: number
-}
+type HoldingRow = HoldingWithQuotes
 
-type HoldingQuote = {
-  currentPrice?: number | null
-  changePct?: number | null
-}
-
-function mergeHoldingsQuotes(
-  holdings: HoldingRow[],
-  quotes: Record<string, HoldingQuote>,
-): HoldingRow[] {
-  const next = holdings.map((h) => {
-    const q = quotes[h.code]
-    if (!q || q.currentPrice == null || !Number.isFinite(Number(q.currentPrice))) return h
-
-    const quantity = Number(h.quantity) || 0
-    const avgPrice = Number(h.avg_price) || 0
-    const costAmount = avgPrice * quantity
-    const currentPrice = Number(q.currentPrice)
-    const evalAmount = currentPrice * quantity
-    const profit = evalAmount - costAmount
-    const profitPct = costAmount > 0 ? (profit / costAmount) * 100 : 0
-
-    return {
-      ...h,
-      currentPrice,
-      changePct: q.changePct != null ? Number(q.changePct) : h.changePct,
-      evalAmount,
-      costAmount,
-      profit,
-      profitPct,
-    }
-  })
-
-  const totalEval = next.reduce((s, h) => s + (Number(h.evalAmount) || 0), 0)
-  return next.map((h) => ({
-    ...h,
-    weight: totalEval > 0 ? ((Number(h.evalAmount) || 0) / totalEval) * 100 : 0,
-  }))
-}
+type RawHoldingRow = Omit<HoldingRow, 'evalAmount' | 'costAmount' | 'profit' | 'profitPct' | 'weight'> &
+  Partial<Pick<HoldingRow, 'evalAmount' | 'costAmount' | 'profit' | 'profitPct' | 'weight'>>
 
 function changeClass(n: number): string {
   if (n > 0) return 'text-red-600'
@@ -145,7 +103,8 @@ function resolveTargetGroupId(
 
 export default function ProHoldingsPage() {
   const { navigate } = useAppNavigation()
-  const [holdings, setHoldings] = useState<HoldingRow[]>([])
+  const [rawHoldings, setRawHoldings] = useState<RawHoldingRow[]>([])
+  const [quotes, setQuotes] = useState<Record<string, HoldingQuote>>({})
   const [groups, setGroups] = useState<ProGroup[]>([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
@@ -157,28 +116,39 @@ export default function ProHoldingsPage() {
   const [showPortfolioDiagnosis, setShowPortfolioDiagnosis] = useState(false)
   const [portfolioOpus, setPortfolioOpus] = useState<string | null>(null)
   const [opusLoading, setOpusLoading] = useState(false)
-  const holdingsCountRef = useRef(0)
+  const rawHoldingsRef = useRef<RawHoldingRow[]>([])
+  const quotesPollInFlightRef = useRef(false)
+
+  const holdings = useMemo(
+    () => enrichHoldingsWithQuotes(rawHoldings, quotes),
+    [rawHoldings, quotes],
+  )
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
   )
 
-  const refreshQuotes = useCallback(async () => {
+  const refreshQuotes = useCallback(async (opts?: { fresh?: boolean }) => {
     if (!isKrxMarketOpen()) return
-    if (holdingsCountRef.current === 0) return
+    const codes = rawHoldingsRef.current.map((h) => h.code).filter(Boolean)
+    if (codes.length === 0) return
+    if (quotesPollInFlightRef.current) return
+
+    quotesPollInFlightRef.current = true
     try {
-      const r = await authFetch(apiUrl('/api/pro-holdings-quotes'), { cache: 'no-store' })
-      if (!r.ok) return
-      const d = (await r.json()) as { quotes?: Record<string, HoldingQuote> }
-      if (!d.quotes || !Object.keys(d.quotes).length) return
-      setHoldings((prev) => mergeHoldingsQuotes(prev, d.quotes!))
+      const incoming = await fetchProHoldingsQuotes(codes, authFetch, opts)
+      if (Object.keys(incoming).length === 0) return
+      setQuotes((prev) => mergeQuoteMaps(prev, incoming))
     } catch (e) {
       console.error('[ProHoldings] quote refresh', e)
+    } finally {
+      quotesPollInFlightRef.current = false
     }
   }, [])
 
-  const load = useCallback(async () => {
+  const load = useCallback(
+    async (opts?: { freshQuotes?: boolean }) => {
     setLoading(true)
     try {
       const [hRes, gRes] = await Promise.all([
@@ -206,32 +176,51 @@ export default function ProHoldingsPage() {
       setGroups(gs)
 
       if (hRes.ok) {
-        const d = (await hRes.json()) as { holdings?: HoldingRow[] }
-        setHoldings(d.holdings || [])
+        const d = (await hRes.json()) as { holdings?: RawHoldingRow[] }
+        const rows = d.holdings || []
+        setRawHoldings(rows)
+        rawHoldingsRef.current = rows
+
+        const seeded: Record<string, HoldingQuote> = {}
+        for (const h of rows) {
+          const price = Number(h.currentPrice)
+          if (price > 0) {
+            for (const key of holdingCodeKeys(h.code)) {
+              seeded[key] = {
+                currentPrice: price,
+                changePct: Number(h.changePct) || 0,
+              }
+            }
+          }
+        }
+        if (Object.keys(seeded).length > 0) {
+          setQuotes((prev) => mergeQuoteMaps(prev, seeded))
+        }
+
         setPortfolioRefreshKey((k) => k + 1)
+        if (rows.length > 0 && isKrxMarketOpen()) {
+          void refreshQuotes({ fresh: opts?.freshQuotes ?? false })
+        }
       }
     } catch (e) {
       console.error('[ProHoldings]', e)
     } finally {
       setLoading(false)
     }
-  }, [])
+  },
+    [refreshQuotes],
+  )
 
   useEffect(() => {
     void load()
   }, [load])
 
-  useVisibilityDataRefresh(load)
+  useVisibilityDataRefresh(refreshQuotes)
   useKrxDataPolling(refreshQuotes)
 
   useEffect(() => {
-    holdingsCountRef.current = holdings.length
-  }, [holdings.length])
-
-  useEffect(() => {
-    if (loading || holdings.length === 0 || !isKrxMarketOpen()) return
-    void refreshQuotes()
-  }, [loading, holdings.length, refreshQuotes])
+    rawHoldingsRef.current = rawHoldings
+  }, [rawHoldings])
 
   useEffect(() => {
     if (groups.length === 0) return
@@ -410,7 +399,7 @@ export default function ProHoldingsPage() {
       return
     }
 
-    setHoldings((prev) =>
+    setRawHoldings((prev) =>
       prev.map((h) => (h.id === holdingId ? { ...h, group_id: targetGroupId } : h)),
     )
 
@@ -526,7 +515,7 @@ export default function ProHoldingsPage() {
   return (
     <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
       <PullToRefreshScroll
-        onRefresh={load}
+        onRefresh={() => void load({ freshQuotes: true })}
         className="max-md:min-h-[calc(100dvh-2rem)] max-md:overflow-y-auto"
       >
         <div className={`${PRO_CONTENT_WRAP} min-w-0 py-4 pb-12`}>

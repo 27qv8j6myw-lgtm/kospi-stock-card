@@ -65,6 +65,10 @@ async function ensureGroupsForHoldings(userSupabase, userId) {
  */
 export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFromRequest }) {
   async function handleGetHoldings(req, res) {
+    if (String(req.query?.mode ?? '').trim() === 'quotes') {
+      return handleGetHoldingsQuotes(req, res)
+    }
+
     const supabaseService = getSupabaseService()
     if (!supabaseService) {
       res.status(503).json({ error: 'Supabase 미설정' })
@@ -200,7 +204,8 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
         return
       }
 
-      const priceMap = await fetchRealtimePrices(codes, { skipCache: true })
+      const skipCache = String(req.query?.fresh ?? '').trim() === '1'
+      const priceMap = await fetchRealtimePrices(codes, { skipCache })
       /** @type {Record<string, { currentPrice: number | null, changePct: number | null }>} */
       const quotes = {}
       for (const [code, q] of priceMap) {
@@ -837,8 +842,8 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
   app.delete('/api/pro-groups', handleDeleteGroup)
   app.patch('/api/pro-holdings-group', handlePatchHoldingGroup)
 
-  app.get('/api/pro-holdings', handleGetHoldings)
   app.get('/api/pro-holdings-quotes', handleGetHoldingsQuotes)
+  app.get('/api/pro-holdings', handleGetHoldings)
   app.get('/api/pro-holding-detail', handleGetHoldingDetail)
   app.post('/api/pro-holdings', handlePostHolding)
   app.delete('/api/pro-holdings', handleDeleteHolding)
