@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { withCache } from './lib/kisCache.mjs'
 import { normalizeKisIscd } from './lib/stockCode.mjs'
@@ -23,7 +24,26 @@ const BASE_URL = {
 
 /** @type {{ token: string | null, expiresAt: number }} */
 let cache = { token: null, expiresAt: 0 }
-const TOKEN_CACHE_PATH = path.resolve(process.cwd(), '.tmp-kis-token.json')
+/** Vercel/Lambda는 cwd 쓰기 불가 — /tmp 사용 */
+const TOKEN_CACHE_PATH = path.join(os.tmpdir(), 'kis-token-cache.json')
+
+function invalidateTokenCache() {
+  cache = { token: null, expiresAt: 0 }
+  try {
+    if (fs.existsSync(TOKEN_CACHE_PATH)) fs.unlinkSync(TOKEN_CACHE_PATH)
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * @param {Record<string, unknown> | null | undefined} data
+ */
+function isExpiredTokenError(data) {
+  const cd = String(data?.msg_cd ?? '')
+  const msg = String(data?.msg1 ?? '')
+  return cd === 'EGW00123' || msg.includes('만료된 token')
+}
 
 function readTokenCache() {
   try {
@@ -307,7 +327,8 @@ export async function getAccessToken(appKey, appSecret, env) {
 }
 
 async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
-  let attempt = 0
+  let rateLimitAttempt = 0
+  let tokenRefreshAttempt = 0
   while (true) {
     const token = await getAccessToken(appKey, appSecret, env)
     const url = new URL(`${baseUrl(env)}${path}`)
@@ -332,11 +353,17 @@ async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
     const data = parseJsonOrThrow(res, text, kind)
     if (!res.ok || data.rt_cd !== '0') {
       const cd = data?.msg_cd || String(data?.rt_cd ?? '')
-      if (cd === 'EGW00201' && attempt < KIS_RATE_LIMIT_MAX_RETRIES) {
-        const ms = KIS_RATE_LIMIT_RETRY_MS[attempt] ?? 4000
-        console.log(`[KIS] 한도 초과, ${ms}ms 후 재시도 (${attempt + 1}/${KIS_RATE_LIMIT_MAX_RETRIES})`)
+      if (isExpiredTokenError(data) && tokenRefreshAttempt < 2) {
+        console.warn(`[KIS] ${kind} token expired (${cd}), refreshing (${tokenRefreshAttempt + 1}/2)`)
+        invalidateTokenCache()
+        tokenRefreshAttempt += 1
+        continue
+      }
+      if (cd === 'EGW00201' && rateLimitAttempt < KIS_RATE_LIMIT_MAX_RETRIES) {
+        const ms = KIS_RATE_LIMIT_RETRY_MS[rateLimitAttempt] ?? 4000
+        console.log(`[KIS] 한도 초과, ${ms}ms 후 재시도 (${rateLimitAttempt + 1}/${KIS_RATE_LIMIT_MAX_RETRIES})`)
         await new Promise((r) => setTimeout(r, ms))
-        attempt += 1
+        rateLimitAttempt += 1
         continue
       }
       if (cd === 'EGW00201') {

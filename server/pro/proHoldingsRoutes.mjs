@@ -119,7 +119,11 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
               profit,
               profitPct,
             }
-          } catch {
+          } catch (quoteErr) {
+            const msg = quoteErr instanceof Error ? quoteErr.message : String(quoteErr)
+            console.warn(`[Holdings GET] quote ${code}:`, msg)
+            const profit = -costAmount
+            const profitPct = costAmount > 0 ? (profit / costAmount) * 100 : 0
             return {
               ...h,
               code,
@@ -128,8 +132,9 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
               changePct: 0,
               evalAmount: 0,
               costAmount,
-              profit: 0,
-              profitPct: 0,
+              profit,
+              profitPct,
+              quoteError: msg,
             }
           }
         }),
