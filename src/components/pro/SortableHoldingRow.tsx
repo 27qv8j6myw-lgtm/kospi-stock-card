@@ -55,6 +55,9 @@ export function SortableHoldingRow({
         <div className="truncate text-[10px] tabular-nums text-gray-400">
           {Number(h.quantity).toLocaleString('ko-KR')}주 ·{' '}
           {Number(h.avg_price).toLocaleString('ko-KR')}
+          {Number(h.currentPrice) > 0
+            ? ` · ${Number(h.currentPrice).toLocaleString('ko-KR')}`
+            : ''}
           {h.weight != null && h.weight > 0 ? ` · ${h.weight.toFixed(0)}%` : ''}
         </div>
       </button>

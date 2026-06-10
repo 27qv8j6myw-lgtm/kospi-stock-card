@@ -226,9 +226,11 @@ function toNum(v) {
 /**
  * 종목 코드 리스트로 실시간 시세 일괄 조회 (KIS 캐시 + 병렬).
  * @param {string[]} codes
+ * @param {{ skipCache?: boolean }} [opts]
  * @returns {Promise<Map<string, { code: string, currentPrice: number | null, changePct: number | null, changeAmount: number | null, prevClose: number | null, volume: number | null }>>}
  */
-export async function fetchRealtimePrices(codes) {
+export async function fetchRealtimePrices(codes, opts = {}) {
+  const skipCache = Boolean(opts.skipCache)
   const creds = getKisCredentials()
   const priceMap = new Map()
   if (!creds) return priceMap
@@ -245,7 +247,13 @@ export async function fetchRealtimePrices(codes) {
     const quotes = await Promise.all(
       batch.map(async (code) => {
         try {
-          const q = await inquireDomesticPrice(creds.appKey, creds.appSecret, creds.env, code)
+          const q = await inquireDomesticPrice(
+            creds.appKey,
+            creds.appSecret,
+            creds.env,
+            code,
+            { skipCache },
+          )
           const currentPrice = toNum(q.price)
           const changePct = toNum(q.changePercent)
           const changeAmount = toNum(q.change)

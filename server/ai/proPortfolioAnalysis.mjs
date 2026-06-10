@@ -1,6 +1,6 @@
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
-import { runOpusWithTools } from '../lib/opusEngine.mjs'
+import { PRO_ANALYSIS_MAX_TOKENS, runOpusWithTools } from '../lib/opusEngine.mjs'
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
@@ -8,7 +8,7 @@ import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
 const PORTFOLIO_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 포트폴리오 진단 시 각 보유 종목의 뉴스·공시·수급·섹터 동향을 반드시 제공된 도구로 직접 조회한 뒤 전체 관점에서 종합 판단합니다.
 정중한 존댓말, 이모지 금지 (투자 프로필 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외). 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용.
-변동률 부호는 +/- 그대로 표기합니다.`
+변동률 부호는 +/- 그대로 표기합니다. 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록).`
 
 /**
  * @param {unknown} raw
@@ -263,7 +263,7 @@ ${summaryLines.join('\n')}
     system,
     userId,
     maxIterations: 12,
-    maxTokens: 3000,
+    maxTokens: PRO_ANALYSIS_MAX_TOKENS,
     timeoutMs: Number(process.env.PRO_PORTFOLIO_OPUS_TIMEOUT_MS) || 180_000,
     emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
     usageLog: { userId, endpoint: 'portfolio-diagnosis' },

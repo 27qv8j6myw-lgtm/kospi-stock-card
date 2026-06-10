@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicStream } from '../lib/anthropicTimed.mjs'
+import { PRO_ANALYSIS_MAX_TOKENS } from '../lib/opusEngine.mjs'
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { logApiUsage } from '../lib/usageLogger.mjs'
@@ -86,7 +87,7 @@ ${
 - 1~3개월 단기·스윙 매매 관점
 - 데이터 없는 항목은 "데이터 없음" 명시, 추측은 "추정" 표기
 - 마크다운 (##, **, |표|, >, 리스트)
-- 250~500자 내외, 전문적·객관적`
+- 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록)`
 }
 
 /**
@@ -111,21 +112,39 @@ export async function runProStockAnalysisStream({ summary, code, userId, send })
 
   const prompt = buildAnalysisPrompt(summary, code, profileContext)
 
-  const stream = await createAnthropicStream(client, {
-    model: PRO_STOCK_MODEL,
-    max_tokens: 4000,
-    messages: [{ role: 'user', content: prompt }],
-  })
+  /** @type {import('@anthropic-ai/sdk').MessageParam[]} */
+  let messages = [{ role: 'user', content: prompt }]
+  const maxContinuations = 2
 
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-      send('text', { delta: event.delta.text })
+  for (let round = 0; round <= maxContinuations; round += 1) {
+    const stream = await createAnthropicStream(client, {
+      model: PRO_STOCK_MODEL,
+      max_tokens: PRO_ANALYSIS_MAX_TOKENS,
+      messages,
+    })
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        send('text', { delta: event.delta.text })
+      }
     }
-  }
 
-  const final = await stream.finalMessage()
-  if (userId && final.usage) {
-    await logApiUsage(userId, 'stock-analysis', PRO_STOCK_MODEL, final.usage)
+    const final = await stream.finalMessage()
+    if (userId && final.usage) {
+      await logApiUsage(userId, 'stock-analysis', PRO_STOCK_MODEL, final.usage)
+    }
+
+    if (final.stop_reason !== 'max_tokens' || round >= maxContinuations) break
+
+    messages = [
+      ...messages,
+      { role: 'assistant', content: final.content },
+      {
+        role: 'user',
+        content:
+          '이전 응답이 중간에 끊겼습니다. 이미 쓴 내용은 반복하지 말고, 남은 섹션만 이어서 작성해 주세요.',
+      },
+    ]
   }
 
   send('done', {})

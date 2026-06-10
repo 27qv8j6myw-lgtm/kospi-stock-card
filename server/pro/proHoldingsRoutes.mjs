@@ -7,6 +7,7 @@ import {
 import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { logActivity } from '../lib/activityLogger.mjs'
+import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
 import { getKisQuote } from '../lib/toolExecutor.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
@@ -154,6 +155,60 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[Holdings GET]', e)
+      res.status(500).json({ error: message })
+    }
+  }
+
+  async function handleGetHoldingsQuotes(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const userSupabase = createUserSupabaseFromRequest(req)
+    if (!userSupabase) {
+      res.status(401).json({ error: '인증 토큰 필요' })
+      return
+    }
+
+    res.setHeader('Cache-Control', 'no-store')
+
+    try {
+      const { data: holdings, error } = await userSupabase.from('pro_holdings').select('code')
+
+      if (error) throw error
+
+      const codes = [
+        ...new Set(
+          (holdings || [])
+            .map((h) => normalizeCode6(h.code))
+            .filter(Boolean),
+        ),
+      ]
+
+      if (codes.length === 0) {
+        res.json({ quotes: {} })
+        return
+      }
+
+      const priceMap = await fetchRealtimePrices(codes, { skipCache: true })
+      /** @type {Record<string, { currentPrice: number | null, changePct: number | null }>} */
+      const quotes = {}
+      for (const [code, q] of priceMap) {
+        quotes[code] = {
+          currentPrice: q.currentPrice ?? null,
+          changePct: q.changePct ?? null,
+        }
+      }
+
+      res.json({ quotes })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[Holdings Quotes GET]', e)
       res.status(500).json({ error: message })
     }
   }
@@ -778,6 +833,7 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
   app.patch('/api/pro-holdings-group', handlePatchHoldingGroup)
 
   app.get('/api/pro-holdings', handleGetHoldings)
+  app.get('/api/pro-holdings-quotes', handleGetHoldingsQuotes)
   app.get('/api/pro-holding-detail', handleGetHoldingDetail)
   app.post('/api/pro-holdings', handlePostHolding)
   app.delete('/api/pro-holdings', handleDeleteHolding)

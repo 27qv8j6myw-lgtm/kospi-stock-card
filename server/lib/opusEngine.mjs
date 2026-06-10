@@ -10,6 +10,9 @@ import { logApiUsage, mergeUsage } from './usageLogger.mjs'
 
 export const OPUS_TOOL_MODEL = 'claude-opus-4-8'
 
+/** Pro 종목·보유·포트폴리오 AI 분석 — 응답 잘림 방지 */
+export const PRO_ANALYSIS_MAX_TOKENS = 8000
+
 /**
  * @typedef {object} OpusToolRunOptions
  * @property {Array<{ role: string, content: unknown }>} messages
@@ -72,11 +75,23 @@ export async function runOpusWithTools(opts) {
     const toolUses = response.content.filter((c) => c.type === 'tool_use')
 
     if (toolUses.length === 0) {
-      finalText = response.content
+      const chunk = response.content
         .filter((c) => c.type === 'text')
         .map((c) => c.text)
         .join('\n')
         .trim()
+      if (chunk) {
+        finalText = finalText ? `${finalText}\n${chunk}` : chunk
+      }
+      if (response.stop_reason === 'max_tokens' && iteration < maxIterations - 1) {
+        conversationMessages.push({ role: 'assistant', content: response.content })
+        conversationMessages.push({
+          role: 'user',
+          content:
+            '이전 응답이 중간에 끊겼습니다. 이미 쓴 내용은 반복하지 말고, 남은 섹션만 이어서 작성해 주세요.',
+        })
+        continue
+      }
       break
     }
 

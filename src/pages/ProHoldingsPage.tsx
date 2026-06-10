@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   DndContext,
   DragOverlay,
@@ -50,6 +50,46 @@ type HoldingRow = {
   profit: number
   profitPct: number
   weight?: number
+  changePct?: number
+}
+
+type HoldingQuote = {
+  currentPrice?: number | null
+  changePct?: number | null
+}
+
+function mergeHoldingsQuotes(
+  holdings: HoldingRow[],
+  quotes: Record<string, HoldingQuote>,
+): HoldingRow[] {
+  const next = holdings.map((h) => {
+    const q = quotes[h.code]
+    if (!q || q.currentPrice == null || !Number.isFinite(Number(q.currentPrice))) return h
+
+    const quantity = Number(h.quantity) || 0
+    const avgPrice = Number(h.avg_price) || 0
+    const costAmount = avgPrice * quantity
+    const currentPrice = Number(q.currentPrice)
+    const evalAmount = currentPrice * quantity
+    const profit = evalAmount - costAmount
+    const profitPct = costAmount > 0 ? (profit / costAmount) * 100 : 0
+
+    return {
+      ...h,
+      currentPrice,
+      changePct: q.changePct != null ? Number(q.changePct) : h.changePct,
+      evalAmount,
+      costAmount,
+      profit,
+      profitPct,
+    }
+  })
+
+  const totalEval = next.reduce((s, h) => s + (Number(h.evalAmount) || 0), 0)
+  return next.map((h) => ({
+    ...h,
+    weight: totalEval > 0 ? ((Number(h.evalAmount) || 0) / totalEval) * 100 : 0,
+  }))
 }
 
 function changeClass(n: number): string {
@@ -117,6 +157,7 @@ export default function ProHoldingsPage() {
   const [showPortfolioDiagnosis, setShowPortfolioDiagnosis] = useState(false)
   const [portfolioOpus, setPortfolioOpus] = useState<string | null>(null)
   const [opusLoading, setOpusLoading] = useState(false)
+  const holdingsCountRef = useRef(0)
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -125,11 +166,13 @@ export default function ProHoldingsPage() {
 
   const refreshQuotes = useCallback(async () => {
     if (!isKrxMarketOpen()) return
+    if (holdingsCountRef.current === 0) return
     try {
-      const r = await authFetch(apiUrl('/api/pro-holdings'))
+      const r = await authFetch(apiUrl('/api/pro-holdings-quotes'), { cache: 'no-store' })
       if (!r.ok) return
-      const d = (await r.json()) as { holdings?: HoldingRow[] }
-      setHoldings(d.holdings || [])
+      const d = (await r.json()) as { quotes?: Record<string, HoldingQuote> }
+      if (!d.quotes || !Object.keys(d.quotes).length) return
+      setHoldings((prev) => mergeHoldingsQuotes(prev, d.quotes!))
     } catch (e) {
       console.error('[ProHoldings] quote refresh', e)
     }
@@ -180,6 +223,15 @@ export default function ProHoldingsPage() {
 
   useVisibilityDataRefresh(load)
   useKrxDataPolling(refreshQuotes)
+
+  useEffect(() => {
+    holdingsCountRef.current = holdings.length
+  }, [holdings.length])
+
+  useEffect(() => {
+    if (loading || holdings.length === 0 || !isKrxMarketOpen()) return
+    void refreshQuotes()
+  }, [loading, holdings.length, refreshQuotes])
 
   useEffect(() => {
     if (groups.length === 0) return
@@ -475,9 +527,9 @@ export default function ProHoldingsPage() {
     <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
       <PullToRefreshScroll
         onRefresh={load}
-        className="max-md:min-h-[calc(100dvh-2rem)] max-md:overflow-y-auto md:contents"
+        className="max-md:min-h-[calc(100dvh-2rem)] max-md:overflow-y-auto"
       >
-        <div className={`${PRO_CONTENT_WRAP} py-4 pb-12`}>
+        <div className={`${PRO_CONTENT_WRAP} min-w-0 py-4 pb-12`}>
         <div className="mb-4 flex items-center gap-2">
           <button
             type="button"
@@ -623,7 +675,7 @@ export default function ProHoldingsPage() {
             onDragCancel={() => setActiveId(null)}
             onDragEnd={(e) => void handleDragEnd(e)}
           >
-            <div className="grid grid-cols-1 items-start gap-3 md:grid-cols-2">
+            <div className="grid min-w-0 grid-cols-1 items-start gap-3 md:grid-cols-2">
               {visibleGroups.map((group) => {
                 const items = visibleHoldings.filter((h) => h.group_id === group.id)
                 return (

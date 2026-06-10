@@ -350,11 +350,19 @@ async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
   }
 }
 
-/** 국내 주식 현재가 시세 [v1_국내주식-008] */
-export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
+/**
+ * 국내 주식 현재가 시세 [v1_국내주식-008]
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {string} env
+ * @param {string} code6
+ * @param {{ skipCache?: boolean }} [opts]
+ */
+export async function inquireDomesticPrice(appKey, appSecret, env, code6, opts = {}) {
   const iscd = normalizeKisIscd(code6)
   const cacheKey = `kis:quote:${env}:${iscd}`
-  return await withCache(cacheKey, KIS_CACHE_TTL_QUOTE_MS, async () => {
+
+  const fetchQuote = async () => {
       const data = await kisGet({
         appKey,
         appSecret,
@@ -440,7 +448,10 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6) {
         foreignNetBuy: num(o?.frgn_ntby_qty),
         raw: o,
       }
-    })
+  }
+
+  if (opts.skipCache) return await fetchQuote()
+  return await withCache(cacheKey, KIS_CACHE_TTL_QUOTE_MS, fetchQuote)
 }
 
 // inquire-investor 의 *_tr_pbmn 은 원화가 아닌 축약 단위로 내려오므로 KRW로 보정

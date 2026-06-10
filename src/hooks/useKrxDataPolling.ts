@@ -24,6 +24,7 @@ export function useKrxDataPolling(refetch: () => void | Promise<void>, options: 
       void refetchRef.current()
     }
 
+    tick()
     const id = window.setInterval(tick, intervalMs)
     return () => window.clearInterval(id)
   }, [enabled, intervalMs])

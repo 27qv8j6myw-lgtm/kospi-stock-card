@@ -43,6 +43,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'cron-snapshot',
     'pro-holding-opus',
     'pro-holdings',
+    'pro-holdings-quotes',
     'pro-holding-detail',
     'pro-holdings-group',
     'pro-holdings-ocr',
