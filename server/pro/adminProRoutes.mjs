@@ -280,6 +280,105 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     }
   })
 
+  /**
+   * 관리 탭 비용 섹션 — Anthropic Cost Report Admin API 실제 청구액(USD).
+   * Anthropic은 잔여 크레딧 조회 API를 제공하지 않아 청구 비용만 연동한다.
+   */
+  app.get('/api/admin-anthropic-cost', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+    if (!(await requireAdmin(req, res))) return
+
+    const adminKey = (process.env.ANTHROPIC_ADMIN_API_KEY ?? '').trim()
+    if (!adminKey) {
+      res.status(503).json({
+        error: 'ANTHROPIC_ADMIN_API_KEY 미설정',
+        hint: 'Anthropic 콘솔에서 Admin API 키(sk-ant-admin…)를 발급해 Vercel 환경변수로 추가하세요.',
+      })
+      return
+    }
+
+    const days = Math.min(Math.max(Number(req.query?.days) || 30, 1), 90)
+    const cacheKey = `anthropic-cost:${days}`
+
+    try {
+      const { data: cachedRow } = await supabaseService
+        .from('market_cache')
+        .select('data')
+        .eq('cache_key', cacheKey)
+        .gt('expires_at', new Date().toISOString())
+        .maybeSingle()
+      if (cachedRow?.data) {
+        res.json(cachedRow.data)
+        return
+      }
+
+      const endingAt = new Date()
+      const startingAt = new Date(endingAt.getTime() - days * DAY_MS)
+
+      /** @type {Record<string, number>} 일자(YYYY-MM-DD) → USD */
+      const byDay = {}
+      let page = null
+      for (let i = 0; i < 10; i++) {
+        const url = new URL('https://api.anthropic.com/v1/organizations/cost_report')
+        url.searchParams.set('starting_at', startingAt.toISOString())
+        url.searchParams.set('ending_at', endingAt.toISOString())
+        url.searchParams.set('bucket_width', '1d')
+        if (page) url.searchParams.set('page', page)
+
+        const r = await fetch(url, {
+          headers: { 'x-api-key': adminKey, 'anthropic-version': '2023-06-01' },
+        })
+        if (!r.ok) {
+          const text = await r.text()
+          throw new Error(`Anthropic cost_report ${r.status}: ${text.slice(0, 200)}`)
+        }
+        const body = await r.json()
+        for (const bucket of body?.data ?? []) {
+          const day = String(bucket?.starting_at ?? '').slice(0, 10)
+          if (!day) continue
+          for (const item of bucket?.results ?? []) {
+            const cents = Number(item?.amount)
+            if (Number.isFinite(cents)) byDay[day] = (byDay[day] ?? 0) + cents / 100
+          }
+        }
+        if (!body?.has_more || !body?.next_page) break
+        page = body.next_page
+      }
+
+      const dayRows = Object.entries(byDay)
+        .map(([day, usd]) => ({ day, usd: Math.round(usd * 10000) / 10000 }))
+        .sort((a, b) => a.day.localeCompare(b.day))
+      const totalUsd = Math.round(dayRows.reduce((s, d) => s + d.usd, 0) * 10000) / 10000
+
+      const result = {
+        days,
+        totalUsd,
+        currency: 'USD',
+        byDay: dayRows,
+        generatedAt: new Date().toISOString(),
+      }
+
+      await supabaseService.from('market_cache').upsert(
+        {
+          cache_key: cacheKey,
+          data: result,
+          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        },
+        { onConflict: 'cache_key' },
+      )
+
+      res.json(result)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[admin-anthropic-cost]', message)
+      res.status(500).json({ error: message })
+    }
+  })
+
   app.get('/api/admin-pro-stats-stocks', async (req, res) => {
     const supabaseService = getSupabaseService()
     if (!supabaseService) {

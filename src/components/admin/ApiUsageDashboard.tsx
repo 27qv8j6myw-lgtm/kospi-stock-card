@@ -58,6 +58,13 @@ type SummaryData = {
   users: SummaryUser[]
 }
 
+type AnthropicCost = {
+  days: number
+  totalUsd: number
+  byDay: Array<{ day: string; usd: number }>
+  generatedAt: string
+}
+
 const ENDPOINT_LABEL: Record<string, string> = {
   'stock-analysis': '종목 분석',
   'news-summary': '뉴스 요약',
@@ -89,6 +96,8 @@ export function ApiUsageDashboard() {
   const [days, setDays] = useState(7)
   const [data, setData] = useState<UsageStats | null>(null)
   const [summary, setSummary] = useState<SummaryData | null>(null)
+  const [billedCost, setBilledCost] = useState<AnthropicCost | null>(null)
+  const [billedCostHint, setBilledCostHint] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -96,6 +105,25 @@ export function ApiUsageDashboard() {
     setLoading(true)
     setError(null)
     try {
+      // 실제 청구액 — 실패해도 기존 비용 대시보드에는 영향 없음
+      void authFetch(apiUrl(`/api/admin-anthropic-cost?days=${days}`))
+        .then(async (r) => {
+          const body = (await r.json().catch(() => ({}))) as AnthropicCost & {
+            error?: string
+            hint?: string
+          }
+          if (r.ok) {
+            setBilledCost(body)
+            setBilledCostHint(null)
+          } else {
+            setBilledCost(null)
+            setBilledCostHint(body.hint || body.error || null)
+          }
+        })
+        .catch(() => {
+          setBilledCost(null)
+        })
+
       const [usageRes, summaryRes] = await Promise.all([
         authFetch(apiUrl(`/api/admin-usage-stats?days=${days}`)),
         authFetch(apiUrl('/api/admin-user-summary')),
@@ -178,6 +206,36 @@ export function ApiUsageDashboard() {
             <Stat label="출력 토큰" value={fmtTokens(data.summary.outputTokens)} />
             <Stat label="추정 비용" value={fmtUsd(data.summary.costUsd)} highlight />
           </div>
+
+          {billedCost ? (
+            <div className="rounded-2xl border border-default bg-card p-4 shadow-sm">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium text-secondary">
+                    실제 청구 비용 (Anthropic · 최근 {billedCost.days}일)
+                  </p>
+                  <p className="mt-1 font-sans-en text-xl font-bold tabular-nums text-emerald-700">
+                    ${billedCost.totalUsd.toFixed(2)}
+                  </p>
+                </div>
+                {billedCost.byDay.length ? (
+                  <p className="text-[11px] tabular-nums text-gray-400">
+                    {billedCost.byDay
+                      .slice(-5)
+                      .map((d) => `${d.day.slice(5)} $${d.usd.toFixed(2)}`)
+                      .join(' · ')}
+                  </p>
+                ) : null}
+              </div>
+              <p className="mt-1 text-[10px] text-gray-400">
+                Anthropic Cost API 기준 · 1시간 캐시 · 잔여 크레딧은 Anthropic 콘솔에서 확인
+              </p>
+            </div>
+          ) : billedCostHint ? (
+            <p className="rounded-2xl border border-dashed border-gray-300 bg-gray-50 px-4 py-3 text-[11px] text-gray-500">
+              실제 청구 비용 연동 안 됨 — {billedCostHint}
+            </p>
+          ) : null}
 
           {data.byDayCost?.length ? (
             <StackedBarChart
