@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { withCache } from './lib/kisCache.mjs'
 import { normalizeKisIscd } from './lib/stockCode.mjs'
+import { readSharedToken, writeSharedToken, invalidateSharedToken } from './lib/kisTokenStore.mjs'
 
 /** 시세류 TTL (ms) */
 const KIS_CACHE_TTL_QUOTE_MS = 30_000
@@ -27,12 +28,19 @@ let cache = { token: null, expiresAt: 0 }
 /** Vercel/Lambda는 cwd 쓰기 불가 — /tmp 사용 */
 const TOKEN_CACHE_PATH = path.join(os.tmpdir(), 'kis-token-cache.json')
 
-function invalidateTokenCache() {
+/**
+ * @param {'prod'|'vps'} [env] 지정 시 Supabase 공유 토큰도 무효화
+ * @param {string} [badToken] 만료 판정된 토큰 (다른 인스턴스가 갱신한 새 토큰 보호)
+ */
+function invalidateTokenCache(env, badToken) {
   cache = { token: null, expiresAt: 0 }
   try {
     if (fs.existsSync(TOKEN_CACHE_PATH)) fs.unlinkSync(TOKEN_CACHE_PATH)
   } catch {
     // ignore
+  }
+  if (env) {
+    void invalidateSharedToken(env, badToken)
   }
 }
 
@@ -284,6 +292,14 @@ export async function getAccessToken(appKey, appSecret, env) {
     return persisted.token
   }
 
+  // 서버리스 인스턴스 간 공유 토큰 (Supabase) — 발급 폭주(EGW00133) 방지
+  const shared = await readSharedToken(env === 'prod' ? 'prod' : 'vps')
+  if (shared && shared.expiresAt > now + 60_000) {
+    cache = shared
+    writeTokenCache(shared.token, shared.expiresAt)
+    return shared.token
+  }
+
   const res = await fetch(`${baseUrl(env)}/oauth2/tokenP`, {
     method: 'POST',
     headers: {
@@ -309,6 +325,13 @@ export async function getAccessToken(appKey, appSecret, env) {
       if (persisted?.token) {
         return persisted.token
       }
+      // 다른 인스턴스가 방금 발급한 공유 토큰이 있을 수 있음
+      const retryShared = await readSharedToken(env === 'prod' ? 'prod' : 'vps')
+      if (retryShared?.token) {
+        cache = retryShared
+        writeTokenCache(retryShared.token, retryShared.expiresAt)
+        return retryShared.token
+      }
       throw new Error('KIS 토큰 발급 제한(EGW00133): 1분 후 다시 시도하세요.')
     }
     throw new Error(`KIS 토큰 발급 실패 (${res.status}): ${text.slice(0, 200)}`)
@@ -323,6 +346,7 @@ export async function getAccessToken(appKey, appSecret, env) {
     expiresAt: parseKisExpiry(data.access_token_token_expired),
   }
   writeTokenCache(cache.token, cache.expiresAt)
+  void writeSharedToken(env === 'prod' ? 'prod' : 'vps', cache.token, cache.expiresAt)
   return token
 }
 
@@ -355,7 +379,7 @@ async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
       const cd = data?.msg_cd || String(data?.rt_cd ?? '')
       if (isExpiredTokenError(data) && tokenRefreshAttempt < 2) {
         console.warn(`[KIS] ${kind} token expired (${cd}), refreshing (${tokenRefreshAttempt + 1}/2)`)
-        invalidateTokenCache()
+        invalidateTokenCache(env === 'prod' ? 'prod' : 'vps', token)
         tokenRefreshAttempt += 1
         continue
       }

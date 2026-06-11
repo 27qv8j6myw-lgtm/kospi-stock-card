@@ -22,6 +22,28 @@ async function fetchYahooSnapshot(yahooSymbol) {
   return { value: data.price, changePct: data.changePct }
 }
 
+/** KIS 지수 실패 시 market-summary 폴백 */
+export async function fetchYahooMarketSnapshot(yahooSymbol) {
+  return fetchYahooSnapshot(yahooSymbol)
+}
+
+/**
+ * KIS 전면 장애 시 국내 종목 시세 폴백 — KOSPI(.KS) → KOSDAQ(.KQ) 순서 시도.
+ * @param {string} code6
+ * @returns {Promise<{ price: number, changePct: number } | null>}
+ */
+export async function fetchYahooKrxQuote(code6) {
+  const code = String(code6 ?? '').replace(/\D/g, '').padStart(6, '0').slice(0, 6)
+  if (!code || code === '000000') return null
+  for (const suffix of ['.KS', '.KQ']) {
+    const data = await fetchYahooQuote(`${code}${suffix}`)
+    if (data && Number.isFinite(data.price) && data.price > 0) {
+      return { price: data.price, changePct: data.changePct }
+    }
+  }
+  return null
+}
+
 /** 종목 카드 PageHeader·market-summary 공용 */
 export async function getWtiPrice() {
   return fetchYahooSnapshot('CL=F')

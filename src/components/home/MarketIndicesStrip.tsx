@@ -86,6 +86,31 @@ function mergeIndices(
 /** 부모(`main` px-4 sm:px-6 · 홈 컨테이너) 패딩만 사용 — 알약에 추가 px 넣지 않음 */
 const stripOuterClass = 'mb-6 w-full'
 
+const INDICES_STORAGE_KEY = 'market-indices:last'
+
+function readStoredIndices(): MarketSummaryIndex[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(INDICES_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as { indices?: MarketSummaryIndex[] }
+    return Array.isArray(parsed?.indices) ? parsed.indices : []
+  } catch {
+    return []
+  }
+}
+
+function storeIndices(indices: MarketSummaryIndex[]) {
+  try {
+    window.localStorage.setItem(
+      INDICES_STORAGE_KEY,
+      JSON.stringify({ indices, savedAt: Date.now() }),
+    )
+  } catch {
+    // ignore quota/private mode errors
+  }
+}
+
 type MarketIndicesStripProps = {
   /** 기본 `mb-6 w-full` — Pro 등에서 여백 조정 */
   className?: string
@@ -94,9 +119,9 @@ type MarketIndicesStripProps = {
 }
 
 export function MarketIndicesStrip({ className, variant = 'pill' }: MarketIndicesStripProps = {}) {
-  const [indices, setIndices] = useState<MarketSummaryIndex[]>([])
+  const [indices, setIndices] = useState<MarketSummaryIndex[]>(() => readStoredIndices())
   const [loading, setLoading] = useState(true)
-  const indicesRef = useRef<MarketSummaryIndex[]>([])
+  const indicesRef = useRef<MarketSummaryIndex[]>(indices)
   const outerClass = className ?? stripOuterClass
   const showCloseLabel = !isKrxMarketOpen()
 
@@ -111,6 +136,9 @@ export function MarketIndicesStrip({ className, variant = 'pill' }: MarketIndice
       setIndices((prev) => {
         const merged = mergeIndices(prev.length ? prev : indicesRef.current, rows)
         indicesRef.current = merged
+        if (merged.some((i) => i.value != null && Number.isFinite(i.value))) {
+          storeIndices(merged)
+        }
         return merged
       })
     } catch {
@@ -122,10 +150,18 @@ export function MarketIndicesStrip({ className, variant = 'pill' }: MarketIndice
 
   useEffect(() => {
     void load()
-    const interval = window.setInterval(() => {
-      void load(isKrxMarketOpen())
-    }, 60_000)
-    return () => window.clearInterval(interval)
+    const retryIfMissing = () => {
+      const kospi = indicesRef.current.find((i) => i.key === 'kospi')
+      if (!kospi?.value || !Number.isFinite(kospi.value)) void load(true)
+    }
+    const retry1 = window.setTimeout(retryIfMissing, 2500)
+    const retry2 = window.setTimeout(retryIfMissing, 8000)
+    const interval = window.setInterval(() => void load(isKrxMarketOpen()), 60_000)
+    return () => {
+      window.clearTimeout(retry1)
+      window.clearTimeout(retry2)
+      window.clearInterval(interval)
+    }
   }, [load])
 
   const hasAnyValue = indices.some((i) => i.value != null && Number.isFinite(i.value))

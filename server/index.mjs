@@ -30,8 +30,8 @@ import { getCompareStockPayload } from './screening/compareStock.mjs'
 import { analyzePortfolio } from './ai/portfolioAnalysis.mjs'
 import { scoreSingleStock, fetchIndexScreeningContext } from './screening/scoreStock.mjs'
 import { screeningStockNameKr } from './screening/sectorMaster.mjs'
-import { getMarketIndices } from './marketIndices.mjs'
-import { getMarketSummary } from './marketSummary.mjs'
+import { getMarketIndices, fetchYahooKrxQuote } from './marketIndices.mjs'
+import { getMarketSummary, isMarketSummaryUsable } from './marketSummary.mjs'
 import { getStockMasterByCode, searchStocksMaster } from './lib/stocksMasterSearch.mjs'
 import { registerProRoutes } from './pro/proRoutes.mjs'
 
@@ -1411,8 +1411,39 @@ app.get('/api/quote', async (req, res) => {
   const code = rawCode.replace(/\D/g, '').padStart(6, '0').slice(0, 6)
   const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
 
+  /** KIS 실패·0원 응답 시 Yahoo(.KS/.KQ)로 최소 시세(가격·등락률) 응답 */
+  const tryYahooQuoteFallback = async () => {
+    try {
+      const y = await fetchYahooKrxQuote(code)
+      if (!y) return false
+      const master = await getStockMasterByCode(code).catch(() => null)
+      const item = master?.ok ? master.item : null
+      res.json({
+        code,
+        price: y.price,
+        changePercent: y.changePct,
+        change: null,
+        nameKr: item?.name ?? screeningStockNameKr(code) ?? null,
+        name: item?.name ?? screeningStockNameKr(code) ?? null,
+        stockName: item?.name ?? screeningStockNameKr(code) ?? null,
+        market: item?.market ?? null,
+        sector: item?.sector ?? null,
+        sectorKr: item?.sector ?? null,
+        source: 'yahoo-fallback',
+        fetchedAt: new Date().toISOString(),
+        kisEnv: env,
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
+
   try {
     const q = await inquireDomesticPrice(appKey, appSecret, env, code)
+    if (!Number.isFinite(Number(q?.price)) || Number(q?.price) <= 0) {
+      if (await tryYahooQuoteFallback()) return
+    }
     const { raw: _raw, ...rest } = q
     const industryKr = rest.sector != null ? String(rest.sector) : ''
     let nameResolved = rest.nameKr || screeningStockNameKr(code) || null
@@ -1449,6 +1480,8 @@ app.get('/api/quote', async (req, res) => {
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
+    console.error('[quote]', code, message)
+    if (await tryYahooQuoteFallback()) return
     if (isKisRateLimitError(e)) {
       res.status(429).json({ error: '호출 한도 초과', code: 'RATE_LIMIT', retryAfter: 3 })
       return
@@ -1708,11 +1741,13 @@ app.get('/api/market-summary', async (req, res) => {
     const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
     const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
     if (!appKey || !appSecret) {
-      if (cached) return res.json(cached)
+      if (cached && isMarketSummaryUsable(cached)) return res.json(cached)
+      const lastGood = await getMarketCached('market-summary:last-good')
+      if (lastGood && isMarketSummaryUsable(lastGood)) return res.json(lastGood)
       return res.status(503).json({ indices: [], error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
     }
 
-    if (cached && !fresh) {
+    if (cached && !fresh && isMarketSummaryUsable(cached)) {
       console.log('[market-summary] cache HIT')
       return res.json(cached)
     }
@@ -1720,8 +1755,14 @@ app.get('/api/market-summary', async (req, res) => {
     const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
     const result = await getMarketSummary(appKey, appSecret, env)
 
-    if (cached?.indices?.length) {
-      const oldByKey = new Map(cached.indices.map((i) => [i.key, i]))
+    // 빈 칸은 5분 캐시 → 마지막 정상값(7일) 순으로 메움
+    const fillFrom = [cached]
+    if (!isMarketSummaryUsable(result)) {
+      fillFrom.push(await getMarketCached('market-summary:last-good'))
+    }
+    for (const src of fillFrom) {
+      if (!src?.indices?.length) continue
+      const oldByKey = new Map(src.indices.map((i) => [i.key, i]))
       for (const idx of result.indices || []) {
         if (idx.value == null || !Number.isFinite(idx.value)) {
           const old = oldByKey.get(idx.key)
@@ -1733,11 +1774,9 @@ app.get('/api/market-summary', async (req, res) => {
       }
     }
 
-    const validCount = (result.indices || []).filter(
-      (i) => i.value != null && Number.isFinite(i.value),
-    ).length
-    if (validCount > 0) {
+    if (isMarketSummaryUsable(result)) {
       await setMarketCached('market-summary', result, 5 * 60 * 1000)
+      await setMarketCached('market-summary:last-good', result, 7 * 24 * 60 * 60 * 1000)
     }
 
     res.json(result)
@@ -1745,7 +1784,9 @@ app.get('/api/market-summary', async (req, res) => {
     const message = e instanceof Error ? e.message : String(e)
     console.error('[market-summary]', message)
     const cached = await getMarketCached('market-summary')
-    if (cached) return res.json(cached)
+    if (cached && isMarketSummaryUsable(cached)) return res.json(cached)
+    const lastGood = await getMarketCached('market-summary:last-good')
+    if (lastGood && isMarketSummaryUsable(lastGood)) return res.json(lastGood)
     res.status(500).json({ indices: [], error: message })
   }
 })
