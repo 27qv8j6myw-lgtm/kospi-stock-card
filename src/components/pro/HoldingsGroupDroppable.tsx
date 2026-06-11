@@ -73,6 +73,7 @@ type Props = {
   onAddStock: () => void
   onNavigate: (path: string) => void
   onDeleteHolding: (holdingId: string) => void
+  disclosures?: Record<string, { count: number; hasMajor: boolean }>
 }
 
 export function HoldingsGroupDroppable({
@@ -87,6 +88,7 @@ export function HoldingsGroupDroppable({
   onAddStock,
   onNavigate,
   onDeleteHolding,
+  disclosures,
 }: Props) {
   const { setNodeRef, isOver } = useDroppable({ id: group.id })
 
@@ -376,6 +378,7 @@ export function HoldingsGroupDroppable({
                 changeClass={changeClass}
                 onNavigate={onNavigate}
                 onDelete={() => onDeleteHolding(h.id)}
+                disclosure={disclosures?.[h.code]}
               />
             ))
           )}

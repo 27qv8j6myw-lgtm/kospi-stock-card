@@ -7,6 +7,8 @@ import {
 import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { logActivity } from '../lib/activityLogger.mjs'
+import { getCachedOrFetch } from '../lib/cacheHelper.mjs'
+import { getDisclosuresForPro } from '../lib/proResearchTools.mjs'
 import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
 import { getKisQuote } from '../lib/toolExecutor.mjs'
@@ -18,6 +20,18 @@ import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 function normalizeCode6(raw) {
   const code = normalizeKisIscd(raw)
   return isValidStockCode(code) && code !== '000000' ? code : ''
+}
+
+/** 주가에 큰 영향을 줄 수 있는 공시 제목 키워드 */
+const MAJOR_DISCLOSURE_RE =
+  /유상증자|무상증자|감자|합병|분할|액면|자기주식|전환사채|신주인수권|교환사채|상장폐지|거래정지|관리종목|불성실공시|횡령|배임|파산|회생|최대주주\s*변경|영업양수|영업양도|단일판매|공급계약|영업\s*\(?잠정\)?\s*실적|소송/
+
+/**
+ * @param {string} report
+ * @returns {boolean}
+ */
+function isMajorDisclosure(report) {
+  return MAJOR_DISCLOSURE_RE.test(String(report || ''))
 }
 
 /**
@@ -209,6 +223,68 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[Holdings Quotes GET]', e)
+      res.status(500).json({ error: message })
+    }
+  }
+
+  /** 보유종목 전체의 최근 7일 공시 맵 (종목당 Supabase 3시간 캐시) */
+  async function handleGetHoldingsDisclosures(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const userSupabase = createUserSupabaseFromRequest(req)
+    if (!userSupabase) {
+      res.status(401).json({ error: '인증 토큰 필요' })
+      return
+    }
+
+    try {
+      const { data: holdings, error } = await userSupabase.from('pro_holdings').select('code')
+      if (error) throw error
+
+      const codes = [
+        ...new Set((holdings || []).map((h) => normalizeCode6(h.code)).filter(Boolean)),
+      ].slice(0, 50)
+
+      /** @type {Record<string, { count: number, hasMajor: boolean, items: Array<{ date: string, report: string, link: string, isMajor: boolean }> }>} */
+      const result = {}
+
+      const CONCURRENCY = 5
+      for (let i = 0; i < codes.length; i += CONCURRENCY) {
+        await Promise.all(
+          codes.slice(i, i + CONCURRENCY).map(async (code) => {
+            const data = /** @type {{ disclosures?: Array<{ date: string, report: string, link: string }> } | null} */ (
+              await getCachedOrFetch(
+                `disclosures:${code}:7d`,
+                () => getDisclosuresForPro(code, 7),
+                3,
+              ).catch(() => null)
+            )
+            const items = (data?.disclosures ?? []).map((d) => ({
+              ...d,
+              isMajor: isMajorDisclosure(d.report),
+            }))
+            if (items.length > 0) {
+              result[code] = {
+                count: items.length,
+                hasMajor: items.some((d) => d.isMajor),
+                items: items.slice(0, 5),
+              }
+            }
+          }),
+        )
+      }
+
+      res.json({ disclosures: result })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[Holdings Disclosures GET]', e)
       res.status(500).json({ error: message })
     }
   }
@@ -833,6 +909,7 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
   app.patch('/api/pro-holdings-group', handlePatchHoldingGroup)
 
   app.get('/api/pro-holdings-quotes', handleGetHoldingsQuotes)
+  app.get('/api/pro-holdings-disclosures', handleGetHoldingsDisclosures)
   app.get('/api/pro-holdings', handleGetHoldings)
   app.get('/api/pro-holding-detail', handleGetHoldingDetail)
   app.post('/api/pro-holdings', handlePostHolding)

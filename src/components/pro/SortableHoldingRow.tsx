@@ -12,6 +12,7 @@ type Props = {
   changeClass: (n: number) => string
   onNavigate: (path: string) => void
   onDelete: () => void
+  disclosure?: { count: number; hasMajor: boolean }
 }
 
 export function SortableHoldingRow({
@@ -20,6 +21,7 @@ export function SortableHoldingRow({
   changeClass,
   onNavigate,
   onDelete,
+  disclosure,
 }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: h.id,
@@ -54,7 +56,21 @@ export function SortableHoldingRow({
         onClick={() => onNavigate(`/pro/holdings/${h.id}`)}
         className="min-w-0 flex-1 text-left"
       >
-        <div className="truncate text-[13px] font-bold text-gray-900">{h.name}</div>
+        <div className="flex min-w-0 items-center gap-1">
+          <span className="truncate text-[13px] font-bold text-gray-900">{h.name}</span>
+          {disclosure ? (
+            <span
+              title={`최근 7일 공시 ${disclosure.count}건${disclosure.hasMajor ? ' (중요 공시 포함)' : ''}`}
+              className={`flex-shrink-0 rounded px-1 py-px text-[9px] font-bold ${
+                disclosure.hasMajor
+                  ? 'bg-amber-500 text-white'
+                  : 'bg-gray-100 text-gray-500'
+              }`}
+            >
+              공시
+            </span>
+          ) : null}
+        </div>
         <div className="truncate text-[10px] tabular-nums text-gray-400">
           {Number(h.quantity).toLocaleString('ko-KR')}주 ·{' '}
           {Number(h.avg_price).toLocaleString('ko-KR')}

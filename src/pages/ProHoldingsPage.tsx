@@ -45,6 +45,8 @@ type ProGroup = {
 
 type HoldingRow = HoldingWithQuotes
 
+type HoldingDisclosure = { count: number; hasMajor: boolean }
+
 type RawHoldingRow = Omit<HoldingRow, 'evalAmount' | 'costAmount' | 'profit' | 'profitPct' | 'weight'> &
   Partial<Pick<HoldingRow, 'evalAmount' | 'costAmount' | 'profit' | 'profitPct' | 'weight'>>
 
@@ -111,6 +113,7 @@ export default function ProHoldingsPage() {
   const [portfolioRefreshKey, setPortfolioRefreshKey] = useState(0)
   const [activeId, setActiveId] = useState<string | null>(null)
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string> | null>(null)
+  const [disclosureMap, setDisclosureMap] = useState<Record<string, HoldingDisclosure>>({})
   const [showGroupFilter, setShowGroupFilter] = useState(false)
   const [showPortfolioDiagnosis, setShowPortfolioDiagnosis] = useState(false)
   const [portfolioOpus, setPortfolioOpus] = useState<string | null>(null)
@@ -221,6 +224,29 @@ export default function ProHoldingsPage() {
   useEffect(() => {
     rawHoldingsRef.current = rawHoldings
   }, [rawHoldings])
+
+  // 보유종목 최근 7일 공시 배지 (보유 코드 목록이 바뀔 때만 재조회)
+  const holdingCodesKey = useMemo(
+    () => [...new Set(rawHoldings.map((h) => String(h.code)))].sort().join(','),
+    [rawHoldings],
+  )
+  useEffect(() => {
+    if (!holdingCodesKey) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const r = await authFetch(apiUrl('/api/pro-holdings-disclosures'))
+        if (!r.ok) return
+        const d = (await r.json()) as { disclosures?: Record<string, HoldingDisclosure> }
+        if (!cancelled && d.disclosures) setDisclosureMap(d.disclosures)
+      } catch {
+        // 공시 배지는 부가 정보 — 실패해도 무시
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [holdingCodesKey])
 
   useEffect(() => {
     if (groups.length === 0) return
@@ -706,6 +732,7 @@ export default function ProHoldingsPage() {
                     onAddStock={() => openAddModal(group.id)}
                     onNavigate={navigate}
                     onDeleteHolding={handleDeleteHolding}
+                    disclosures={disclosureMap}
                   />
                 )
               })}

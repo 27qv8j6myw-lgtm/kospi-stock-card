@@ -47,6 +47,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'pro-holding-detail',
     'pro-holdings-group',
     'pro-holdings-ocr',
+    'pro-holdings-disclosures',
     'pro-groups',
     'pro-group-opus',
     'pro-portfolio-analysis',

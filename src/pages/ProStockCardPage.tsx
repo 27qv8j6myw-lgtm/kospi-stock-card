@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ProActionButtons,
   ProChartQuoteSection,
+  ProDisclosuresSection,
   ProNewsSection,
   ProOpusSection,
   ProSectionGrid,
@@ -293,6 +294,8 @@ export default function ProStockCardPage() {
             />
 
             <ProNewsSection news={summary.news ?? []} newsSummary={summary.newsSummary} />
+
+            <ProDisclosuresSection disclosures={summary.disclosures ?? []} />
 
             <ProActionButtons code={code} name={summary.name || code} />
           </div>
