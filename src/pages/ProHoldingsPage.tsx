@@ -11,14 +11,13 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
-import { ArrowLeft, Briefcase, Check, Filter, FolderPlus, Sparkles } from 'lucide-react'
+import { ArrowLeft, Briefcase, Check, Filter, FolderPlus, RotateCw, Sparkles } from 'lucide-react'
 import { AddHoldingModal } from '@/components/pro/AddHoldingModal'
 import { DragHoldingPreview } from '@/components/pro/DragHoldingPreview'
 import { GroupDiagnosisModal } from '@/components/pro/GroupDiagnosisModal'
 import { HoldingsGroupDroppable } from '@/components/pro/HoldingsGroupDroppable'
 import { GroupSnapshotsChart } from '@/components/pro/GroupSnapshotsChart'
 import { PortfolioAnalysis } from '@/components/pro/PortfolioAnalysis'
-import { PullToRefreshScroll } from '@/components/pro/PullToRefreshScroll'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
 import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
@@ -106,6 +105,7 @@ export default function ProHoldingsPage() {
   const [quotes, setQuotes] = useState<Record<string, HoldingQuote>>({})
   const [groups, setGroups] = useState<ProGroup[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
   const [addToGroupId, setAddToGroupId] = useState<string | null>(null)
   const [portfolioRefreshKey, setPortfolioRefreshKey] = useState(0)
@@ -117,6 +117,8 @@ export default function ProHoldingsPage() {
   const [opusLoading, setOpusLoading] = useState(false)
   const rawHoldingsRef = useRef<RawHoldingRow[]>([])
   const quotesPollInFlightRef = useRef(false)
+  /** 새로고침 시 필터 유지 — 직전에 알고 있던 그룹 id (새 그룹만 자동 선택) */
+  const knownGroupIdsRef = useRef<Set<string> | null>(null)
 
   const holdings = useMemo(
     () => enrichHoldingsWithQuotes(rawHoldings, quotes),
@@ -146,8 +148,8 @@ export default function ProHoldingsPage() {
   }, [])
 
   const load = useCallback(
-    async (opts?: { freshQuotes?: boolean }) => {
-    setLoading(true)
+    async (opts?: { freshQuotes?: boolean; silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true)
     try {
       const [hRes, gRes] = await Promise.all([
         authFetch(apiUrl('/api/pro-holdings')),
@@ -222,12 +224,15 @@ export default function ProHoldingsPage() {
 
   useEffect(() => {
     if (groups.length === 0) return
+    const allIds = groups.map((g) => g.id)
+    const known = knownGroupIdsRef.current
+    knownGroupIdsRef.current = new Set(allIds)
     setSelectedGroupIds((prev) => {
-      const allIds = groups.map((g) => g.id)
       if (prev === null) return new Set(allIds)
       const next = new Set(prev)
+      // 새로 생성된 그룹만 자동 선택 — 기존 선택 해제 상태는 새로고침해도 유지
       for (const id of allIds) {
-        if (!next.has(id)) next.add(id)
+        if (!known?.has(id)) next.add(id)
       }
       for (const id of next) {
         if (!allIds.includes(id)) next.delete(id)
@@ -508,14 +513,21 @@ export default function ProHoldingsPage() {
     setShowAdd(true)
   }
 
+  const handleManualRefresh = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      await load({ freshQuotes: true, silent: true })
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
   const activeHolding = activeId ? holdings.find((h) => h.id === activeId) : undefined
 
   return (
     <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
-      <PullToRefreshScroll
-        onRefresh={() => void load({ freshQuotes: true })}
-        className="max-md:min-h-[calc(100dvh-2rem)] max-md:overflow-y-auto"
-      >
+      <div className="max-md:min-h-[calc(100dvh-2rem)] max-md:overflow-y-auto">
         <div className={`${PRO_CONTENT_WRAP} min-w-0 py-4 pb-12`}>
         <div className="mb-4 flex items-center gap-2">
           <button
@@ -532,9 +544,24 @@ export default function ProHoldingsPage() {
             strokeWidth={1.8}
             aria-hidden
           />
-          <h1 className="min-w-0 flex-1 truncate text-[16px] font-bold text-gray-900 sm:text-[20px]">
+          <h1 className="min-w-0 truncate text-[16px] font-bold text-gray-900 sm:text-[20px]">
             내 보유종목
           </h1>
+          <button
+            type="button"
+            onClick={() => void handleManualRefresh()}
+            disabled={refreshing}
+            aria-label="새로고침"
+            title="새로고침"
+            className="flex-shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-50"
+          >
+            <RotateCw
+              size={16}
+              strokeWidth={2}
+              className={refreshing ? 'animate-spin' : undefined}
+              aria-hidden
+            />
+          </button>
 
           <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">
             <button
@@ -690,7 +717,7 @@ export default function ProHoldingsPage() {
           </DndContext>
         )}
         </div>
-      </PullToRefreshScroll>
+      </div>
 
       {showAdd && addToGroupId ? (
         <AddHoldingModal
