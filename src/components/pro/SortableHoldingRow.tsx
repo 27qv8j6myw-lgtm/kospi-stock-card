@@ -13,6 +13,7 @@ type Props = {
   onNavigate: (path: string) => void
   onDelete: () => void
   disclosure?: { count: number; hasMajor: boolean }
+  onTrade?: (side: 'buy' | 'sell') => void
 }
 
 export function SortableHoldingRow({
@@ -22,6 +23,7 @@ export function SortableHoldingRow({
   onNavigate,
   onDelete,
   disclosure,
+  onTrade,
 }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: h.id,
@@ -95,6 +97,27 @@ export function SortableHoldingRow({
           {formatKRW(h.profit)}
         </div>
       </div>
+
+      {onTrade ? (
+        <div className="flex flex-shrink-0 flex-col gap-0.5">
+          <button
+            type="button"
+            onClick={() => onTrade('buy')}
+            className="rounded bg-red-50 px-1.5 py-0.5 text-[9px] font-bold text-red-600 hover:bg-red-100"
+            aria-label={`${h.name} 매수 기록`}
+          >
+            매수
+          </button>
+          <button
+            type="button"
+            onClick={() => onTrade('sell')}
+            className="rounded bg-blue-50 px-1.5 py-0.5 text-[9px] font-bold text-blue-600 hover:bg-blue-100"
+            aria-label={`${h.name} 매도 기록`}
+          >
+            매도
+          </button>
+        </div>
+      ) : null}
 
       <button
         type="button"

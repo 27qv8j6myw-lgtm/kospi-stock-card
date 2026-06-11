@@ -1,7 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
+import { TradeHistorySection } from '@/components/pro/TradeHistorySection'
 import { ProOpusSection } from '@/components/stock/pro/ProOpusSection'
 import { ProStickySearch } from '@/components/stock/pro/ProStickySearch'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
@@ -65,6 +66,9 @@ export default function ProHoldingDetailPage() {
   const [opus, setOpus] = useState<OpusPayload | null>(null)
   const [opusLoading, setOpusLoading] = useState(true)
   const [loadingMsg, setLoadingMsg] = useState(LOADING_MESSAGES[0])
+  const [detailRefreshKey, setDetailRefreshKey] = useState(0)
+  /** Opus 진단은 보유 정보 재조회(거래 기록 등)와 무관하게 종목당 1회만 실행 */
+  const opusRanForRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!holdingId) return
@@ -95,10 +99,12 @@ export default function ProHoldingDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [holdingId])
+  }, [holdingId, detailRefreshKey])
 
   useEffect(() => {
     if (!holdingId || !holding) return
+    if (opusRanForRef.current === holdingId) return
+    opusRanForRef.current = holdingId
 
     let cancelled = false
     setOpus(null)
@@ -223,6 +229,17 @@ export default function ProHoldingDetailPage() {
             보유 정보 로딩 중…
           </div>
         )}
+
+        {holding?.group_id ? (
+          <TradeHistorySection
+            code={holding.code}
+            name={holding.name || holding.code}
+            groupId={holding.group_id}
+            heldQuantity={Number(holding.quantity) || 0}
+            currentPrice={currentPrice}
+            onChanged={() => setDetailRefreshKey((k) => k + 1)}
+          />
+        ) : null}
 
         {opusLoading && !opus?.analysis ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 py-10 text-center">

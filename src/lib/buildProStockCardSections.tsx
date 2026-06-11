@@ -62,6 +62,7 @@ export type ProSummaryExtended = {
   } | null
   news?: Array<{ title: string; link: string; pubDate?: string }>
   newsSummary?: string | null
+  disclosures?: Array<{ date: string; report: string; link: string }>
 }
 
 export type TechnicalSnapshot = {

@@ -7,6 +7,7 @@ import { requireProUser } from '../lib/proAccess.mjs'
 import { fetchProTopFlow } from '../lib/proTopFlow.mjs'
 import { registerAdminProRoutes } from './adminProRoutes.mjs'
 import { registerProHoldingsRoutes } from './proHoldingsRoutes.mjs'
+import { registerProTradesRoutes } from './proTradesRoutes.mjs'
 import { registerProProfileRoutes } from './proProfileRoutes.mjs'
 import { registerProStockRoutes } from './proStockRoutes.mjs'
 import { registerProTrendsRoute } from './proTrends.mjs'
@@ -384,6 +385,7 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
   registerProTrendsRoute(app, { getSupabaseService, getUserIdFromRequest, requireProUser })
 
   registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerProTradesRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerProProfileRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerProStockRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerAdminProRoutes(app, { getSupabaseService, getUserIdFromRequest })

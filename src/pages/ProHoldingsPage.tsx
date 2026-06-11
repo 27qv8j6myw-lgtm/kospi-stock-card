@@ -13,9 +13,13 @@ import {
 } from '@dnd-kit/core'
 import { ArrowLeft, Briefcase, Check, Filter, FolderPlus, RotateCw, Sparkles } from 'lucide-react'
 import { AddHoldingModal } from '@/components/pro/AddHoldingModal'
+import { TradeModal } from '@/components/pro/TradeModal'
 import { DragHoldingPreview } from '@/components/pro/DragHoldingPreview'
 import { GroupDiagnosisModal } from '@/components/pro/GroupDiagnosisModal'
-import { HoldingsGroupDroppable } from '@/components/pro/HoldingsGroupDroppable'
+import {
+  HoldingsGroupDroppable,
+  type HoldingDnDRow,
+} from '@/components/pro/HoldingsGroupDroppable'
 import { GroupSnapshotsChart } from '@/components/pro/GroupSnapshotsChart'
 import { PortfolioAnalysis } from '@/components/pro/PortfolioAnalysis'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
@@ -114,6 +118,10 @@ export default function ProHoldingsPage() {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string> | null>(null)
   const [disclosureMap, setDisclosureMap] = useState<Record<string, HoldingDisclosure>>({})
+  const [tradeTarget, setTradeTarget] = useState<{
+    holding: HoldingDnDRow
+    side: 'buy' | 'sell'
+  } | null>(null)
   const [showGroupFilter, setShowGroupFilter] = useState(false)
   const [showPortfolioDiagnosis, setShowPortfolioDiagnosis] = useState(false)
   const [portfolioOpus, setPortfolioOpus] = useState<string | null>(null)
@@ -733,6 +741,7 @@ export default function ProHoldingsPage() {
                     onNavigate={navigate}
                     onDeleteHolding={handleDeleteHolding}
                     disclosures={disclosureMap}
+                    onTrade={(holding, side) => setTradeTarget({ holding, side })}
                   />
                 )
               })}
@@ -758,6 +767,23 @@ export default function ProHoldingsPage() {
             setShowAdd(false)
             setAddToGroupId(null)
             void load()
+          }}
+        />
+      ) : null}
+
+      {tradeTarget?.holding.group_id ? (
+        <TradeModal
+          code={tradeTarget.holding.code}
+          name={tradeTarget.holding.name || tradeTarget.holding.code}
+          groupId={tradeTarget.holding.group_id}
+          groupName={groups.find((g) => g.id === tradeTarget.holding.group_id)?.name}
+          heldQuantity={Number(tradeTarget.holding.quantity) || 0}
+          defaultPrice={Number(tradeTarget.holding.currentPrice) || undefined}
+          initialSide={tradeTarget.side}
+          onClose={() => setTradeTarget(null)}
+          onSaved={() => {
+            setTradeTarget(null)
+            void load({ silent: true })
           }}
         />
       ) : null}
