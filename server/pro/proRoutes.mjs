@@ -1,4 +1,5 @@
 import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
+import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { runProChat } from '../ai/proChat.mjs'
 import { logActivity } from '../lib/activityLogger.mjs'
 import { generateConversationTitle } from '../ai/proChatPrompt.mjs'
@@ -381,6 +382,45 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
   }
 
   app.get('/api/pro-top-flow', handleProTopFlow)
+
+  /** 당일(없으면 가장 최근) 장 마감 데일리 브리핑 */
+  async function handleGetDailyBriefing(req, res) {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    const userId = await requireProUser(req, res, supabaseService, getUserIdFromRequest)
+    if (!userId) return
+
+    const userSupabase = createUserSupabaseFromRequest(req)
+    if (!userSupabase) {
+      res.status(401).json({ error: '인증 토큰 필요' })
+      return
+    }
+
+    try {
+      const { data, error } = await userSupabase
+        .from('pro_daily_briefings')
+        .select('brief_date, content, stats, created_at')
+        .order('brief_date', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (error) throw error
+      res.json({ briefing: data ?? null })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      if (/pro_daily_briefings.*(does not exist|relation)/i.test(message)) {
+        res.json({ briefing: null })
+        return
+      }
+      console.error('[Daily Briefing GET]', message)
+      res.status(500).json({ error: message })
+    }
+  }
+
+  app.get('/api/pro-daily-briefing', handleGetDailyBriefing)
 
   registerProTrendsRoute(app, { getSupabaseService, getUserIdFromRequest, requireProUser })
 

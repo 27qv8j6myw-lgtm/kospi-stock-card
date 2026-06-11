@@ -10,6 +10,7 @@ import {
   PRO_DASHBOARD_SCROLL_OFFSET,
   proDesign,
 } from '@/lib/proStockDesign'
+import { DailyBriefingCard } from '@/components/pro/DailyBriefingCard'
 import { ProTopFlow } from '@/components/pro/ProTopFlow'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
 import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
@@ -212,6 +213,8 @@ export default function ProDashboard() {
             Invited Only
           </p>
         </div>
+
+        <DailyBriefingCard />
 
         <ProTopFlow refreshSignal={topFlowRefresh} />
 
