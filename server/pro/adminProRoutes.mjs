@@ -8,6 +8,8 @@ import {
   handleAdminSyncStocksBatch,
   handleAdminSyncStocksFetch,
 } from './adminSyncStocksHandlers.mjs'
+import { inquireDomesticPrice } from '../kisClient.mjs'
+import { fetchYahooMarketSnapshot } from '../marketIndices.mjs'
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000
@@ -280,11 +282,8 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     }
   })
 
-  /**
-   * 관리 탭 비용 섹션 — Anthropic Cost Report Admin API 실제 청구액(USD).
-   * Anthropic은 잔여 크레딧 조회 API를 제공하지 않아 청구 비용만 연동한다.
-   */
-  app.get('/api/admin-anthropic-cost', async (req, res) => {
+  /** 관리 탭 "상태" — KIS 토큰·캐시 신선도·외부 API 라이브 체크 */
+  app.get('/api/admin-datasource-status', async (req, res) => {
     const supabaseService = getSupabaseService()
     if (!supabaseService) {
       res.status(503).json({ error: 'Supabase 미설정' })
@@ -292,89 +291,91 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     }
     if (!(await requireAdmin(req, res))) return
 
-    const adminKey = (process.env.ANTHROPIC_ADMIN_API_KEY ?? '').trim()
-    if (!adminKey) {
-      res.status(503).json({
-        error: 'ANTHROPIC_ADMIN_API_KEY 미설정',
-        hint: 'Anthropic 콘솔에서 Admin API 키(sk-ant-admin…)를 발급해 Vercel 환경변수로 추가하세요.',
-      })
-      return
-    }
-
-    const days = Math.min(Math.max(Number(req.query?.days) || 30, 1), 90)
-    const cacheKey = `anthropic-cost:${days}`
-
     try {
-      const { data: cachedRow } = await supabaseService
+      const kisEnv = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
+      const cacheKeys = [
+        `kis-token:${kisEnv}`,
+        'market-summary',
+        'market-summary:last-good',
+        'top-volume-kospi',
+        'top-momentum-kospi200',
+      ]
+
+      // 만료된 행도 보여주기 위해 expires_at 필터 없이 조회
+      const { data: cacheRows } = await supabaseService
         .from('market_cache')
-        .select('data')
-        .eq('cache_key', cacheKey)
-        .gt('expires_at', new Date().toISOString())
-        .maybeSingle()
-      if (cachedRow?.data) {
-        res.json(cachedRow.data)
-        return
+        .select('cache_key, expires_at, data')
+        .in('cache_key', cacheKeys)
+
+      const now = Date.now()
+      const rowByKey = new Map((cacheRows ?? []).map((r) => [r.cache_key, r]))
+
+      const tokenRow = rowByKey.get(`kis-token:${kisEnv}`)
+      const tokenData = /** @type {{ savedAt?: number } | null} */ (tokenRow?.data ?? null)
+      const kisToken = {
+        exists: Boolean(tokenRow),
+        savedAt: tokenData?.savedAt ? new Date(tokenData.savedAt).toISOString() : null,
+        expiresAt: tokenRow?.expires_at ?? null,
+        expired: tokenRow ? new Date(tokenRow.expires_at).getTime() <= now : null,
       }
 
-      const endingAt = new Date()
-      const startingAt = new Date(endingAt.getTime() - days * DAY_MS)
-
-      /** @type {Record<string, number>} 일자(YYYY-MM-DD) → USD */
-      const byDay = {}
-      let page = null
-      for (let i = 0; i < 10; i++) {
-        const url = new URL('https://api.anthropic.com/v1/organizations/cost_report')
-        url.searchParams.set('starting_at', startingAt.toISOString())
-        url.searchParams.set('ending_at', endingAt.toISOString())
-        url.searchParams.set('bucket_width', '1d')
-        if (page) url.searchParams.set('page', page)
-
-        const r = await fetch(url, {
-          headers: { 'x-api-key': adminKey, 'anthropic-version': '2023-06-01' },
+      const caches = cacheKeys
+        .filter((k) => !k.startsWith('kis-token'))
+        .map((key) => {
+          const row = rowByKey.get(key)
+          return {
+            key,
+            exists: Boolean(row),
+            expiresAt: row?.expires_at ?? null,
+            fresh: row ? new Date(row.expires_at).getTime() > now : false,
+          }
         })
-        if (!r.ok) {
-          const text = await r.text()
-          throw new Error(`Anthropic cost_report ${r.status}: ${text.slice(0, 200)}`)
-        }
-        const body = await r.json()
-        for (const bucket of body?.data ?? []) {
-          const day = String(bucket?.starting_at ?? '').slice(0, 10)
-          if (!day) continue
-          for (const item of bucket?.results ?? []) {
-            const cents = Number(item?.amount)
-            if (Number.isFinite(cents)) byDay[day] = (byDay[day] ?? 0) + cents / 100
+
+      /** @param {() => Promise<unknown>} fn */
+      const timedCheck = async (fn) => {
+        const t0 = Date.now()
+        try {
+          await fn()
+          return { ok: true, ms: Date.now() - t0 }
+        } catch (e) {
+          return {
+            ok: false,
+            ms: Date.now() - t0,
+            error: (e instanceof Error ? e.message : String(e)).slice(0, 200),
           }
         }
-        if (!body?.has_more || !body?.next_page) break
-        page = body.next_page
       }
 
-      const dayRows = Object.entries(byDay)
-        .map(([day, usd]) => ({ day, usd: Math.round(usd * 10000) / 10000 }))
-        .sort((a, b) => a.day.localeCompare(b.day))
-      const totalUsd = Math.round(dayRows.reduce((s, d) => s + d.usd, 0) * 10000) / 10000
+      const appKey = (process.env.KIS_APP_KEY ?? '').trim()
+      const appSecret = (process.env.KIS_APP_SECRET ?? '').trim()
 
-      const result = {
-        days,
-        totalUsd,
-        currency: 'USD',
-        byDay: dayRows,
+      const [kisLive, yahooLive] = await Promise.all([
+        appKey && appSecret
+          ? timedCheck(async () => {
+              const q = await inquireDomesticPrice(appKey, appSecret, kisEnv, '005930', {
+                skipCache: true,
+              })
+              if (!Number.isFinite(Number(q?.price)) || Number(q?.price) <= 0) {
+                throw new Error('시세 0원 응답')
+              }
+            })
+          : Promise.resolve({ ok: false, ms: 0, error: 'KIS 키 미설정' }),
+        timedCheck(async () => {
+          const y = await fetchYahooMarketSnapshot('^KS11')
+          if (!y?.value) throw new Error('빈 응답')
+        }),
+      ])
+
+      res.json({
+        kisEnv,
+        kisToken,
+        caches,
+        live: { kis: kisLive, yahoo: yahooLive },
         generatedAt: new Date().toISOString(),
-      }
-
-      await supabaseService.from('market_cache').upsert(
-        {
-          cache_key: cacheKey,
-          data: result,
-          expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-        },
-        { onConflict: 'cache_key' },
-      )
-
-      res.json(result)
+      })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
-      console.error('[admin-anthropic-cost]', message)
+      console.error('[admin-datasource-status]', message)
       res.status(500).json({ error: message })
     }
   })

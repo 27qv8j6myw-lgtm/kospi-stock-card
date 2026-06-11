@@ -53,7 +53,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'pro-portfolio-opus',
     'admin-pro-toggle',
     'admin-user-portfolio-counts',
-    'admin-anthropic-cost',
+    'admin-datasource-status',
     'admin-pro-stats-users',
     'admin-pro-stats-stocks',
     'admin-pro-stats-hours',
