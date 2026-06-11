@@ -3,7 +3,7 @@
  *
  * 보유종목이 있는 Pro 사용자별로:
  * - 당일 vs 전일 스냅샷 변화, 지수(market-summary), 보유종목 등락 상위/하위 수집
- * - Sonnet 으로 2~3문장 요약 생성 → pro_daily_briefings upsert
+ * - Opus 4.8 로 2~3문장 요약 생성 → pro_daily_briefings upsert
  */
 import Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
@@ -14,7 +14,7 @@ import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { seoulSnapshotDateKey, verifyCronSecret } from '../lib/snapshotProGroups.mjs'
 import { getMarketSummary } from '../marketSummary.mjs'
 
-const BRIEF_MODEL = 'claude-sonnet-4-5'
+const BRIEF_MODEL = 'claude-opus-4-8'
 const BRIEF_TIMEOUT_MS = 30_000
 const QUOTE_DELAY_MS = 120
 
