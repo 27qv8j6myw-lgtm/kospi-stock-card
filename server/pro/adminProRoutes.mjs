@@ -239,6 +239,47 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     }
   })
 
+  /** 관리 탭 사용자 목록 — 사용자별 그룹/보유종목 수 */
+  app.get('/api/admin-user-portfolio-counts', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+    if (!(await requireAdmin(req, res))) return
+
+    try {
+      const [holdingsRes, groupsRes] = await Promise.all([
+        supabaseService.from('pro_holdings').select('user_id'),
+        supabaseService.from('pro_groups').select('user_id'),
+      ])
+      if (holdingsRes.error) {
+        res.status(500).json({ error: holdingsRes.error.message })
+        return
+      }
+      if (groupsRes.error) {
+        res.status(500).json({ error: groupsRes.error.message })
+        return
+      }
+
+      /** @type {Record<string, { groups: number, holdings: number }>} */
+      const counts = {}
+      const bucket = (uid) => (counts[uid] ??= { groups: 0, holdings: 0 })
+      for (const row of holdingsRes.data || []) {
+        if (row.user_id) bucket(row.user_id).holdings += 1
+      }
+      for (const row of groupsRes.data || []) {
+        if (row.user_id) bucket(row.user_id).groups += 1
+      }
+
+      res.json({ counts })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[admin-user-portfolio-counts]', e)
+      res.status(500).json({ error: message })
+    }
+  })
+
   app.get('/api/admin-pro-stats-stocks', async (req, res) => {
     const supabaseService = getSupabaseService()
     if (!supabaseService) {

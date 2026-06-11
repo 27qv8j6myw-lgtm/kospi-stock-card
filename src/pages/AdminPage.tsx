@@ -85,6 +85,9 @@ export default function AdminPage() {
 
   const [users, setUsers] = useState<UserSummaryRow[]>([])
   const [logs, setLogs] = useState<ActivityLogRow[]>([])
+  const [portfolioCounts, setPortfolioCounts] = useState<
+    Record<string, { groups: number; holdings: number }>
+  >({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [dataLoading, setDataLoading] = useState(true)
   const [tab, setTab] = useState<'users' | 'cost'>('users')
@@ -132,6 +135,19 @@ export default function AdminPage() {
     setUsers(mergedUsers)
     setLogs((lRes.data as ActivityLogRow[]) ?? [])
     setDataLoading(false)
+
+    // 그룹/보유종목 수 — 실패해도 사용자 목록 표시에는 영향 없음
+    try {
+      const r = await authFetch(apiUrl('/api/admin-user-portfolio-counts'))
+      if (r.ok) {
+        const d = (await r.json()) as {
+          counts?: Record<string, { groups: number; holdings: number }>
+        }
+        if (d.counts) setPortfolioCounts(d.counts)
+      }
+    } catch {
+      // ignore
+    }
   }, [])
 
   useEffect(() => {
@@ -237,6 +253,7 @@ export default function AdminPage() {
                   const adminOwnRow = isSelf && isAdmin
                   const aiOn = r.ai_enabled === true
                   const proOn = r.pro_enabled === true
+                  const pc = id ? portfolioCounts[id] : undefined
 
                   return (
                     <li
@@ -259,6 +276,11 @@ export default function AdminPage() {
                           <span className="truncate text-sm font-semibold tracking-tight text-gray-900">
                             {label}
                           </span>
+                          {pc ? (
+                            <span className="shrink-0 text-[10px] tabular-nums tracking-tight text-gray-400">
+                              그룹 {pc.groups} · 종목 {pc.holdings}
+                            </span>
+                          ) : null}
                           {blocked ? (
                             <span className="shrink-0 rounded-full bg-gray-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-700">
                               차단됨

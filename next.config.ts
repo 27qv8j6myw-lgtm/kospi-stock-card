@@ -52,6 +52,7 @@ const devApiProxyRewrites = (): { source: string; destination: string }[] => {
     'pro-portfolio-analysis',
     'pro-portfolio-opus',
     'admin-pro-toggle',
+    'admin-user-portfolio-counts',
     'admin-pro-stats-users',
     'admin-pro-stats-stocks',
     'admin-pro-stats-hours',
