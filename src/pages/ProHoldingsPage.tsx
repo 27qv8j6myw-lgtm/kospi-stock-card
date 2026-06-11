@@ -25,7 +25,6 @@ import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
-import { isKrxMarketOpen } from '@/lib/marketHours'
 import {
   enrichHoldingsWithQuotes,
   fetchProHoldingsQuotes,
@@ -130,7 +129,6 @@ export default function ProHoldingsPage() {
   )
 
   const refreshQuotes = useCallback(async (opts?: { fresh?: boolean }) => {
-    if (!isKrxMarketOpen()) return
     const codes = rawHoldingsRef.current.map((h) => h.code).filter(Boolean)
     if (codes.length === 0) return
     if (quotesPollInFlightRef.current) return
@@ -198,7 +196,7 @@ export default function ProHoldingsPage() {
         }
 
         setPortfolioRefreshKey((k) => k + 1)
-        if (rows.length > 0 && isKrxMarketOpen()) {
+        if (rows.length > 0) {
           void refreshQuotes({ fresh: opts?.freshQuotes ?? false })
         }
       }

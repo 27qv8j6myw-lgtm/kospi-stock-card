@@ -62,7 +62,10 @@ export function mergeQuoteMaps(
 }
 
 export function enrichHoldingsWithQuotes(
-  rows: Array<Omit<HoldingWithQuotes, 'evalAmount' | 'costAmount' | 'profit' | 'profitPct' | 'weight'> & Partial<HoldingWithQuotes>>,
+  rows: Array<
+    Omit<HoldingWithQuotes, 'evalAmount' | 'costAmount' | 'profit' | 'profitPct' | 'weight'> &
+      Partial<HoldingWithQuotes>
+  >,
   quotes: Record<string, HoldingQuote>,
 ): HoldingWithQuotes[] {
   const next = rows.map((h) => {
@@ -72,8 +75,7 @@ export function enrichHoldingsWithQuotes(
 
     const live = lookupQuote(quotes, h.code)
     const currentPrice =
-      live?.currentPrice ??
-      (Number(h.currentPrice) > 0 ? Number(h.currentPrice) : 0)
+      live?.currentPrice ?? (Number(h.currentPrice) > 0 ? Number(h.currentPrice) : 0)
     const evalAmount = currentPrice > 0 ? currentPrice * quantity : 0
     const profit = evalAmount > 0 ? evalAmount - costAmount : Number(h.profit) || 0
     const profitPct =
@@ -100,17 +102,42 @@ export function enrichHoldingsWithQuotes(
   }))
 }
 
-/**
- * Pro 보유 시세 — auth quotes API → 실패 시 공개 /api/quote 폴백
- */
-export async function fetchProHoldingsQuotes(
+async function fetchPublicQuotesForCodes(codes: string[]): Promise<Record<string, HoldingQuote>> {
+  const unique = [...new Set(codes.flatMap((c) => holdingCodeKeys(c)))]
+  const out: Record<string, HoldingQuote> = {}
+
+  await Promise.all(
+    unique.map(async (code) => {
+      try {
+        const r = await fetch(apiUrl(`/api/quote?code=${encodeURIComponent(code)}`), {
+          cache: 'no-store',
+        })
+        if (!r.ok) return
+        const d = (await r.json()) as { price?: number; changePercent?: number; error?: string }
+        if (d.error) return
+        const price = Number(d.price)
+        if (!Number.isFinite(price) || price <= 0) return
+        const changePct = Number(d.changePercent)
+        for (const key of holdingCodeKeys(code)) {
+          out[key] = {
+            currentPrice: price,
+            changePct: Number.isFinite(changePct) ? changePct : 0,
+          }
+        }
+      } catch {
+        // ignore per-code errors
+      }
+    }),
+  )
+
+  return out
+}
+
+async function fetchAuthHoldingsQuotes(
   codes: string[],
   authFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
   opts: { fresh?: boolean } = {},
 ): Promise<Record<string, HoldingQuote>> {
-  const unique = [...new Set(codes.flatMap((c) => holdingCodeKeys(c)))]
-  if (unique.length === 0) return {}
-
   const freshQ = opts.fresh ? '&fresh=1' : ''
   const freshQuery = opts.fresh ? '?fresh=1' : ''
 
@@ -127,7 +154,7 @@ export async function fetchProHoldingsQuotes(
       }
     }
   } catch {
-    // fallback below
+    // try legacy path
   }
 
   try {
@@ -141,31 +168,33 @@ export async function fetchProHoldingsQuotes(
       }
     }
   } catch {
-    // fallback below
+    // fallback handled by caller
   }
 
-  const out: Record<string, HoldingQuote> = {}
-  await Promise.all(
-    unique.map(async (code) => {
-      try {
-        const r = await fetch(apiUrl(`/api/quote?code=${encodeURIComponent(code)}`), {
-          cache: 'no-store',
-        })
-        if (!r.ok) return
-        const d = (await r.json()) as { price?: number; changePercent?: number }
-        const price = Number(d.price)
-        if (!Number.isFinite(price) || price <= 0) return
-        const changePct = Number(d.changePercent)
-        for (const key of holdingCodeKeys(code)) {
-          out[key] = {
-            currentPrice: price,
-            changePct: Number.isFinite(changePct) ? changePct : 0,
-          }
-        }
-      } catch {
-        // ignore per-code errors
-      }
-    }),
-  )
-  return out
+  return {}
+}
+
+/**
+ * Pro 보유 시세 — 공개 /api/quote + 인증 quotes API 병렬 조회 (장마감 후 종가 포함)
+ */
+export async function fetchProHoldingsQuotes(
+  codes: string[],
+  authFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  opts: { fresh?: boolean } = {},
+): Promise<Record<string, HoldingQuote>> {
+  const unique = [...new Set(codes.flatMap((c) => holdingCodeKeys(c)))]
+  if (unique.length === 0) return {}
+
+  const [publicQuotes, authQuotes] = await Promise.all([
+    fetchPublicQuotesForCodes(unique),
+    fetchAuthHoldingsQuotes(codes, authFetch, opts),
+  ])
+
+  return mergeQuoteMaps(publicQuotes, authQuotes)
+}
+
+/** 즐겨찾기·단일 종목용 */
+export async function fetchStockQuotePublic(code: string): Promise<HoldingQuote | null> {
+  const merged = await fetchPublicQuotesForCodes([code])
+  return lookupQuote(merged, code) ?? null
 }

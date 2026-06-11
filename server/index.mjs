@@ -1699,33 +1699,53 @@ app.get('/api/stocks-search', async (req, res) => {
 
 registerProRoutes(app, { getSupabaseService, getUserIdFromRequest })
 
-app.get('/api/market-summary', async (_req, res) => {
+app.get('/api/market-summary', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store')
   try {
-    const cached = await getMarketCached('market-summary')
-    if (cached) {
-      console.log('[market-summary] cache HIT')
-      return res.json(cached)
-    }
+    const fresh = String(req.query?.fresh ?? '').trim() === '1'
+    const cached = fresh ? null : await getMarketCached('market-summary')
+
     const appKey = cleanEnvSecret(process.env.KIS_APP_KEY)
     const appSecret = cleanEnvSecret(process.env.KIS_APP_SECRET)
     if (!appKey || !appSecret) {
+      if (cached) return res.json(cached)
       return res.status(503).json({ indices: [], error: 'KIS_APP_KEY, KIS_APP_SECRET 이 필요합니다.' })
     }
+
+    if (cached && !fresh) {
+      console.log('[market-summary] cache HIT')
+      return res.json(cached)
+    }
+
     const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
     const result = await getMarketSummary(appKey, appSecret, env)
-    for (const idx of result.indices || []) {
-      if (idx.key === 'kospi') console.log('[market-summary] KOSPI:', idx)
-      if (idx.key === 'kosdaq') console.log('[market-summary] KOSDAQ:', idx)
-      if (idx.key === 'nasdaq') console.log('[market-summary] NASDAQ:', idx)
-      if (idx.key === 'sp500') console.log('[market-summary] S&P:', idx)
-      if (idx.key === 'usdkrw') console.log('[market-summary] USDKRW:', idx)
-      if (idx.key === 'wti') console.log('[market-summary] WTI:', idx)
+
+    if (cached?.indices?.length) {
+      const oldByKey = new Map(cached.indices.map((i) => [i.key, i]))
+      for (const idx of result.indices || []) {
+        if (idx.value == null || !Number.isFinite(idx.value)) {
+          const old = oldByKey.get(idx.key)
+          if (old?.value != null && Number.isFinite(old.value)) {
+            idx.value = old.value
+            if (idx.change == null && old.change != null) idx.change = old.change
+          }
+        }
+      }
     }
-    await setMarketCached('market-summary', result, 5 * 60 * 1000)
+
+    const validCount = (result.indices || []).filter(
+      (i) => i.value != null && Number.isFinite(i.value),
+    ).length
+    if (validCount > 0) {
+      await setMarketCached('market-summary', result, 5 * 60 * 1000)
+    }
+
     res.json(result)
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     console.error('[market-summary]', message)
+    const cached = await getMarketCached('market-summary')
+    if (cached) return res.json(cached)
     res.status(500).json({ indices: [], error: message })
   }
 })

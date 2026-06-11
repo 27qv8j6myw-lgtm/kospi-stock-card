@@ -1,4 +1,4 @@
-/** KRX 정규장(09:00~15:30) 기준 — 폴링 on/off */
+/** KRX 정규장(09:00~15:30) — 실시간 폴링 주기 제한용 */
 export function isKrxMarketOpen(now = new Date()): boolean {
   const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }))
   const day = kst.getDay()

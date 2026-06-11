@@ -3,6 +3,7 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { GripVertical, Trash2 } from 'lucide-react'
+import { isKrxMarketOpen } from '@/lib/marketHours'
 import type { HoldingDnDRow } from './HoldingsGroupDroppable'
 
 type Props = {
@@ -30,6 +31,8 @@ export function SortableHoldingRow({
     opacity: isDragging ? 0.4 : 1,
   }
 
+  const showCloseLabel = !isKrxMarketOpen() && Number(h.currentPrice) > 0
+
   return (
     <div
       ref={setNodeRef}
@@ -56,7 +59,7 @@ export function SortableHoldingRow({
           {Number(h.quantity).toLocaleString('ko-KR')}주 ·{' '}
           {Number(h.avg_price).toLocaleString('ko-KR')}
           {Number(h.currentPrice) > 0
-            ? ` · ${Number(h.currentPrice).toLocaleString('ko-KR')}`
+            ? ` · ${Number(h.currentPrice).toLocaleString('ko-KR')}${showCloseLabel ? ' 종가' : ''}`
             : ''}
           {h.weight != null && h.weight > 0 ? ` · ${h.weight.toFixed(0)}%` : ''}
         </div>

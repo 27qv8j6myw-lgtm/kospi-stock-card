@@ -14,6 +14,7 @@ import { ProTopFlow } from '@/components/pro/ProTopFlow'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
 import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
 import { removeProWatchlist } from '@/lib/proStockApi'
+import { fetchStockQuotePublic } from '@/lib/proHoldingsQuotes'
 import {
   fetchStockSearch,
   parseStockSearchRows,
@@ -42,7 +43,22 @@ export default function ProDashboard() {
   const loadWatchlist = useCallback(() => {
     void authFetch(apiUrl('/api/pro-watchlist-enriched'))
       .then((r) => (r.ok ? r.json() : { watchlist: [] }))
-      .then((d: { watchlist?: WatchlistItem[] }) => setWatchlist(d.watchlist || []))
+      .then(async (d: { watchlist?: WatchlistItem[] }) => {
+        const list = d.watchlist || []
+        const enriched = await Promise.all(
+          list.map(async (item) => {
+            if (item.currentPrice != null && Number(item.currentPrice) > 0) return item
+            const q = await fetchStockQuotePublic(item.code)
+            if (!q) return item
+            return {
+              ...item,
+              currentPrice: q.currentPrice,
+              changePct: q.changePct,
+            }
+          }),
+        )
+        setWatchlist(enriched)
+      })
       .catch(() => setWatchlist([]))
   }, [])
 

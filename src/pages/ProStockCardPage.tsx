@@ -20,7 +20,6 @@ import {
   type ProSummaryExtended,
   type TechnicalSnapshot,
 } from '@/lib/buildProStockCardSections'
-import { isKrxMarketOpen } from '@/lib/marketHours'
 import { PRO_STOCK_SCROLL_OFFSET, proDesign } from '@/lib/proStockDesign'
 import { STOCK_CODE_PATH_RE } from '@/lib/stockCode'
 
@@ -117,7 +116,7 @@ export default function ProStockCardPage() {
   }, [code])
 
   const pollQuote = useCallback(async () => {
-    if (!code || !isKrxMarketOpen()) return
+    if (!code) return
     try {
       const r = await authFetch(apiUrl(`/api/pro-stock-quote?code=${encodeURIComponent(code)}`))
       if (!r.ok) return

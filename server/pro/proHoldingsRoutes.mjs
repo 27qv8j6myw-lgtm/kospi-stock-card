@@ -99,50 +99,40 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
         return
       }
 
-      const enriched = await Promise.all(
-        holdings.map(async (h) => {
-          const code = normalizeCode6(h.code) || String(h.code)
-          const quantity = Number(h.quantity) || 0
-          const avgPrice = Number(h.avg_price) || 0
-          const costAmount = avgPrice * quantity
+      const codes = [
+        ...new Set(
+          holdings.map((h) => normalizeCode6(h.code)).filter(Boolean),
+        ),
+      ]
+      const skipCache = String(req.query?.fresh ?? '').trim() === '1'
+      const priceMap = await fetchRealtimePrices(codes, { skipCache })
 
-          try {
-            const quote = await getKisQuote(code)
-            const currentPrice = Number(quote?.currentPrice) || 0
-            const evalAmount = currentPrice * quantity
-            const profit = evalAmount - costAmount
-            const profitPct = costAmount > 0 ? (profit / costAmount) * 100 : 0
-            return {
-              ...h,
-              code,
-              name: String(h.name || '').trim() || quote?.name || code,
-              currentPrice,
-              changePct: Number(quote?.changePct) || 0,
-              evalAmount,
-              costAmount,
-              profit,
-              profitPct,
-            }
-          } catch (quoteErr) {
-            const msg = quoteErr instanceof Error ? quoteErr.message : String(quoteErr)
-            console.warn(`[Holdings GET] quote ${code}:`, msg)
-            const profit = -costAmount
-            const profitPct = costAmount > 0 ? (profit / costAmount) * 100 : 0
-            return {
-              ...h,
-              code,
-              name: String(h.name || '').trim() || code,
-              currentPrice: 0,
-              changePct: 0,
-              evalAmount: 0,
-              costAmount,
-              profit,
-              profitPct,
-              quoteError: msg,
-            }
-          }
-        }),
-      )
+      const enriched = holdings.map((h) => {
+        const code = normalizeCode6(h.code) || String(h.code)
+        const quantity = Number(h.quantity) || 0
+        const avgPrice = Number(h.avg_price) || 0
+        const costAmount = avgPrice * quantity
+        const digits = String(code).replace(/\D/g, '').padStart(6, '0')
+        const q = priceMap.get(code) || priceMap.get(digits)
+        const currentPrice =
+          q?.currentPrice != null && Number(q.currentPrice) > 0 ? Number(q.currentPrice) : 0
+        const changePct = q?.changePct != null ? Number(q.changePct) : 0
+        const evalAmount = currentPrice > 0 ? currentPrice * quantity : 0
+        const profit = evalAmount > 0 ? evalAmount - costAmount : 0
+        const profitPct = evalAmount > 0 && costAmount > 0 ? (profit / costAmount) * 100 : 0
+
+        return {
+          ...h,
+          code,
+          name: String(h.name || '').trim() || code,
+          currentPrice,
+          changePct,
+          evalAmount,
+          costAmount,
+          profit,
+          profitPct,
+        }
+      })
 
       const totalEval = enriched.reduce((s, h) => s + (Number(h.evalAmount) || 0), 0)
       const totalCost = enriched.reduce((s, h) => s + (Number(h.costAmount) || 0), 0)
