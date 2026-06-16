@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Activity, Crown, DollarSign, Loader2, Lock, Users } from 'lucide-react'
+import { Activity, Crown, DollarSign, Lightbulb, Loader2, Lock, Users } from 'lucide-react'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { supabase } from '@/lib/supabase'
@@ -11,6 +11,8 @@ import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { ApiUsageDashboard } from '@/components/admin/ApiUsageDashboard'
 import { DataSourceStatusPanel } from '@/components/admin/DataSourceStatusPanel'
+import { CrowdSentimentPanel } from '@/components/admin/CrowdSentimentPanel'
+import { OpsBriefingCard } from '@/components/admin/OpsBriefingCard'
 import {
   AdminMetricsProvider,
   DailyActivityChart,
@@ -91,7 +93,7 @@ export default function AdminPage() {
   >({})
   const [loadError, setLoadError] = useState<string | null>(null)
   const [dataLoading, setDataLoading] = useState(true)
-  const [tab, setTab] = useState<'users' | 'cost' | 'status'>('users')
+  const [tab, setTab] = useState<'users' | 'cost' | 'status' | 'insight'>('users')
 
   useEffect(() => {
     if (!adminRoleReady) return
@@ -206,6 +208,7 @@ export default function AdminPage() {
             { id: 'users' as const, label: '사용자', icon: Users },
             { id: 'cost' as const, label: '비용', icon: DollarSign },
             { id: 'status' as const, label: '상태', icon: Activity },
+            { id: 'insight' as const, label: '인사이트', icon: Lightbulb },
           ] as const
         ).map((t) => {
           const Icon = t.icon
@@ -230,6 +233,12 @@ export default function AdminPage() {
       <div className="mt-4">
         {tab === 'cost' ? <ApiUsageDashboard /> : null}
         {tab === 'status' ? <DataSourceStatusPanel /> : null}
+        {tab === 'insight' ? (
+          <div className="space-y-2">
+            <OpsBriefingCard />
+            <CrowdSentimentPanel />
+          </div>
+        ) : null}
       </div>
 
       {tab === 'users' && dataLoading ? (

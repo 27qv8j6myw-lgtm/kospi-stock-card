@@ -1,6 +1,7 @@
 /**
  * 관리자 — Pro 권한·Pro 활동 통계 API
  */
+import Anthropic from '@anthropic-ai/sdk'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { calcCost } from '../lib/pricing.mjs'
 import { buildUserMap, isAdminUserEmail } from '../lib/userInfo.mjs'
@@ -10,6 +11,11 @@ import {
 } from './adminSyncStocksHandlers.mjs'
 import { inquireDomesticPrice } from '../kisClient.mjs'
 import { fetchYahooMarketSnapshot } from '../marketIndices.mjs'
+import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
+import { logApiUsage } from '../lib/usageLogger.mjs'
+import { getCachedOrFetch } from '../lib/cacheHelper.mjs'
+import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
+import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
 const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000
@@ -1054,6 +1060,322 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[admin-metrics]', e)
+      res.status(500).json({ error: message })
+    }
+  })
+
+  /** 인사이트 — 사용자 집단심리 (집계·익명) */
+  app.get('/api/admin-crowd-sentiment', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+    if (!(await requireAdmin(req, res))) return
+
+    /** 6자리 종목코드로 정규화 (fetchRealtimePrices 와 동일 규칙) */
+    const normalizeCode = (c) => {
+      const up = String(c ?? '')
+        .trim()
+        .toUpperCase()
+      if (/^[0-9A-Z]{6}$/.test(up)) return up
+      const digits = String(c ?? '')
+        .replace(/\D/g, '')
+        .padStart(6, '0')
+      return /^\d{6}$/.test(digits) && digits !== '000000' ? digits : ''
+    }
+
+    const build = async () => {
+      const MIN_HOLDERS = 3
+      const TOP_N = 12
+
+      // 보유 집계 — 종목별 보유자 수 + 가중평균 평단
+      const { data: holdings } = await supabaseService
+        .from('pro_holdings')
+        .select('user_id, code, quantity, avg_price')
+      /** @type {Map<string, { holders: Set<string>, qty: number, costSum: number }>} */
+      const heldMap = new Map()
+      for (const h of holdings || []) {
+        const code = normalizeCode(h.code)
+        if (!code) continue
+        const qty = Number(h.quantity) || 0
+        const avg = Number(h.avg_price) || 0
+        if (qty <= 0) continue
+        if (!heldMap.has(code)) heldMap.set(code, { holders: new Set(), qty: 0, costSum: 0 })
+        const e = heldMap.get(code)
+        if (h.user_id) e.holders.add(String(h.user_id))
+        e.qty += qty
+        e.costSum += avg * qty
+      }
+
+      // 관심 집계 — 종목별 관심 사용자 수
+      const { data: watch } = await supabaseService
+        .from('pro_watchlist')
+        .select('user_id, code')
+      /** @type {Map<string, Set<string>>} */
+      const watchMap = new Map()
+      for (const w of watch || []) {
+        const code = normalizeCode(w.code)
+        if (!code) continue
+        if (!watchMap.has(code)) watchMap.set(code, new Set())
+        if (w.user_id) watchMap.get(code).add(String(w.user_id))
+      }
+
+      // 최근 7일 순매매 집계
+      const since = new Date(Date.now() - SEVEN_DAYS_MS).toISOString().slice(0, 10)
+      const { data: trades } = await supabaseService
+        .from('pro_trades')
+        .select('user_id, code, side, traded_at')
+        .gte('traded_at', since)
+      /** @type {Map<string, { buyers: Set<string>, sellers: Set<string>, buyCount: number, sellCount: number }>} */
+      const tradeMap = new Map()
+      for (const t of trades || []) {
+        const code = normalizeCode(t.code)
+        if (!code) continue
+        if (!tradeMap.has(code)) {
+          tradeMap.set(code, { buyers: new Set(), sellers: new Set(), buyCount: 0, sellCount: 0 })
+        }
+        const e = tradeMap.get(code)
+        if (t.side === 'buy') {
+          e.buyCount += 1
+          if (t.user_id) e.buyers.add(String(t.user_id))
+        } else if (t.side === 'sell') {
+          e.sellCount += 1
+          if (t.user_id) e.sellers.add(String(t.user_id))
+        }
+      }
+
+      // 보유자 N명 이상 종목만 시세 조회 (평균 손익 계산)
+      const heldRanked = [...heldMap.entries()]
+        .filter(([, e]) => e.holders.size >= MIN_HOLDERS)
+        .sort((a, b) => b[1].holders.size - a[1].holders.size)
+        .slice(0, TOP_N)
+      const priceCodes = heldRanked.map(([code]) => code)
+      const priceMap = priceCodes.length ? await fetchRealtimePrices(priceCodes) : new Map()
+
+      const mostWatchedRanked = [...watchMap.entries()]
+        .sort((a, b) => b[1].size - a[1].size)
+        .slice(0, TOP_N)
+      const netFlowRanked = [...tradeMap.entries()]
+        .map(([code, e]) => ({
+          code,
+          netUsers: e.buyers.size - e.sellers.size,
+          buyCount: e.buyCount,
+          sellCount: e.sellCount,
+        }))
+        .sort(
+          (a, b) =>
+            Math.abs(b.netUsers) - Math.abs(a.netUsers) ||
+            b.buyCount + b.sellCount - (a.buyCount + a.sellCount),
+        )
+        .slice(0, TOP_N)
+
+      const allCodes = [
+        ...new Set([
+          ...priceCodes,
+          ...mostWatchedRanked.map(([c]) => c),
+          ...netFlowRanked.map((x) => x.code),
+        ]),
+      ]
+      const nameMap = await stockNameMap(supabaseService, allCodes)
+
+      const mostHeld = heldRanked.map(([code, e]) => {
+        const avgCost = e.qty > 0 ? e.costSum / e.qty : 0
+        const cur = Number(priceMap.get(code)?.currentPrice) || 0
+        const avgPnlPct = avgCost > 0 && cur > 0 ? ((cur - avgCost) / avgCost) * 100 : null
+        return { code, name: nameMap[code] || code, holders: e.holders.size, avgPnlPct }
+      })
+      const mostWatched = mostWatchedRanked.map(([code, set]) => ({
+        code,
+        name: nameMap[code] || code,
+        watchers: set.size,
+      }))
+      const netFlow7d = netFlowRanked.map((x) => ({
+        code: x.code,
+        name: nameMap[x.code] || x.code,
+        netUsers: x.netUsers,
+        buyCount: x.buyCount,
+        sellCount: x.sellCount,
+      }))
+
+      return { mostHeld, mostWatched, netFlow7d, generatedAt: new Date().toISOString() }
+    }
+
+    try {
+      const refresh = String(req.query?.refresh ?? '') === '1'
+      const payload = refresh
+        ? await build()
+        : await getCachedOrFetch('admin-crowd-sentiment', build, 0.5)
+      res.json(payload)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[admin-crowd-sentiment]', e)
+      res.status(500).json({ error: message })
+    }
+  })
+
+  /** 인사이트 — 관리자용 AI 일일 운영 브리핑 (Opus 4.8, 당일 캐시) */
+  app.get('/api/admin-ops-briefing', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+    const adminUserId = await requireAdmin(req, res)
+    if (!adminUserId) return
+
+    const apiKey = (process.env.ANTHROPIC_API_KEY ?? '').trim()
+    if (!apiKey) {
+      res.status(503).json({ error: 'ANTHROPIC_API_KEY 미설정' })
+      return
+    }
+
+    try {
+      const seoulDate = seoulSnapshotDateKey()
+      const cacheKey = `admin-ops-briefing:${seoulDate}`
+      const refresh = String(req.query?.refresh ?? '') === '1'
+
+      if (!refresh) {
+        const { data: cached } = await supabaseService
+          .from('market_cache')
+          .select('data')
+          .eq('cache_key', cacheKey)
+          .gt('expires_at', new Date().toISOString())
+          .maybeSingle()
+        if (cached?.data) {
+          res.json({ briefing: cached.data })
+          return
+        }
+      }
+
+      const day14 = new Date(Date.now() - FOURTEEN_DAYS_MS).toISOString()
+      const day1 = seoulTodayStartIso()
+      const day7Iso = sevenDaysAgoIso()
+
+      const { data: acts } = await supabaseService
+        .from('activity_logs')
+        .select('user_id, action, metadata, created_at')
+        .gte('created_at', day14)
+        .limit(ACTIVITY_FETCH_LIMIT)
+
+      const dauSet = new Set()
+      const wauSet = new Set()
+      /** @type {Record<string, number>} */
+      const stockCount7d = {}
+      for (const a of acts || []) {
+        if (!a.user_id) continue
+        wauSet.add(a.user_id)
+        if (a.created_at && a.created_at >= day1) dauSet.add(a.user_id)
+        if (a.action === 'view_stock' && a.created_at && a.created_at >= day7Iso) {
+          const code = codeFromMetadata(a.metadata)
+          if (code) stockCount7d[code] = (stockCount7d[code] || 0) + 1
+        }
+      }
+      const topStockEntry = Object.entries(stockCount7d).sort((a, b) => b[1] - a[1])[0] || null
+      let topStockName = null
+      if (topStockEntry) {
+        const nm = await stockNameMap(supabaseService, [topStockEntry[0]])
+        topStockName = nm[topStockEntry[0]] || topStockEntry[0]
+      }
+
+      const { data: usage } = await supabaseService
+        .from('pro_api_usage')
+        .select('model, input_tokens, output_tokens, created_at')
+        .gte('created_at', day14)
+        .limit(USAGE_FETCH_LIMIT)
+
+      const seoulDayKey = (iso) =>
+        new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'Asia/Seoul',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        }).format(new Date(iso))
+
+      /** @type {Record<string, number>} */
+      const costByDay = {}
+      for (const u of usage || []) {
+        if (!u.created_at) continue
+        const d = seoulDayKey(u.created_at)
+        costByDay[d] =
+          (costByDay[d] || 0) +
+          calcCost(u.model, Number(u.input_tokens) || 0, Number(u.output_tokens) || 0)
+      }
+      const yesterdayKey = seoulSnapshotDateKey(new Date(Date.now() - DAY_MS))
+      const todayCost = costByDay[seoulDate] || 0
+      const yesterdayCost = costByDay[yesterdayKey] || 0
+      const prevDays = Object.entries(costByDay)
+        .filter(([d]) => d < seoulDate)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .slice(-7)
+        .map(([, v]) => v)
+      const avg7 = prevDays.length ? prevDays.reduce((s, x) => s + x, 0) / prevDays.length : 0
+      const costSpike = avg7 > 0 && todayCost > avg7 * 1.5
+
+      const stats = {
+        dau: dauSet.size,
+        wau: wauSet.size,
+        topStock: topStockEntry
+          ? { code: topStockEntry[0], name: topStockName, views: topStockEntry[1] }
+          : null,
+        todayCostUsd: Number(todayCost.toFixed(2)),
+        yesterdayCostUsd: Number(yesterdayCost.toFixed(2)),
+        avg7CostUsd: Number(avg7.toFixed(2)),
+        costSpike,
+      }
+
+      const lines = [
+        `오늘 활성 사용자(DAU): ${stats.dau}명, 주간 활성(WAU): ${stats.wau}명`,
+        stats.topStock
+          ? `최근 7일 최다 조회 종목: ${stats.topStock.name} (${stats.topStock.views}회)`
+          : null,
+        `오늘 AI 비용: $${stats.todayCostUsd} (어제 $${stats.yesterdayCostUsd}, 최근 7일 평균 $${stats.avg7CostUsd})`,
+        costSpike ? '주의: 오늘 비용이 최근 평균보다 50% 이상 높습니다.' : null,
+      ].filter(Boolean)
+
+      const anthropic = new Anthropic({ apiKey })
+      const resp = await createAnthropicMessage(
+        anthropic,
+        {
+          model: 'claude-opus-4-8',
+          max_tokens: 400,
+          messages: [
+            {
+              role: 'user',
+              content: `서비스 운영자를 위한 오늘의 운영 요약을 2~3문장으로 작성해 주세요.
+
+규칙:
+- 정중한 존댓말, 이모지·인사말 금지, 바로 본문부터
+- 사용자 활동과 AI 비용 흐름, 특이사항(비용 급증 등) 중심
+- 개인 식별 정보(이름·이메일) 언급 금지, 집계 수치만 사용
+- 반드시 완성된 문장으로 마무리
+
+오늘 지표:
+${lines.join('\n')}
+
+운영 요약:`,
+            },
+          ],
+        },
+        30_000,
+      )
+
+      const block = resp.content?.find((b) => b.type === 'text')
+      const content = block && 'text' in block ? String(block.text).trim() : ''
+      if (resp.usage) {
+        await logApiUsage(adminUserId, 'admin-ops-briefing', 'claude-opus-4-8', resp.usage)
+      }
+
+      const briefing = { content, stats, generatedAt: new Date().toISOString() }
+      const expiresAt = new Date(`${seoulDate}T23:59:59+09:00`).toISOString()
+      await supabaseService
+        .from('market_cache')
+        .upsert({ cache_key: cacheKey, data: briefing, expires_at: expiresAt }, { onConflict: 'cache_key' })
+
+      res.json({ briefing })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[admin-ops-briefing]', e)
       res.status(500).json({ error: message })
     }
   })
