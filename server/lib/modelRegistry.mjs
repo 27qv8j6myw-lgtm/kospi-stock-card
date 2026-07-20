@@ -19,10 +19,11 @@ export const DEFAULT_MODEL_IDS = {
   // haiku 는 무날짜 별칭이 제공되지 않아 날짜 포함 스냅샷을 폴백으로 사용
   // (pricing.normalizeModelKey 가 날짜 접미사를 떼어 단가 매칭)
   haiku: 'claude-haiku-4-5-20251001',
+  fable: 'claude-fable-5',
 }
 
-/** @type {{ opus: string | null, sonnet: string | null, haiku: string | null, fetchedAt: number }} */
-const cache = { opus: null, sonnet: null, haiku: null, fetchedAt: 0 }
+/** @type {{ opus: string | null, sonnet: string | null, haiku: string | null, fable: string | null, fetchedAt: number }} */
+const cache = { opus: null, sonnet: null, haiku: null, fable: null, fetchedAt: 0 }
 
 /** @type {Promise<void> | null} */
 let inFlight = null
@@ -30,7 +31,7 @@ let inFlight = null
 /**
  * `created_at` 최신 + 안정 버전 우선으로 family(opus/sonnet) 대표 ID 선택.
  * @param {Array<{ id?: string, created_at?: string }>} models
- * @param {'opus' | 'sonnet'} family
+ * @param {'opus' | 'sonnet' | 'haiku' | 'fable'} family
  * @returns {string | null}
  */
 function pickLatest(models, family) {
@@ -64,15 +65,18 @@ async function fetchModels() {
     const opus = pickLatest(models, 'opus')
     const sonnet = pickLatest(models, 'sonnet')
     const haiku = pickLatest(models, 'haiku')
+    const fable = pickLatest(models, 'fable')
     cache.opus = opus || cache.opus
     cache.sonnet = sonnet || cache.sonnet
     cache.haiku = haiku || cache.haiku
+    cache.fable = fable || cache.fable
     cache.fetchedAt = Date.now()
     console.log(
-      '[modelRegistry] latest opus=%s sonnet=%s haiku=%s',
+      '[modelRegistry] latest opus=%s sonnet=%s haiku=%s fable=%s',
       cache.opus,
       cache.sonnet,
       cache.haiku,
+      cache.fable,
     )
   } catch (e) {
     console.warn('[modelRegistry]', e instanceof Error ? e.message : String(e))
@@ -89,11 +93,18 @@ function maybeRefresh() {
 
 /**
  * 캐시된 최신 모델 ID(동기) — 만료 시 백그라운드 갱신을 트리거한다.
- * @param {'opus' | 'sonnet' | 'haiku'} family
+ * @param {'opus' | 'sonnet' | 'haiku' | 'fable'} family
  * @returns {string}
  */
 export function getLatestModelId(family) {
   maybeRefresh()
-  const fam = family === 'opus' ? 'opus' : family === 'haiku' ? 'haiku' : 'sonnet'
+  const fam =
+    family === 'opus'
+      ? 'opus'
+      : family === 'haiku'
+        ? 'haiku'
+        : family === 'fable'
+          ? 'fable'
+          : 'sonnet'
   return cache[fam] || DEFAULT_MODEL_IDS[fam]
 }

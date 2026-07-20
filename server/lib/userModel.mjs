@@ -114,7 +114,7 @@ export async function getUserModel(userId) {
  */
 export function resolveModelId(model) {
   const m = String(model || '').toLowerCase()
-  if (m === 'fable') return cleanEnv(process.env.FABLE_MODEL_ID) || 'claude-fable-5'
+  if (m === 'fable') return cleanEnv(process.env.FABLE_MODEL_ID) || getLatestModelId('fable')
   if (m === 'opus') return cleanEnv(process.env.OPUS_MODEL_ID) || getLatestModelId('opus')
   if (m === 'haiku') return cleanEnv(process.env.HAIKU_MODEL_ID) || getLatestModelId('haiku')
   return cleanEnv(process.env.SONNET_MODEL_ID) || getLatestModelId('sonnet')
