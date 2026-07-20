@@ -35,7 +35,7 @@ export const PRO_DASHBOARD_SCROLL_OFFSET =
 
 /** Pro 종목카드 본문 — 모바일만 fixed 검색창 높이 보정 */
 export const PRO_STOCK_SCROLL_OFFSET =
-  'max-md:pt-[var(--pro-sticky-search-height,3.5rem)] md:pt-0'
+  'max-md:pt-[calc(var(--pro-sticky-search-height,3.5rem)+1.25rem)] md:pt-5'
 
 export function getNewsSource(link: string): string {
   try {

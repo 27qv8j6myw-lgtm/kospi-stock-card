@@ -5,6 +5,8 @@ import { safeJsonParse } from '../lib/safeJson.mjs'
 import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
 import { getStockMasterByCode } from '../lib/stocksMasterSearch.mjs'
 import { resolveScreeningStockDisplayName } from '../screening/sectorMaster.mjs'
+import { getSupabaseService } from '../lib/supabaseService.mjs'
+import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 
 /** TOP5·섹터 선정·후보 보충 — `SCREENING_AI_MODEL` / `SCREENING_CANDIDATE_AI_MODEL` 로 롤백 가능 */
 export const SCREENING_AI_DEFAULT_MODEL = 'claude-opus-4-8'
@@ -213,7 +215,8 @@ export async function selectTopFiveWithAnalysis(candidates, userId = null, opts 
   const userModel = forced ?? (await getUserModel(userId))
   const envOverride = process.env.SCREENING_AI_MODEL?.trim()
   const modelId = envOverride || resolveModelId(userModel)
-  const maxTokens = userModel === 'opus' ? 4000 : 2500
+  // fable/opus 는 상위 티어(넉넉한 토큰). sonnet 만 하위. fable 은 응답이 길어 여유를 더 준다.
+  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 5000 : 4000
 
   if (rows.length === 0) {
     return { items: [], modelUsed: userModel, anthropicModel: modelId }
@@ -226,6 +229,20 @@ export async function selectTopFiveWithAnalysis(candidates, userId = null, opts 
   }
 
   const client = new Anthropic({ apiKey })
+
+  // 사용자 투자성향(있으면)을 선정/설명 톤에 반영 — 후보군 자체는 변경하지 않음
+  let profileContext = ''
+  if (userId) {
+    try {
+      const supabaseService = getSupabaseService()
+      if (supabaseService) {
+        const profile = await fetchProUserProfile(supabaseService, userId)
+        profileContext = buildProfileContextPrompt(profile)
+      }
+    } catch (e) {
+      console.warn('[Screening AI] 프로필 조회 실패:', e instanceof Error ? e.message : String(e))
+    }
+  }
 
   const prompt = `너는 한국 주식 단기 스크리너로서, ${rows.length}개 후보 중 다음 주 매수 검토 가치 있는 정확히 5개를 엄선한다.
 
@@ -328,7 +345,7 @@ headline, summary, keyDriver, risk 등 모든 텍스트는 정중한 존댓말�
 - JSON 배열만 반환. 추가 설명 텍스트 X
 - 응답 첫 글자는 [, 마지막 글자는 ]
 - markdown 코드블록 X
-`
+${profileContext}`
 
   console.log('[Screening AI] user model:', userModel, '→', modelId)
 

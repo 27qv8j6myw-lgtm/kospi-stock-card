@@ -29,13 +29,15 @@ function getHeaderIcon(text: string) {
 
 const components: Components = {
   h1: ({ children }) => (
-    <h1 className="mt-3 mb-2 text-[15px] font-bold tracking-tight text-gray-900">{children}</h1>
+    <h1 className="mt-3 mb-2 break-words text-[15px] font-bold tracking-tight text-gray-900">
+      {children}
+    </h1>
   ),
   h2: ({ children }) => {
     const text = childText(children)
     const icon = getHeaderIcon(text)
     return (
-      <h2 className="mt-3 mb-2 flex items-center gap-1.5 text-[14px] font-bold tracking-tight text-gray-900">
+      <h2 className="mt-3 mb-2 flex items-center gap-1.5 break-words text-[14px] font-bold tracking-tight text-gray-900">
         {icon ? (
           <span className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-100">
             {icon}
@@ -49,7 +51,7 @@ const components: Components = {
     const text = childText(children)
     const icon = getHeaderIcon(text)
     return (
-      <h3 className="mt-3 mb-1.5 flex items-center gap-1.5 text-[13px] font-bold tracking-tight text-gray-900">
+      <h3 className="mt-3 mb-1.5 flex items-center gap-1.5 break-words text-[13px] font-bold tracking-tight text-gray-900">
         {icon ? (
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-amber-100">
             {icon}
@@ -60,7 +62,9 @@ const components: Components = {
     )
   },
   p: ({ children }) => (
-    <p className="mb-2 text-[13px] leading-relaxed tracking-tight text-gray-900">{children}</p>
+    <p className="mb-2 break-words text-[13px] leading-relaxed tracking-tight text-gray-900">
+      {children}
+    </p>
   ),
   strong: ({ children }) => <strong className="font-bold text-gray-900">{children}</strong>,
   em: ({ children }) => <em className="text-gray-700 italic">{children}</em>,
@@ -70,7 +74,7 @@ const components: Components = {
   ol: ({ children }) => (
     <ol className="mb-2 list-decimal space-y-1 pl-5 text-[13px] text-gray-900">{children}</ol>
   ),
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  li: ({ children }) => <li className="break-words leading-relaxed">{children}</li>,
   table: ({ children }) => (
     <div className="-mx-1 my-3 overflow-x-auto rounded-lg border border-amber-200">
       <table className="w-full border-collapse bg-white text-[12px]">{children}</table>
@@ -134,7 +138,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content }: Markdo
   if (!content) return null
   const normalized = normalizeMarkdown(content)
   return (
-    <div className="prose-chat max-w-none">
+    <div className="prose-chat min-w-0 max-w-none break-words">
       <ReactMarkdown
         remarkPlugins={[[remarkGfm, { singleTilde: false }]]}
         components={components}

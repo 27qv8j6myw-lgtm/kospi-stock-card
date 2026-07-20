@@ -14,8 +14,13 @@ import ProChatPage from './pages/ProChatPage'
 import ProStockCardPage from './pages/ProStockCardPage'
 import ProHoldingDetailPage from './pages/ProHoldingDetailPage'
 import ProHoldingsPage from './pages/ProHoldingsPage'
+import ProTradesLogPage from './pages/ProTradesLogPage'
 import ProTrendsPage from './pages/ProTrendsPage'
+import ProScreenerPage from './pages/ProScreenerPage'
+import ProScreenerArchivePage from './pages/ProScreenerArchivePage'
+import ProDiagnosisArchivePage from './pages/ProDiagnosisArchivePage'
 import { useIsProUser } from './hooks/useIsProUser'
+import { useIsScreenerUser } from './hooks/useIsScreenerUser'
 // 격리: React #300 원인 후보 — ComparePage 비활성화 (복구 시 주석 해제)
 // import ComparePage from './compare/ComparePage'
 import { MainTabs } from './components/MainTabs'
@@ -47,7 +52,13 @@ function App() {
     /^\/pro\/holdings\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
   )
   const isProHoldingsList = pathname === '/pro/holdings' || pathname === '/pro/holdings/'
+  const isProTradesLog = pathname === '/pro/trades' || pathname === '/pro/trades/'
   const isProTrends = pathname === '/pro/trends' || pathname.startsWith('/pro/trends/')
+  const isProScreenerArchive =
+    pathname === '/pro/screener/archive' || pathname === '/pro/screener/archive/'
+  const isProScreener =
+    (pathname === '/pro/screener' || pathname.startsWith('/pro/screener/')) && !isProScreenerArchive
+  const isProArchive = pathname === '/pro/archive' || pathname.startsWith('/pro/archive/')
   const isAdmin = pathname === '/admin' || pathname.startsWith('/admin/')
   const isProChat = pathname === '/pro/chat' || pathname.startsWith('/pro/chat/')
   const isProStock = Boolean(proStockMatch)
@@ -59,11 +70,26 @@ function App() {
       !isProStock &&
       !isProHolding &&
       !isProHoldingsList &&
-      !isProTrends)
+      !isProTradesLog &&
+      !isProTrends &&
+      !isProScreener &&
+      !isProScreenerArchive &&
+      !isProArchive)
   const isProArea =
-    isPro || isProChat || isProStock || isProHolding || isProHoldingsList || isProTrends
+    isPro ||
+    isProChat ||
+    isProStock ||
+    isProHolding ||
+    isProHoldingsList ||
+    isProTradesLog ||
+    isProTrends ||
+    isProScreener ||
+    isProScreenerArchive ||
+    isProArchive
   const isHome = pathname === '/' || pathname === ''
   const { isProUser: showPro, ready: proReady } = useIsProUser(user)
+  const { isScreenerUser, ready: screenerReady } = useIsScreenerUser(user)
+  const canUseScreener = isUserAdmin || isScreenerUser
   const showMainTabs =
     isHome ||
     Boolean(stockMatch) ||
@@ -78,6 +104,27 @@ function App() {
     if (!proReady || !isProArea || showPro) return
     replace('/')
   }, [isProArea, showPro, proReady, replace])
+
+  /** 스크리너(및 아카이브)는 관리자 또는 screener_enabled 권한자만 — 그 외 Pro 사용자는 Pro 홈으로 */
+  useEffect(() => {
+    if (
+      (!isProScreener && !isProScreenerArchive) ||
+      !showPro ||
+      !isAdminRoleReady ||
+      !screenerReady ||
+      canUseScreener
+    )
+      return
+    replace('/pro')
+  }, [
+    isProScreener,
+    isProScreenerArchive,
+    showPro,
+    isAdminRoleReady,
+    screenerReady,
+    canUseScreener,
+    replace,
+  ])
 
   /** Pro 딥링크 — 로그인·리다이렉트로 `/`·`/pro`에 온 경우만 복원 (채팅 → `/pro` 뒤로가기는 복원 금지) */
   useEffect(() => {
@@ -194,12 +241,30 @@ function App() {
     mainContent = showPro ? <ProStockCardPage /> : <HomePage />
   } else if (isProHoldingsList) {
     mainContent = showPro ? <ProHoldingsPage /> : <HomePage />
+  } else if (isProTradesLog) {
+    mainContent = showPro ? <ProTradesLogPage /> : <HomePage />
   } else if (isProHolding) {
     mainContent = showPro ? <ProHoldingDetailPage /> : <HomePage />
   } else if (isProChat) {
     mainContent = showPro ? <ProChatPage /> : <HomePage />
   } else if (isProTrends) {
     mainContent = showPro ? <ProTrendsPage /> : <HomePage />
+  } else if (isProScreenerArchive) {
+    mainContent =
+      showPro && isAdminRoleReady && screenerReady && canUseScreener ? (
+        <ProScreenerArchivePage />
+      ) : (
+        <HomePage />
+      )
+  } else if (isProScreener) {
+    mainContent =
+      showPro && isAdminRoleReady && screenerReady && canUseScreener ? (
+        <ProScreenerPage />
+      ) : (
+        <HomePage />
+      )
+  } else if (isProArchive) {
+    mainContent = showPro ? <ProDiagnosisArchivePage /> : <HomePage />
   } else if (isPro) {
     mainContent = showPro ? <ProDashboard /> : <HomePage />
   } else if (isHome) {

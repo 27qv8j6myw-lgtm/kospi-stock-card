@@ -12,7 +12,8 @@ const CACHE_PROMPT_VERSION = '4'
  * @param {'opus'|'sonnet'} userModel
  */
 function cacheBucketKey(code, userModel) {
-  const m = userModel === 'opus' ? 'opus' : 'sonnet'
+  // 티어별 캐시 분리 (fable 관리자가 sonnet 캐시를 받지 않도록 원본 티어 유지)
+  const m = userModel === 'sonnet' ? 'sonnet' : userModel === 'fable' ? 'fable' : 'opus'
   return `${CACHE_PROMPT_VERSION}-${m}-${code}-${Math.floor(Date.now() / CACHE_TTL_MS)}`
 }
 

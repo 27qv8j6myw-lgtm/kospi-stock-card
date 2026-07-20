@@ -23,6 +23,7 @@ function normalizePathname(raw: string): string {
   )
   if (proHolding) return `/pro/holdings/${proHolding[1]}`
   if (pathOnly === '/pro/holdings' || pathOnly === '/pro/holdings/') return '/pro/holdings'
+  if (pathOnly === '/pro/trades' || pathOnly === '/pro/trades/') return '/pro/trades'
   if (pathOnly === '/pro') return '/pro'
   if (pathOnly === '/' || pathOnly === '') return DEFAULT_HOME_PATH
   if (pathOnly === '/stocks' || pathOnly === '/stocks/') return DEFAULT_STOCK_PATH

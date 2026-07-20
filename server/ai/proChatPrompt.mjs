@@ -3,6 +3,12 @@ import { fetchUserRecentViews } from '../lib/proMarketData.mjs'
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 import { getKisQuote } from '../lib/toolExecutor.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
+import { buildArchiveContextPrompt, fetchRecentDiagnoses } from '../lib/diagnosisArchive.mjs'
+import {
+  buildScreenerArchiveContextPrompt,
+  fetchLatestScreenerArchive,
+} from '../lib/screenerArchive.mjs'
+import { buildMemoryContextPrompt, fetchUserMemories } from '../lib/proUserMemory.mjs'
 
 const HOLDINGS_CONTEXT_MAX = 20
 
@@ -53,6 +59,10 @@ export const SYSTEM_PROMPT = `당신은 한국 주식 단기 트레이딩 전문
 
 2) 답변 구조 — 각 섹션 ## 헤더 필수, 표·숫자·원화 가격 적극 사용:
 
+## [한눈에]
+- 핵심 결론 1줄(매수/관망/매도) + **신뢰도: 상/중/하** + 가장 결정적인 근거 1줄
+- 신뢰도는 데이터 충분성·신호 일관성·이벤트 불확실성을 종합해 스스로 판정
+
 ## [결론]
 - 매수/관망/매도(또는 강한 매수/매도) + 한 줄 핵심 근거
 
@@ -81,14 +91,21 @@ export const SYSTEM_PROMPT = `당신은 한국 주식 단기 트레이딩 전문
 ## [리스크]
 - 하방 리스크 3개 이상 (수급 이탈, 밸류 부담, 이벤트 등)
 
+## [연계 분석] (컨텍스트에 관련 정보가 있을 때만)
+- 보유종목이면: 사용자의 평단가 대비 현재 수익률·물타기/익절 여부를 구체 수치로 연결
+- [이전 진단 기록]이 있으면: 직전 진단 대비 입장(매수/홀딩/익절/손절)이 바뀌었는지, 바뀌었다면 무엇이 왜 바뀌었는지 1줄
+- [최근 AI 스크리너 추천]에 포함된 종목이면: 추천 시점 대비 현재 변화를 짚기
+- 단, 과거 기록보다 현재 실시간 데이터를 우선하며 맹신하지 말 것
+
 3) 분량 — 종목 종합 분석은 **1,500자 이상** (필요 시 3,000자까지). 짧은 요약만으로 끝내지 말 것.
 4) 단순 불릿 나열이 아니라, 수치 근거 → 해석 → 매매 시사점 순으로 서술.
 
 시장/섹터 질문:
 - getMarketIndices, getTopByVolume, getTopByMomentum, searchNews 활용
-- ### 시장 흐름 / ### 핵심 섹터 / ### 관심 종목(1~2개, 데이터 기반)
+- ### 시장 흐름(지수·등락률·거래대금 수치) / ### 핵심 섹터(주도/소외, 근거 수치) / ### 관심 종목(1~2개, 데이터 기반)
+- 추상적 코멘트 금지 — 반드시 지수·등락률·거래대금 등 숫자 근거를 제시
 
-비교 질문: 종목별 위 도구 세트를 각각 호출 후 표로 비교.
+비교 질문: 종목별 위 도구 세트를 각각 호출 후 **마크다운 표로 항목(시세·PER·수급·목표가 등)을 나란히 비교**하고, 마지막에 우선순위와 근거를 명시.
 
 [도구 활용 요약]
 - 종목명만 짧게 물어도 (예: "000660", "SK하이닉스?") 위 **종목 종합 분석 전체** 실행
@@ -145,11 +162,12 @@ function normalizeHoldingCode(raw) {
 }
 
 /**
+ * 보유종목 행 조회 (best-effort, 실패 시 빈 배열).
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseService
  * @param {string} userId
- * @returns {Promise<string>}
+ * @returns {Promise<Array<{ code: unknown, name: unknown, quantity: unknown, avg_price: unknown }>>}
  */
-async function buildHoldingsContext(supabaseService, userId) {
+async function fetchHoldingRows(supabaseService, userId) {
   const { data: holdings, error } = await supabaseService
     .from('pro_holdings')
     .select('code, name, quantity, avg_price')
@@ -159,8 +177,16 @@ async function buildHoldingsContext(supabaseService, userId) {
 
   if (error) {
     console.warn('[Pro Chat] holdings context:', error.message)
-    return ''
+    return []
   }
+  return holdings ?? []
+}
+
+/**
+ * @param {Array<{ code: unknown, name: unknown, quantity: unknown, avg_price: unknown }>} holdings
+ * @returns {Promise<string>}
+ */
+async function buildHoldingsContext(holdings) {
   if (!holdings?.length) return ''
 
   const summaries = await Promise.all(
@@ -188,10 +214,82 @@ async function buildHoldingsContext(supabaseService, userId) {
 }
 
 /**
+ * 메시지 + 보유/최근조회 종목에서 관심 종목코드 후보 추출 (최대 3개).
+ * @param {string} message
+ * @param {Array<{ code: string, name: string }>} recentStocks
+ * @param {Array<{ code: unknown, name: unknown }>} holdings
+ * @returns {string[]}
+ */
+function extractCandidateCodes(message, recentStocks, holdings) {
+  const text = String(message || '')
+  /** @type {Set<string>} */
+  const codes = new Set()
+
+  const re = /\d{6}/g
+  let m
+  while ((m = re.exec(text)) !== null) {
+    const c = m[0]
+    if (isValidStockCode(c) && c !== '000000') codes.add(c)
+  }
+
+  if (text.trim()) {
+    const pool = [
+      ...(holdings || []).map((h) => ({
+        code: normalizeHoldingCode(h.code) || String(h.code || '').trim(),
+        name: String(h.name || '').trim(),
+      })),
+      ...(recentStocks || []),
+    ]
+    for (const s of pool) {
+      const name = String(s.name || '').trim()
+      const code = String(s.code || '').trim()
+      if (name.length >= 2 && text.includes(name) && isValidStockCode(code) && code !== '000000') {
+        codes.add(code)
+      }
+    }
+  }
+
+  return [...codes].slice(0, 3)
+}
+
+/**
+ * 과거 진단 아카이브를 연속성 컨텍스트로 변환 (best-effort).
+ * 관심 종목코드가 있으면 종목별 최근 진단, 없으면 사용자 최근 진단을 주입.
  * @param {import('@supabase/supabase-js').SupabaseClient} supabaseService
  * @param {string} userId
+ * @param {string[]} codes
+ * @returns {Promise<string>}
  */
-export async function buildEnhancedSystemPrompt(supabaseService, userId) {
+async function buildDiagnosisArchiveContext(supabaseService, userId, codes) {
+  try {
+    /** @type {Array<{ created_at: string, current_price: number | null, profit_pct: number | null, meta: Record<string, unknown> | null }>} */
+    let rows = []
+    if (codes.length > 0) {
+      const perCode = await Promise.all(
+        codes.map((code) =>
+          fetchRecentDiagnoses(supabaseService, { userId, kind: 'holding', code, limit: 2 }).catch(
+            () => [],
+          ),
+        ),
+      )
+      rows = perCode.flat()
+    } else {
+      rows = await fetchRecentDiagnoses(supabaseService, { userId, kind: 'holding', limit: 2 }).catch(
+        () => [],
+      )
+    }
+    return buildArchiveContextPrompt(rows)
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabaseService
+ * @param {string} userId
+ * @param {string} [message] 사용자 최신 메시지 (관심 종목 추출용, 선택)
+ */
+export async function buildEnhancedSystemPrompt(supabaseService, userId, message = '') {
   /** @type {Array<{ code: string, name: string }>} */
   let recentStocks = []
 
@@ -219,15 +317,26 @@ export async function buildEnhancedSystemPrompt(supabaseService, userId) {
       ? `\n\n[이번 세션에서 최근 조회한 종목 (참고)]\n${recentStocks.map((v) => `- ${v.name} (${v.code})`).join('\n')}`
       : ''
 
-  const holdingsContext = await buildHoldingsContext(supabaseService, userId)
+  const holdings = await fetchHoldingRows(supabaseService, userId)
+  const holdingsContext = await buildHoldingsContext(holdings)
 
-  const profile = await fetchProUserProfile(supabaseService, userId)
+  const candidateCodes = extractCandidateCodes(message, recentStocks, holdings)
+
+  const [diagnosisArchiveContext, screenerRow, profile, memoryRows] = await Promise.all([
+    buildDiagnosisArchiveContext(supabaseService, userId, candidateCodes),
+    fetchLatestScreenerArchive(supabaseService, userId).catch(() => null),
+    fetchProUserProfile(supabaseService, userId),
+    fetchUserMemories(supabaseService, userId),
+  ])
+
+  const screenerArchiveContext = buildScreenerArchiveContextPrompt(screenerRow)
   const profileContext = buildProfileContextPrompt(profile)
+  const memoryContext = buildMemoryContextPrompt(memoryRows)
 
   const nowKr = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
 
-  /** 상세 분석 지시(SYSTEM_PROMPT) 우선 → 보유/조회 맥락 → 성향은 맨 마지막 보조 */
-  return `${SYSTEM_PROMPT}${holdingsContext}${userContext}${profileContext}\n\n[현재 시각]\n${nowKr}`
+  /** 상세 분석 지시(SYSTEM_PROMPT) 우선 → 기억 원칙 → 보유/조회/아카이브 맥락 → 성향은 맨 마지막 보조 */
+  return `${SYSTEM_PROMPT}${memoryContext}${holdingsContext}${userContext}${diagnosisArchiveContext}${screenerArchiveContext}${profileContext}\n\n[현재 시각]\n${nowKr}`
 }
 
 /**

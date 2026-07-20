@@ -11,6 +11,7 @@ type Props = {
   expandedTools: Record<string, boolean>
   onToggleTools: (id: string) => void
   messagesEndRef: RefObject<HTMLDivElement | null>
+  showModel?: boolean
 }
 
 export const ProChatMessageList = memo(function ProChatMessageList({
@@ -19,6 +20,7 @@ export const ProChatMessageList = memo(function ProChatMessageList({
   expandedTools,
   onToggleTools,
   messagesEndRef,
+  showModel = false,
 }: Props) {
   return (
     <>
@@ -37,7 +39,7 @@ export const ProChatMessageList = memo(function ProChatMessageList({
       ) : null}
 
       <div
-        className={`mx-auto w-full max-w-[700px] space-y-4 ${
+        className={`mx-auto w-full min-w-0 max-w-[700px] space-y-4 ${
           messages.length > 0 ? 'mt-auto' : ''
         }`}
       >
@@ -47,6 +49,7 @@ export const ProChatMessageList = memo(function ProChatMessageList({
             msg={msg}
             expandedTools={Boolean(expandedTools[msg.id])}
             onToggleTools={onToggleTools}
+            showModel={showModel}
           />
         ))}
 

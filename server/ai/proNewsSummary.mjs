@@ -1,8 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
 import { logApiUsage } from '../lib/usageLogger.mjs'
+import { resolveLightTaskModelId } from '../lib/userModel.mjs'
 
-const NEWS_SUMMARY_MODEL = 'claude-opus-4-8'
 const NEWS_SUMMARY_TIMEOUT_MS = 25_000
 
 /**
@@ -45,12 +45,14 @@ export async function summarizeProNewsHeadlines(stockName, news, opts = {}) {
   if (!titles) return null
 
   const client = new Anthropic({ apiKey })
+  // 경량 요약 작업: 비관리자(sonnet 기본)는 haiku 로 비용 절감, opus 부여 사용자는 opus 유지
+  const newsModel = await resolveLightTaskModelId(opts.userId)
 
   try {
     const summaryResp = await createAnthropicMessage(
       client,
       {
-        model: NEWS_SUMMARY_MODEL,
+        model: newsModel,
         max_tokens: 500,
         messages: [
           {
@@ -76,7 +78,7 @@ ${titles}
     )
 
     if (opts.userId && summaryResp.usage) {
-      await logApiUsage(opts.userId, 'news-summary', NEWS_SUMMARY_MODEL, summaryResp.usage)
+      await logApiUsage(opts.userId, 'news-summary', newsModel, summaryResp.usage)
     }
 
     const block = summaryResp.content?.find((b) => b.type === 'text')

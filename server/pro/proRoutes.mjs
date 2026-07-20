@@ -11,6 +11,10 @@ import { registerProHoldingsRoutes } from './proHoldingsRoutes.mjs'
 import { registerProTradesRoutes } from './proTradesRoutes.mjs'
 import { registerProProfileRoutes } from './proProfileRoutes.mjs'
 import { registerProStockRoutes } from './proStockRoutes.mjs'
+import { registerProScreenerRoutes } from './proScreenerRoutes.mjs'
+import { registerProDiagnosisArchiveRoutes } from './proDiagnosisArchiveRoutes.mjs'
+import { registerProScreenerArchiveRoutes } from './proScreenerArchiveRoutes.mjs'
+import { registerProMemoryRoutes } from './proMemoryRoutes.mjs'
 import { registerProTrendsRoute } from './proTrends.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -112,7 +116,7 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
 
     const { data, error } = await supabaseService
       .from('pro_messages')
-      .select('id, role, content, tool_calls, created_at')
+      .select('id, role, content, tool_calls, created_at, model')
       .eq('conversation_id', id)
       .order('created_at')
 
@@ -223,17 +227,18 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
         content: String(m.content ?? ''),
       }))
 
-      const { text: finalText, toolCalls: allToolCalls } = await runProChat(
-        conversationMessages,
-        userId,
-        supabaseService,
-      )
+      const {
+        text: finalText,
+        toolCalls: allToolCalls,
+        model: answeredModel,
+      } = await runProChat(conversationMessages, userId, supabaseService)
 
       const { error: insertAiErr } = await supabaseService.from('pro_messages').insert({
         conversation_id: conversationId,
         role: 'assistant',
         content: finalText,
         tool_calls: allToolCalls.length > 0 ? allToolCalls : null,
+        model: answeredModel,
       })
 
       if (insertAiErr) {
@@ -260,6 +265,7 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
         text: finalText,
         toolCalls: allToolCalls,
         title: newTitle,
+        model: answeredModel,
       })
     } catch (e) {
       const errMsg = mapAnthropicErrorForClient(e)
@@ -428,5 +434,9 @@ export function registerProRoutes(app, { getSupabaseService, getUserIdFromReques
   registerProTradesRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerProProfileRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerProStockRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerProScreenerRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerProDiagnosisArchiveRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerProScreenerArchiveRoutes(app, { getSupabaseService, getUserIdFromRequest })
+  registerProMemoryRoutes(app, { getSupabaseService, getUserIdFromRequest })
   registerAdminProRoutes(app, { getSupabaseService, getUserIdFromRequest })
 }

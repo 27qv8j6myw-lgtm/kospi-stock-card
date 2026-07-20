@@ -432,14 +432,20 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
       return
     }
 
+    const cachedOnly = req.body?.cachedOnly === true
+    const force = req.body?.force === true
+
     try {
-      const payload = await runHoldingOpusDiagnosis(req, userId, holdingId)
-      void logActivity(
-        userId,
-        'diagnosis',
-        { type: 'holding', holdingId, code: payload.code },
-        true,
-      )
+      const payload = await runHoldingOpusDiagnosis(req, userId, holdingId, { cachedOnly, force })
+      // 실제 새 분석을 생성한 경우에만 활동 로그 (캐시/대기 응답 제외)
+      if (!payload.pending && !payload.cached) {
+        void logActivity(
+          userId,
+          'diagnosis',
+          { type: 'holding', holdingId, code: payload.code },
+          true,
+        )
+      }
       res.json(payload)
     } catch (e) {
       const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500

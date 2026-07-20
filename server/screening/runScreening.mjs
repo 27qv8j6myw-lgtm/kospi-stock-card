@@ -157,6 +157,32 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
     s.isLeading = leadingSectorIds.includes(s.id)
   }
 
+  // Pro 스크리너용 전체 종목 세부점수 (이미 계산된 allResults 재사용 — 추가 KIS 호출 없음)
+  const allStocks = filterSectorWhitelistRows(allResults)
+    .slice()
+    .sort((a, b) => b.totalScore - a.totalScore)
+    .map((s) => ({
+      code: s.code,
+      name: resolveScreeningStockDisplayName(s.code, s.name, s.sectorLabel),
+      sectorId: s.sectorId,
+      sectorLabel: s.sectorLabel,
+      totalScore: s.totalScore,
+      subScores: {
+        structure: Number(s.subScores?.structure) || 0,
+        execution: Number(s.subScores?.execution) || 0,
+        market: Number(s.subScores?.market) || 0,
+        supplyDemand: Number(s.subScores?.supplyDemand) || 0,
+        rsi: Number(s.subScores?.rsi) || 0,
+        atrGap: Number(s.subScores?.atrGap) || 0,
+      },
+      per: Number(s.per) || 0,
+      expected1MPct: Number(s.expected1MPct) || 0,
+      currentPrice: Number(s.currentPrice) || 0,
+      changePct: Number(s.changePct) || 0,
+      sectorReturn5D: Number(s.sectorReturn5D) || 0,
+      entryStage: s.entryStage || '',
+    }))
+
   console.log(`[Screening v2] 1단계: ${allResults.length}종목 룰 점수`)
   const candidatesRaw = filterSectorWhitelistRows(allResults)
     .slice()
@@ -269,6 +295,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
     elapsedSec,
     headlineSub: `룰 기반 점수 · 코어 ${ALL_STOCK_CODES.length}종목`,
     sectors,
+    allStocks,
     topFive,
     aiAnalyses: [],
     analysesByCode: {},
@@ -289,6 +316,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
       elapsedSec: result.elapsedSec,
       headlineSub: result.headlineSub,
       sectors: result.sectors,
+      allStocks: result.allStocks,
       topFive: result.topFive,
       aiAnalyses: result.aiAnalyses,
       analysesByCode: result.analysesByCode,

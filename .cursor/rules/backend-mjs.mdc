@@ -1,0 +1,11 @@
+---
+description: 새 백엔드 코드는 반드시 .mjs (Node ESM)로만 작성
+alwaysApply: true
+---
+
+# 백엔드 파일 형식
+
+- **`server/`** 아래에 **새로 만드는 모든 파일**은 **`.mjs`** (JavaScript ESM)로만 작성한다. **`server/**/*.ts` 는 추가하지 않는다.**
+- 루트 **`api/`** (예: `api/[[...path]].mjs`) 는 **Vercel Serverless 엔트리**로만 쓰고, 확장자는 **`.mjs`** 만 사용한다 (레거시 `api/*.ts` 금지).
+- 타입은 **JSDoc** (`@param`, `@returns`, `@typedef`)으로 보완한다. `server/screening/buildScoringInput.mjs` 패턴을 따른다.
+- `src/**/*.ts` 에만 두고 싶은 로직은 그대로 두되, **Express·Lambda·순수 `node`에서 직접 import 할 모듈**은 필요 시 `scripts/`의 esbuild 번들로 `server/**/*.mjs` 로보낸 뒤 그 `.mjs`만 로드한다 (`bundle-indicators.mjs` 참고).

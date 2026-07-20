@@ -7,7 +7,7 @@
 -- ---------------------------------------------------------------------------
 create table if not exists public.user_settings (
   user_id uuid primary key references auth.users (id) on delete cascade,
-  ai_model text not null default 'sonnet' check (ai_model in ('opus', 'sonnet')),
+  ai_model text not null default 'sonnet' check (ai_model in ('opus', 'sonnet', 'fable')),
   set_by uuid references auth.users (id) on delete set null,
   updated_at timestamptz not null default now()
 );
@@ -43,7 +43,7 @@ create policy "Admins can delete settings"
 
 -- ---------------------------------------------------------------------------
 -- [1-3] get_user_model — 서비스 롤·본인·관리자만 임의 user_id 조회
---        (이메일 하드코딩 계정은 항상 opus — 필요 시 IN 목록 수정)
+--        (관리자 계정은 항상 fable — 최상위 모델. 필요 시 IN 목록/관리자 판별 확장)
 -- ---------------------------------------------------------------------------
 create or replace function public.get_user_model(target_user_id uuid)
 returns text
@@ -55,6 +55,7 @@ as $$
 declare
   jwt_role text;
   em text;
+  is_admin_target boolean;
   from_settings text;
 begin
   if target_user_id is null then
@@ -71,8 +72,12 @@ begin
   from auth.users u
   where u.id = target_user_id;
 
-  if em in ('joongsuc@me.com') then
-    return 'opus';
+  -- 관리자 판별: 이메일 허용목록(+ 필요 시 역할/테이블 기반으로 확장).
+  -- 관리자는 최상위 모델(fable)을 항상 사용.
+  is_admin_target := em in ('joongsuc@me.com');
+
+  if is_admin_target then
+    return 'fable';
   end if;
 
   select us.ai_model into from_settings

@@ -22,7 +22,7 @@ export async function analyzePortfolio(holdings, userId = null) {
   const userModel = await getUserModel(userId)
   const envModel = process.env.ANTHROPIC_PORTFOLIO_MODEL?.trim()
   const modelId = envModel || resolveModelId(userModel)
-  const maxTokens = userModel === 'opus' ? 4000 : 2500
+  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 5000 : 4000
 
   const cacheKey = `${userId || 'anon'}|${userModel}|${holdings
     .map((h) => `${h.code}:${h.avgPrice}`)

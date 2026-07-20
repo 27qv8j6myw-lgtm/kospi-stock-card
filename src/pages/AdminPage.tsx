@@ -1,7 +1,17 @@
 'use client'
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Activity, Crown, DollarSign, Lightbulb, Loader2, Lock, Users } from 'lucide-react'
+import {
+  Activity,
+  Crown,
+  DollarSign,
+  Lightbulb,
+  Loader2,
+  Lock,
+  SlidersHorizontal,
+  Sparkles,
+  Users,
+} from 'lucide-react'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { supabase } from '@/lib/supabase'
@@ -11,7 +21,7 @@ import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { ApiUsageDashboard } from '@/components/admin/ApiUsageDashboard'
 import { DataSourceStatusPanel } from '@/components/admin/DataSourceStatusPanel'
-import { CrowdSentimentPanel } from '@/components/admin/CrowdSentimentPanel'
+import { CrowdPortfolioPanel } from '@/components/admin/CrowdPortfolioPanel'
 import { OpsBriefingCard } from '@/components/admin/OpsBriefingCard'
 import {
   AdminMetricsProvider,
@@ -34,8 +44,11 @@ export type UserSummaryRow = {
   last_activity_at?: string | null
   is_blocked?: boolean | null
   ai_model?: string | null
+  ai_workload?: string | null
   ai_enabled?: boolean | null
   pro_enabled?: boolean | null
+  show_usage_cost?: boolean | null
+  screener_enabled?: boolean | null
 }
 
 export type ActivityLogRow = {
@@ -71,6 +84,14 @@ function displayNameRow(r: UserSummaryRow): string {
   return r.email?.split('@')[0] || userIdOfRow(r).slice(0, 8)
 }
 
+function formatModelLabel(id: string | null | undefined): string {
+  if (!id) return ''
+  const m = id.match(/claude-(opus|sonnet|haiku)-(\d+)-(\d+)/i)
+  if (!m) return id
+  const fam = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase()
+  return `${fam} ${m[2]}.${m[3]}`
+}
+
 function isAdminEmail(email: string | null | undefined): boolean {
   const e = (email || '').toLowerCase().trim()
   if (e === 'joongsuc@me.com') return true
@@ -94,6 +115,9 @@ export default function AdminPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [dataLoading, setDataLoading] = useState(true)
   const [tab, setTab] = useState<'users' | 'cost' | 'status' | 'insight'>('users')
+  const [aiModels, setAiModels] = useState<{ opus: string; sonnet: string; fable?: string } | null>(
+    null,
+  )
 
   useEffect(() => {
     if (!adminRoleReady) return
@@ -107,7 +131,7 @@ export default function AdminPage() {
     setLoadError(null)
     const [uRes, sRes, lRes] = await Promise.all([
       supabase.from('user_summary').select('*').order('last_activity_at', { ascending: false, nullsFirst: false }),
-      supabase.from('user_settings').select('user_id, pro_enabled, ai_enabled'),
+      supabase.from('user_settings').select('user_id, pro_enabled, ai_enabled, show_usage_cost'),
       supabase
         .from('activity_logs')
         .select('*')
@@ -122,10 +146,32 @@ export default function AdminPage() {
     setLoadError(errMsg || null)
 
     const settingsByUser = new Map(
-      ((sRes.data as Array<{ user_id: string; pro_enabled?: boolean; ai_enabled?: boolean }>) ?? []).map(
-        (s) => [s.user_id, s],
-      ),
+      ((sRes.data as Array<{
+        user_id: string
+        pro_enabled?: boolean
+        ai_enabled?: boolean
+        show_usage_cost?: boolean
+      }>) ?? []).map((s) => [s.user_id, s]),
     )
+
+    // ai_workload 는 별도 best-effort 조회 — 컬럼 미생성 시에도 위 설정 로드가 깨지지 않도록 분리
+    const workloadByUser = new Map<string, string>()
+    const wRes = await supabase.from('user_settings').select('user_id, ai_workload')
+    if (!wRes.error) {
+      for (const w of (wRes.data as Array<{ user_id: string; ai_workload?: string }>) ?? []) {
+        if (w.ai_workload) workloadByUser.set(w.user_id, w.ai_workload)
+      }
+    }
+
+    // screener_enabled 도 별도 best-effort 조회 (컬럼 미생성 시 메인 로드 보호)
+    const screenerByUser = new Map<string, boolean>()
+    const scRes = await supabase.from('user_settings').select('user_id, screener_enabled')
+    if (!scRes.error) {
+      for (const s of (scRes.data as Array<{ user_id: string; screener_enabled?: boolean }>) ?? []) {
+        screenerByUser.set(s.user_id, s.screener_enabled === true)
+      }
+    }
+
     const mergedUsers = ((uRes.data as UserSummaryRow[]) ?? []).map((row) => {
       const id = userIdOfRow(row)
       const st = id ? settingsByUser.get(id) : undefined
@@ -133,6 +179,9 @@ export default function AdminPage() {
         ...row,
         ai_enabled: row.ai_enabled ?? st?.ai_enabled ?? false,
         pro_enabled: row.pro_enabled ?? st?.pro_enabled ?? false,
+        show_usage_cost: row.show_usage_cost ?? st?.show_usage_cost ?? false,
+        screener_enabled: (id ? screenerByUser.get(id) : undefined) ?? false,
+        ai_workload: (id ? workloadByUser.get(id) : undefined) ?? 'high',
       }
     })
     setUsers(mergedUsers)
@@ -147,6 +196,17 @@ export default function AdminPage() {
           counts?: Record<string, { groups: number; holdings: number }>
         }
         if (d.counts) setPortfolioCounts(d.counts)
+      }
+    } catch {
+      // ignore
+    }
+
+    // 현재 적용 모델 ID — 실패해도 무시
+    try {
+      const r = await authFetch(apiUrl('/api/admin-ai-models'))
+      if (r.ok) {
+        const d = (await r.json()) as { opus?: string; sonnet?: string; fable?: string }
+        if (d.opus && d.sonnet) setAiModels({ opus: d.opus, sonnet: d.sonnet, fable: d.fable })
       }
     } catch {
       // ignore
@@ -236,7 +296,7 @@ export default function AdminPage() {
         {tab === 'insight' ? (
           <div className="space-y-2">
             <OpsBriefingCard />
-            <CrowdSentimentPanel />
+            <CrowdPortfolioPanel />
           </div>
         ) : null}
       </div>
@@ -262,17 +322,20 @@ export default function AdminPage() {
                   const showBlockControls =
                     Boolean(user?.id) && id && user != null && id !== user.id && !isAdminEmail(r.email)
                   const aiTier = r.ai_model === 'opus' ? 'opus' : 'sonnet'
+                  const aiWorkload = normalizeWorkload(r.ai_workload)
                   const lockAiUi = isAdminEmail(r.email) || id === user?.id
                   const isSelf = Boolean(user?.id && id === user.id)
                   const adminOwnRow = isSelf && isAdmin
                   const aiOn = r.ai_enabled === true
                   const proOn = r.pro_enabled === true
+                  const costOn = r.show_usage_cost === true
+                  const screenerOn = r.screener_enabled === true
                   const pc = id ? portfolioCounts[id] : undefined
 
                   return (
                     <li
                       key={id || label}
-                      className={`flex items-center gap-3.5 px-[18px] py-3.5 ${blocked ? 'bg-neutral-bg/80 opacity-90' : ''}`}
+                      className={`flex items-start gap-3.5 px-[18px] py-3.5 ${blocked ? 'bg-neutral-bg/80 opacity-90' : ''}`}
                     >
                       {r.avatar_url ? (
                         <img
@@ -285,92 +348,106 @@ export default function AdminPage() {
                           {initials}
                         </div>
                       )}
-                      <div className="flex min-w-0 flex-1 flex-col gap-1">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <span className="truncate text-sm font-semibold tracking-tight text-gray-900">
-                            {label}
+                      <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                            <span className="min-w-0 break-words text-sm font-semibold tracking-tight text-gray-900">
+                              {label}
+                            </span>
+                            {pc ? (
+                              <span className="shrink-0 text-[10px] tabular-nums tracking-tight text-gray-400">
+                                그룹 {pc.groups} · 종목 {pc.holdings}
+                              </span>
+                            ) : null}
+                            {blocked ? (
+                              <span className="shrink-0 rounded-full bg-gray-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-700">
+                                차단됨
+                              </span>
+                            ) : null}
+                            {adminOwnRow ? (
+                              <span className="shrink-0 rounded bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
+                                AI 활성 (관리자)
+                              </span>
+                            ) : null}
+                          </div>
+                          <span className="break-words text-xs tracking-tight text-gray-400">{r.email || '—'}</span>
+                          <span className="text-[10px] tabular-nums tracking-tight text-gray-400 sm:hidden">
+                            마지막 {last}
                           </span>
-                          {pc ? (
-                            <span className="shrink-0 text-[10px] tabular-nums tracking-tight text-gray-400">
-                              그룹 {pc.groups} · 종목 {pc.holdings}
-                            </span>
-                          ) : null}
-                          {blocked ? (
-                            <span className="shrink-0 rounded-full bg-gray-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-gray-700">
-                              차단됨
-                            </span>
-                          ) : null}
-                          {adminOwnRow ? (
-                            <span className="shrink-0 rounded bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-600">
-                              AI 활성 (관리자)
-                            </span>
-                          ) : blocked ? (
-                            <>
-                              <span
-                                className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
-                                  aiOn ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-200 text-gray-600'
-                                }`}
-                              >
-                                {aiOn ? 'AI ON' : 'AI OFF'}
-                              </span>
-                              <span
-                                className={`inline-flex shrink-0 items-center gap-0.5 rounded-md px-2 py-0.5 text-[10px] font-bold ${
-                                  proOn ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-500'
-                                }`}
-                              >
-                                <Crown size={10} strokeWidth={2} aria-hidden />
-                                PRO {proOn ? 'ON' : 'OFF'}
-                              </span>
-                            </>
-                          ) : (
-                            <>
-                              <AiEnableToggle userId={id} enabled={aiOn} aiModel={aiTier} onUpdated={load} />
-                              <ProEnableToggle userId={id} enabled={proOn} onUpdated={load} />
-                            </>
-                          )}
                         </div>
-                        <span className="truncate text-xs tracking-tight text-gray-400">{r.email || '—'}</span>
-                      </div>
-                      <div className="flex shrink-0 flex-col items-end gap-1.5">
-                        <div className="flex items-center gap-2">
-                          {lockAiUi ? (
-                            <div
-                              className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600"
-                              title="관리자 계정은 Opus 고정"
-                            >
-                              <Lock className="size-2.5 shrink-0" aria-hidden />
-                              <span>Opus</span>
-                            </div>
-                          ) : blocked ? (
-                            <span className="text-[11px] font-medium text-gray-400">
-                              {aiTier === 'opus' ? 'Opus' : 'Sonnet'}
-                            </span>
-                          ) : aiOn ? (
-                            <ModelToggle userId={id} currentModel={aiTier} onUpdated={load} />
-                          ) : null}
-                          {showBlockControls ? (
-                            blocked ? (
-                              <button
-                                type="button"
-                                onClick={() => void handleUnblock(id)}
-                                className="rounded-md border border-green-300 bg-white px-3 py-1 text-[11px] font-medium text-green-700 hover:bg-green-50"
-                              >
-                                해제
-                              </button>
+                        <div className="flex shrink-0 flex-col gap-1.5 sm:items-end">
+                          <div className="flex flex-wrap items-center gap-1.5 sm:justify-end sm:gap-2">
+                            {lockAiUi ? (
+                              <>
+                                <WorkloadToggle userId={id} current={aiWorkload} onUpdated={load} />
+                                <div
+                                  className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600"
+                                  title={`관리자 계정은 Fable 고정 (${aiModels?.fable ?? 'claude-fable-5'})`}
+                                >
+                                  <Lock className="size-2.5 shrink-0" aria-hidden />
+                                  <span>
+                                    {aiModels?.fable ? formatModelLabel(aiModels.fable) : 'Fable 5'}
+                                  </span>
+                                </div>
+                              </>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => void handleBlock(id, r.email || id)}
-                                className="rounded-md border border-red-300 bg-white px-3 py-1 text-[11px] font-medium text-red-600 hover:bg-red-50"
-                              >
-                                차단
-                              </button>
-                            )
-                          ) : null}
+                              <>
+                                {blocked ? (
+                                  <>
+                                    <StatusPill on={aiOn} icon={<Sparkles size={13} strokeWidth={2.2} aria-hidden />} label="AI" />
+                                    <StatusPill on={proOn} icon={<Crown size={13} strokeWidth={2.2} aria-hidden />} label="PRO" tone="amber" />
+                                    <StatusPill on={costOn} icon={<DollarSign size={13} strokeWidth={2.2} aria-hidden />} label="누적 사용금액 표시" tone="emerald" />
+                                    <StatusPill on={screenerOn} icon={<SlidersHorizontal size={13} strokeWidth={2.2} aria-hidden />} label="스크리너" tone="sky" />
+                                  </>
+                                ) : (
+                                  <>
+                                    <AiEnableToggle userId={id} enabled={aiOn} aiModel={aiTier} onUpdated={load} />
+                                    <ProEnableToggle userId={id} enabled={proOn} onUpdated={load} />
+                                    <UsageCostToggle userId={id} enabled={costOn} onUpdated={load} />
+                                    <ScreenerEnableToggle userId={id} enabled={screenerOn} onUpdated={load} />
+                                  </>
+                                )}
+                                {blocked ? (
+                                  <span className="text-[11px] font-medium text-gray-400">
+                                    {aiTier === 'opus'
+                                      ? formatModelLabel(aiModels?.opus) || 'Opus'
+                                      : formatModelLabel(aiModels?.sonnet) || 'Sonnet'}
+                                  </span>
+                                ) : aiOn ? (
+                                  <ModelToggle
+                                    userId={id}
+                                    currentModel={aiTier}
+                                    opusLabel={formatModelLabel(aiModels?.opus) || 'Opus'}
+                                    sonnetLabel={formatModelLabel(aiModels?.sonnet) || 'Sonnet'}
+                                    onUpdated={load}
+                                  />
+                                ) : null}
+                              </>
+                            )}
+                            {showBlockControls ? (
+                              blocked ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleUnblock(id)}
+                                  className="shrink-0 whitespace-nowrap rounded-md border border-green-300 bg-white px-2.5 py-0.5 text-[11px] font-medium text-green-700 hover:bg-green-50"
+                                >
+                                  해제
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleBlock(id, r.email || id)}
+                                  className="shrink-0 whitespace-nowrap rounded-md border border-red-300 bg-white px-2.5 py-0.5 text-[11px] font-medium text-red-600 hover:bg-red-50"
+                                >
+                                  차단
+                                </button>
+                              )
+                            ) : null}
+                          </div>
+                          <span className="hidden text-[10px] tabular-nums tracking-tight text-gray-400 sm:block">
+                            마지막 {last}
+                          </span>
                         </div>
-                        <span className="text-[10px] tabular-nums tracking-tight text-gray-400">
-                          마지막 {last}
-                        </span>
                       </div>
                     </li>
                   )
@@ -399,6 +476,18 @@ export default function AdminPage() {
 }
 
 type AiTier = 'opus' | 'sonnet'
+
+type AiWorkload = 'high' | 'extra' | 'max'
+
+const WORKLOAD_OPTIONS: { value: AiWorkload; label: string }[] = [
+  { value: 'high', label: '높음' },
+  { value: 'extra', label: '추가' },
+  { value: 'max', label: '최대' },
+]
+
+function normalizeWorkload(v: string | null | undefined): AiWorkload {
+  return v === 'extra' || v === 'max' ? v : 'high'
+}
 
 function AiEnableToggle({
   userId,
@@ -443,12 +532,45 @@ function AiEnableToggle({
       type="button"
       disabled={updating}
       onClick={() => void toggle()}
-      className={`rounded-full px-2 py-0.5 text-[10px] font-bold transition-opacity disabled:opacity-50 ${
-        enabled ? 'bg-green-100 text-green-800 hover:bg-green-200' : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+      title={enabled ? 'AI 활성 (눌러서 끄기)' : 'AI 비활성 (눌러서 켜기)'}
+      aria-label={enabled ? 'AI 활성' : 'AI 비활성'}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-colors disabled:opacity-50 ${
+        enabled ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-200 text-gray-400 hover:bg-gray-300'
       }`}
     >
-      {enabled ? 'AI ON' : 'AI OFF'}
+      <Sparkles size={13} strokeWidth={2.2} aria-hidden />
     </button>
+  )
+}
+
+function StatusPill({
+  on,
+  icon,
+  label,
+  tone = 'green',
+}: {
+  on: boolean
+  icon: ReactNode
+  label: string
+  tone?: 'green' | 'amber' | 'emerald' | 'sky'
+}) {
+  const onClass =
+    tone === 'amber'
+      ? 'bg-amber-500 text-white'
+      : tone === 'emerald'
+        ? 'bg-emerald-500 text-white'
+        : tone === 'sky'
+          ? 'bg-sky-500 text-white'
+          : 'bg-green-100 text-green-700'
+  return (
+    <span
+      title={`${label} ${on ? 'ON' : 'OFF'}`}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md p-1 ${
+        on ? onClass : 'bg-gray-200 text-gray-400'
+      }`}
+    >
+      {icon}
+    </span>
   )
 }
 
@@ -488,12 +610,113 @@ function ProEnableToggle({
       type="button"
       disabled={updating}
       onClick={() => void toggle()}
-      className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-bold transition-colors disabled:opacity-50 ${
-        enabled ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-200 text-gray-500 hover:bg-gray-300'
+      title={enabled ? 'PRO ON (눌러서 끄기)' : 'PRO OFF (눌러서 켜기)'}
+      aria-label={enabled ? 'PRO ON' : 'PRO OFF'}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-colors disabled:opacity-50 ${
+        enabled ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-gray-200 text-gray-400 hover:bg-gray-300'
       }`}
     >
-      <Crown size={11} strokeWidth={2} aria-hidden />
-      <span>PRO {enabled ? 'ON' : 'OFF'}</span>
+      <Crown size={13} strokeWidth={2.2} aria-hidden />
+    </button>
+  )
+}
+
+function UsageCostToggle({
+  userId,
+  enabled,
+  onUpdated,
+}: {
+  userId: string
+  enabled: boolean
+  onUpdated: () => Promise<void>
+}) {
+  const [updating, setUpdating] = useState(false)
+
+  const toggle = async () => {
+    if (updating) return
+    setUpdating(true)
+    try {
+      const r = await authFetch(apiUrl('/api/admin-usage-cost-toggle'), {
+        method: 'POST',
+        body: JSON.stringify({ userId, enabled: !enabled }),
+      })
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: string }
+        throw new Error(body.error || r.statusText)
+      }
+      await onUpdated()
+    } catch (e: unknown) {
+      alert('금액 표시 변경 실패: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={updating}
+      onClick={() => void toggle()}
+      title={
+        enabled
+          ? '누적 사용금액 배지 노출 ON (눌러서 끄기)'
+          : '누적 사용금액 배지 노출 OFF (눌러서 켜기)'
+      }
+      aria-label={enabled ? '금액 표시 ON' : '금액 표시 OFF'}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-colors disabled:opacity-50 ${
+        enabled ? 'bg-emerald-500 text-white hover:bg-emerald-600' : 'bg-gray-200 text-gray-400 hover:bg-gray-300'
+      }`}
+    >
+      <DollarSign size={13} strokeWidth={2.2} aria-hidden />
+    </button>
+  )
+}
+
+function ScreenerEnableToggle({
+  userId,
+  enabled,
+  onUpdated,
+}: {
+  userId: string
+  enabled: boolean
+  onUpdated: () => Promise<void>
+}) {
+  const [updating, setUpdating] = useState(false)
+
+  const toggle = async () => {
+    if (updating) return
+    setUpdating(true)
+    try {
+      const r = await authFetch(apiUrl('/api/admin-screener-toggle'), {
+        method: 'POST',
+        body: JSON.stringify({ userId, enabled: !enabled }),
+      })
+      if (!r.ok) {
+        const body = (await r.json().catch(() => ({}))) as { error?: string }
+        throw new Error(body.error || r.statusText)
+      }
+      await onUpdated()
+    } catch (e: unknown) {
+      alert('스크리너 권한 변경 실패: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      disabled={updating}
+      onClick={() => void toggle()}
+      title={
+        enabled ? '스크리너 권한 ON (눌러서 끄기)' : '스크리너 권한 OFF (눌러서 켜기)'
+      }
+      aria-label={enabled ? '스크리너 권한 ON' : '스크리너 권한 OFF'}
+      className={`inline-flex shrink-0 items-center justify-center rounded-md p-1 transition-colors disabled:opacity-50 ${
+        enabled ? 'bg-sky-500 text-white hover:bg-sky-600' : 'bg-gray-200 text-gray-400 hover:bg-gray-300'
+      }`}
+    >
+      <SlidersHorizontal size={13} strokeWidth={2.2} aria-hidden />
     </button>
   )
 }
@@ -501,10 +724,14 @@ function ProEnableToggle({
 function ModelToggle({
   userId,
   currentModel,
+  opusLabel = 'Opus',
+  sonnetLabel = 'Sonnet',
   onUpdated,
 }: {
   userId: string
   currentModel: AiTier
+  opusLabel?: string
+  sonnetLabel?: string
   onUpdated: () => Promise<void>
 }) {
   const { user: actor } = useAuth()
@@ -542,7 +769,7 @@ function ModelToggle({
           currentModel === 'opus' ? 'bg-card font-medium text-primary shadow-sm' : 'text-secondary'
         }`}
       >
-        Opus
+        {opusLabel}
       </button>
       <button
         type="button"
@@ -552,8 +779,64 @@ function ModelToggle({
           currentModel === 'sonnet' ? 'bg-card font-medium text-primary shadow-sm' : 'text-secondary'
         }`}
       >
-        Sonnet
+        {sonnetLabel}
       </button>
+    </div>
+  )
+}
+
+function WorkloadToggle({
+  userId,
+  current,
+  onUpdated,
+}: {
+  userId: string
+  current: AiWorkload
+  onUpdated: () => Promise<void>
+}) {
+  const { user: actor } = useAuth()
+  const [updating, setUpdating] = useState(false)
+
+  const handleChange = async (next: AiWorkload) => {
+    if (next === current || updating) return
+    setUpdating(true)
+    try {
+      const { error } = await supabase.from('user_settings').upsert(
+        {
+          user_id: userId,
+          ai_workload: next,
+          set_by: actor?.id ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      )
+      if (error) throw error
+      await onUpdated()
+    } catch (e: unknown) {
+      alert('작업량 변경 실패: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  return (
+    <div
+      className="inline-flex shrink-0 rounded-md border border-default bg-neutral-bg p-px"
+      title="AI 작업량(토큰 예산) 단계"
+    >
+      {WORKLOAD_OPTIONS.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          disabled={updating}
+          onClick={() => void handleChange(opt.value)}
+          className={`rounded px-2 py-0.5 text-[10px] transition-all ${
+            current === opt.value ? 'bg-card font-medium text-primary shadow-sm' : 'text-secondary'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
     </div>
   )
 }

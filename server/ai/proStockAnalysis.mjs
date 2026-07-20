@@ -4,15 +4,16 @@ import { PRO_ANALYSIS_MAX_TOKENS } from '../lib/opusEngine.mjs'
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { logApiUsage } from '../lib/usageLogger.mjs'
-
-const PRO_STOCK_MODEL = 'claude-opus-4-8'
+import { resolveModelAndMaxTokens } from '../lib/userModel.mjs'
+import { buildArchiveContextPrompt, fetchRecentDiagnoses } from '../lib/diagnosisArchive.mjs'
 
 /**
  * @param {Record<string, unknown>} summary
  * @param {string} code
  * @param {string} [profileContext]
+ * @param {string} [archiveContext]
  */
-function buildAnalysisPrompt(summary, code, profileContext = '') {
+function buildAnalysisPrompt(summary, code, profileContext = '', archiveContext = '') {
   const name = summary?.name ?? code
   const quote = /** @type {Record<string, unknown> | undefined} */ (summary?.quote)
   const news = Array.isArray(summary?.news) ? summary.news : []
@@ -87,7 +88,7 @@ ${
 - 1~3개월 단기·스윙 매매 관점
 - 데이터 없는 항목은 "데이터 없음" 명시, 추측은 "추정" 표기
 - 마크다운 (##, **, |표|, >, 리스트)
-- 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록)`
+- 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록)${archiveContext}`
 }
 
 /**
@@ -102,15 +103,34 @@ export async function runProStockAnalysisStream({ summary, code, userId, send })
   const client = new Anthropic({ apiKey })
 
   let profileContext = ''
+  let archiveContext = ''
+  let pastDiagnoses = 0
   if (userId) {
     const supabaseService = getSupabaseService()
     if (supabaseService) {
       const profile = await fetchProUserProfile(supabaseService, userId)
       profileContext = buildProfileContextPrompt(profile)
+      // 이 종목에 대한 사용자의 과거 진단(아카이브)을 연속성 참고로 주입
+      const archiveRows = await fetchRecentDiagnoses(supabaseService, {
+        userId,
+        kind: 'holding',
+        code,
+        limit: 2,
+      }).catch(() => [])
+      pastDiagnoses = archiveRows.length
+      archiveContext = buildArchiveContextPrompt(archiveRows)
     }
   }
 
-  const prompt = buildAnalysisPrompt(summary, code, profileContext)
+  const prompt = buildAnalysisPrompt(summary, code, profileContext, archiveContext)
+
+  const { modelId: stockModel, maxTokens } = await resolveModelAndMaxTokens(userId, {
+    opusBase: PRO_ANALYSIS_MAX_TOKENS,
+    sonnetBase: 12000,
+    cap: 16000,
+  })
+
+  send('meta', { model: stockModel, pastDiagnoses })
 
   /** @type {import('@anthropic-ai/sdk').MessageParam[]} */
   let messages = [{ role: 'user', content: prompt }]
@@ -118,8 +138,8 @@ export async function runProStockAnalysisStream({ summary, code, userId, send })
 
   for (let round = 0; round <= maxContinuations; round += 1) {
     const stream = await createAnthropicStream(client, {
-      model: PRO_STOCK_MODEL,
-      max_tokens: PRO_ANALYSIS_MAX_TOKENS,
+      model: stockModel,
+      max_tokens: maxTokens,
       messages,
     })
 
@@ -131,7 +151,7 @@ export async function runProStockAnalysisStream({ summary, code, userId, send })
 
     const final = await stream.finalMessage()
     if (userId && final.usage) {
-      await logApiUsage(userId, 'stock-analysis', PRO_STOCK_MODEL, final.usage)
+      await logApiUsage(userId, 'stock-analysis', stockModel, final.usage)
     }
 
     if (final.stop_reason !== 'max_tokens' || round >= maxContinuations) break

@@ -28,12 +28,18 @@ export const ProChatComposer = memo(function ProChatComposer({
 }: Props) {
   const [input, setInput] = useState('')
   const barRef = useRef<HTMLDivElement>(null)
-  const fieldRef = useRef<HTMLTextAreaElement>(null)
+  const fieldRef = useRef<HTMLDivElement>(null)
+
+  const syncFieldHeight = useCallback((el: HTMLElement) => {
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`
+  }, [])
 
   const syncComposerHeight = useCallback(() => {
     const bar = barRef.current
     if (!bar) return
     document.documentElement.style.setProperty('--pro-chat-composer-height', `${bar.offsetHeight}px`)
+    scheduleProChatLayoutReset()
   }, [])
 
   useEffect(() => {
@@ -47,14 +53,22 @@ export const ProChatComposer = memo(function ProChatComposer({
 
   useEffect(() => {
     if (!seedQuery) return
-    setInput((prev) => (prev.trim() ? prev : seedQuery))
-  }, [seedQuery])
+    setInput((prev) => {
+      if (prev.trim()) return prev
+      if (fieldRef.current) {
+        fieldRef.current.textContent = seedQuery
+        syncFieldHeight(fieldRef.current)
+      }
+      return seedQuery
+    })
+  }, [seedQuery, syncFieldHeight])
 
   const submit = useCallback(() => {
-    const text = input.trim()
+    const text = (fieldRef.current?.innerText ?? input).trim()
     if (!text || loading) return
     setInput('')
     if (fieldRef.current) {
+      fieldRef.current.textContent = ''
       fieldRef.current.style.height = 'auto'
     }
     fieldRef.current?.blur()
@@ -62,16 +76,30 @@ export const ProChatComposer = memo(function ProChatComposer({
     void onSend(text)
   }, [input, loading, onSend])
 
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value)
-    e.target.style.height = 'auto'
-    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`
+  const handleInput = useCallback(
+    (e: React.FormEvent<HTMLDivElement>) => {
+      const el = e.currentTarget
+      setInput(el.innerText.replace(/\u00a0/g, ' '))
+      syncFieldHeight(el)
+    },
+    [syncFieldHeight],
+  )
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+    e.preventDefault()
+    const text = e.clipboardData.getData('text/plain')
+    if (!text) return
+    document.execCommand('insertText', false, text)
+  }, [])
+
+  const handleFieldBlur = useCallback(() => {
+    scheduleProChatLayoutReset()
   }, [])
 
   return (
     <div
       ref={barRef}
-      className="pro-chat-composer-bar flex-shrink-0 border-t border-gray-200 bg-white px-3 pt-1.5 md:px-3 md:py-1.5 md:pb-1.5"
+      className="pro-chat-composer-bar flex-shrink-0 border-t border-gray-200 bg-white px-3 py-1.5"
     >
       {chatError ? (
         <div
@@ -103,36 +131,33 @@ export const ProChatComposer = memo(function ProChatComposer({
       <ProProfileSetupHint className="mx-auto mb-2 max-w-[700px]" />
 
       <div
-        className="mx-auto flex max-w-[700px] items-end gap-2 rounded-2xl border border-gray-300 bg-white px-2 py-1 md:py-0.5"
+        className="pro-chat-composer-form mx-auto flex max-w-[700px] items-end gap-2 rounded-2xl border border-gray-300 bg-white px-2 py-1 md:py-0.5"
         role="group"
         aria-label="메시지 입력"
       >
-        <textarea
+        <div
           ref={fieldRef}
-          rows={1}
-          value={input}
-          onChange={handleChange}
-          onBlur={() => scheduleProChatLayoutReset()}
+          contentEditable={!loading}
+          suppressContentEditableWarning
+          role="textbox"
+          aria-multiline="true"
+          aria-label="질문하세요"
+          data-placeholder="질문하세요..."
+          onInput={handleInput}
+          onPaste={handlePaste}
+          onBlur={handleFieldBlur}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               submit()
             }
           }}
-          placeholder="질문하세요..."
-          enterKeyHint="send"
-          inputMode="text"
-          autoComplete="off"
-          autoCorrect="off"
+          lang="ko"
+          autoCorrect="on"
           autoCapitalize="off"
-          spellCheck={false}
-          name="signai-pro-chat-message"
+          spellCheck
           id="signai-pro-chat-message"
-          data-1p-ignore="true"
-          data-lpignore="true"
-          data-form-type="other"
-          className="max-h-[120px] min-h-[2.5rem] flex-1 resize-none px-2 py-2 text-base leading-snug outline-none md:min-h-0 md:py-1.5 md:text-[13px]"
-          disabled={loading}
+          className={`pro-chat-composer-input max-h-[120px] min-h-[2.5rem] flex-1 resize-none overflow-y-auto px-2 py-2 text-base leading-snug outline-none md:min-h-0 md:py-1.5 md:text-[13px]${loading ? ' pointer-events-none opacity-50' : ''}`}
         />
         <button
           type="button"

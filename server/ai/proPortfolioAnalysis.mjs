@@ -4,6 +4,20 @@ import { PRO_ANALYSIS_MAX_TOKENS, runOpusWithTools } from '../lib/opusEngine.mjs
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
+import { resolveModelAndMaxTokens } from '../lib/userModel.mjs'
+import { getCachedOrFetch, hashKey } from '../lib/cacheHelper.mjs'
+import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
+import {
+  archiveDiagnosis,
+  buildArchiveContextPrompt,
+  fetchRecentDiagnoses,
+} from '../lib/diagnosisArchive.mjs'
+
+/** 분석 텍스트가 의미 있을 때만 캐시(실패/대기 메시지 제외) */
+function isCacheableAnalysis(value) {
+  const text = value && typeof value === 'object' ? value.analysis : null
+  return typeof text === 'string' && text.length > 80 && !text.includes('분석이 길어지고')
+}
 
 const PORTFOLIO_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 포트폴리오 진단 시 각 보유 종목의 뉴스·공시·수급·섹터 동향을 반드시 제공된 도구로 직접 조회한 뒤 전체 관점에서 종합 판단합니다.
@@ -222,7 +236,7 @@ export async function runPortfolioOpusDiagnosis(req, userId) {
     }
   }
 
-  const summaryLines = await Promise.all(
+  const summaryData = await Promise.all(
     holdings.map(async (h) => {
       const code = normalizeCode6(h.code)
       const name = String(h.name || '').trim() || code
@@ -231,10 +245,14 @@ export async function runPortfolioOpusDiagnosis(req, userId) {
       const quote = await getKisQuote(code).catch(() => null)
       const cp = Number(quote?.currentPrice) || 0
       const pct = avgPrice > 0 && cp > 0 ? ((cp - avgPrice) / avgPrice) * 100 : 0
-      const sign = pct > 0 ? '+' : ''
-      return `${name}(${code}): ${quantity.toLocaleString('ko-KR')}주, 평단 ${avgPrice.toLocaleString('ko-KR')}원, 현재 ${cp > 0 ? cp.toLocaleString('ko-KR') : '—'}원 (${sign}${pct.toFixed(1)}%)`
+      return { code, name, quantity, avgPrice, cp, pct }
     }),
   )
+
+  const summaryLines = summaryData.map((d) => {
+    const sign = d.pct > 0 ? '+' : ''
+    return `${d.name}(${d.code}): ${d.quantity.toLocaleString('ko-KR')}주, 평단 ${d.avgPrice.toLocaleString('ko-KR')}원, 현재 ${d.cp > 0 ? d.cp.toLocaleString('ko-KR') : '—'}원 (${sign}${d.pct.toFixed(1)}%)`
+  })
 
   const scopeLabel = groupIds ? '선택한 그룹' : '전체'
 
@@ -258,19 +276,71 @@ ${summaryLines.join('\n')}
   const profileContext = buildProfileContextPrompt(profile)
   const system = PORTFOLIO_OPUS_SYSTEM + profileContext
 
-  const { text, toolCalls } = await runOpusWithTools({
-    messages: [{ role: 'user', content: userMessage }],
-    system,
-    userId,
-    maxIterations: 12,
-    maxTokens: PRO_ANALYSIS_MAX_TOKENS,
-    timeoutMs: Number(process.env.PRO_PORTFOLIO_OPUS_TIMEOUT_MS) || 180_000,
-    emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
-    usageLog: { userId, endpoint: 'portfolio-diagnosis' },
+  // 도구 사용(에이전트형) 루프는 항상 opus 고정.
+  // sonnet 은 도구를 여러 턴에 나눠 호출해 왕복이 많아 매우 느리고,
+  // 누적 입력 토큰까지 늘어 비용 이점도 사라지기 때문이다. (작업량 배수는 유지)
+  const { modelId, maxTokens } = await resolveModelAndMaxTokens(userId, {
+    opusBase: PRO_ANALYSIS_MAX_TOKENS,
+    cap: 16000,
+    forceModel: 'opus',
   })
 
-  return {
-    analysis: text,
-    toolsUsed: toolCalls.map((t) => ({ name: t.name, input: t.input })),
-  }
+  // 서버 캐시: 보유구성/가격(~1% 밴드)/당일 기준 동일하면 재사용
+  const scopeKey = groupIds ? groupIds.slice().sort().join('+') : 'all'
+  const sig = summaryData
+    .map((d) => {
+      const step = Math.max(1, Math.round((d.avgPrice > 0 ? d.avgPrice : d.cp || 100) * 0.01))
+      return `${d.code}:${d.cp > 0 ? Math.floor(d.cp / step) : 0}`
+    })
+    .sort()
+    .join(',')
+  const cacheKey = `portfolio-opus:${userId}:${scopeKey}:${seoulSnapshotDateKey()}:${hashKey(sig)}`
+
+  return getCachedOrFetch(
+    cacheKey,
+    async () => {
+      // 동일 범위(전체/선택 그룹)의 과거 포트폴리오 진단을 참고 맥락으로 주입
+      const archiveContext = buildArchiveContextPrompt(
+        await fetchRecentDiagnoses(supabaseService, {
+          userId,
+          kind: 'portfolio',
+          refId: scopeKey,
+          limit: 2,
+        }),
+      )
+
+      const { text, toolCalls } = await runOpusWithTools({
+        messages: [{ role: 'user', content: userMessage + archiveContext }],
+        system,
+        userId,
+        modelId,
+        maxIterations: 12,
+        maxTokens,
+        timeoutMs: Number(process.env.PRO_PORTFOLIO_OPUS_TIMEOUT_MS) || 180_000,
+        emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
+        usageLog: { userId, endpoint: 'portfolio-diagnosis', model: modelId },
+      })
+      const value = {
+        analysis: text,
+        toolsUsed: toolCalls.map((t) => ({ name: t.name, input: t.input })),
+      }
+
+      // 새 진단 생성 시점에만 아카이브 보관
+      if (isCacheableAnalysis(value)) {
+        void archiveDiagnosis(supabaseService, {
+          userId,
+          kind: 'portfolio',
+          refId: scopeKey,
+          title: groupIds ? '선택 그룹 포트폴리오' : '전체 포트폴리오',
+          analysis: text,
+          model: modelId,
+          meta: { scope: scopeKey, holdings: summaryData.length },
+        })
+      }
+
+      return value
+    },
+    6,
+    isCacheableAnalysis,
+  )
 }

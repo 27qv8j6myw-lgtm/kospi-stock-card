@@ -61,7 +61,7 @@ export async function getCachedScreening(sector, model) {
     .then(() => {})
     .catch(() => {})
 
-  const m = model === 'opus' ? 'opus' : 'sonnet'
+  const m = model === 'sonnet' ? 'sonnet' : 'opus'
   console.log(`[Cache HIT] ${sector}/${m} (${nextHits}회)`)
 
   return {
@@ -82,7 +82,7 @@ export async function setCachedScreening(sector, model, result, userId) {
   if (!supabase) return
   const cacheKey = makeCacheKey(sector, model)
   const expiresAt = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000).toISOString()
-  const m = model === 'opus' ? 'opus' : 'sonnet'
+  const m = model === 'sonnet' ? 'sonnet' : 'opus'
   const { error } = await supabase.from('screening_cache').upsert(
     {
       cache_key: cacheKey,
@@ -133,7 +133,7 @@ export async function clearAllScreeningCache() {
 export function makeAutoScreeningCacheKey(model) {
   const now = new Date()
   const bucket = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours()).getTime()
-  const m = model === 'opus' ? 'opus' : 'sonnet'
+  const m = model === 'sonnet' ? 'sonnet' : 'opus'
   return `auto-screening:v2:${m}:${bucket}`
 }
 
@@ -177,7 +177,7 @@ export async function getCachedAutoScreening(cacheKey) {
 export async function setCachedAutoScreening(cacheKey, result) {
   if (!supabase) return
   const expiresAt = new Date(Date.now() + CACHE_TTL_HOURS * 60 * 60 * 1000).toISOString()
-  const m = result.model === 'opus' ? 'opus' : 'sonnet'
+  const m = result.model === 'sonnet' ? 'sonnet' : 'opus'
   const { error } = await supabase.from('screening_cache').upsert(
     {
       cache_key: cacheKey,
@@ -200,7 +200,7 @@ export async function setCachedAutoScreening(cacheKey, result) {
  */
 export async function getLastAutoScreeningCache(model = 'opus') {
   if (!supabase) return null
-  const m = model === 'opus' ? 'opus' : 'sonnet'
+  const m = model === 'sonnet' ? 'sonnet' : 'opus'
 
   const { data, error } = await supabase
     .from('screening_cache')

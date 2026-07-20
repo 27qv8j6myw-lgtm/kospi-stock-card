@@ -40,6 +40,7 @@ export function MainTabs({ pathname, navigate, isAdmin = false }: MainTabsProps)
         pathname.startsWith('/pro/stock/') ||
         pathname === '/pro/holdings' ||
         pathname.startsWith('/pro/holdings/') ||
+        pathname === '/pro/trades' ||
         pathname === '/pro/trends' ||
         pathname.startsWith('/pro/trends/')
       )

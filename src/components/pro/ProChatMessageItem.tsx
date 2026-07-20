@@ -1,9 +1,10 @@
 'use client'
 
 import { memo } from 'react'
-import { Check, Database, Loader2 } from 'lucide-react'
+import { Check, Cpu, Database, Loader2 } from 'lucide-react'
 import { MarkdownMessage } from '@/components/chat/MarkdownMessage'
 import { ProChatStockLinks } from '@/components/pro/ProChatStockLinks'
+import { formatModelLabel } from '@/lib/claudeModelDisplay'
 import type { ProMessage, ProToolCallUi } from '@/lib/proChatApi'
 
 function groupToolCalls(toolCalls: ProToolCallUi[]) {
@@ -97,10 +98,11 @@ type Props = {
   msg: ProMessage
   expandedTools: boolean
   onToggleTools: (id: string) => void
+  showModel?: boolean
 }
 
 export const ProChatMessageItem = memo(
-  function ProChatMessageItem({ msg, expandedTools, onToggleTools }: Props) {
+  function ProChatMessageItem({ msg, expandedTools, onToggleTools, showModel = false }: Props) {
     if (
       msg.role === 'assistant' &&
       !msg.streaming &&
@@ -113,7 +115,7 @@ export const ProChatMessageItem = memo(
     if (msg.role === 'user') {
       return (
         <div className="flex justify-end">
-          <div className="max-w-[80%] rounded-2xl rounded-br-md bg-gray-900 px-3.5 py-2 text-[13px] leading-relaxed text-white">
+          <div className="max-w-[80%] min-w-0 break-words whitespace-pre-wrap rounded-2xl rounded-br-md bg-gray-900 px-3.5 py-2 text-[13px] leading-relaxed text-white">
             {msg.content}
           </div>
         </div>
@@ -121,7 +123,7 @@ export const ProChatMessageItem = memo(
     }
 
     return (
-      <div className="max-w-[90%]">
+      <div className="max-w-[90%] min-w-0">
         {msg.tool_calls && msg.tool_calls.length > 0 ? (
           <ToolCallsPanel
             msgId={msg.id}
@@ -130,13 +132,19 @@ export const ProChatMessageItem = memo(
             onToggle={onToggleTools}
           />
         ) : null}
-        <div className="rounded-2xl rounded-tl-md bg-gray-50 px-3.5 py-2.5">
+        <div className="min-w-0 overflow-hidden rounded-2xl rounded-tl-md bg-gray-50 px-3.5 py-2.5">
           <MarkdownMessage content={msg.content} />
           {msg.streaming ? (
             <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-gray-900 align-middle" />
           ) : null}
           {!msg.streaming ? <ProChatStockLinks toolCalls={msg.tool_calls} /> : null}
         </div>
+        {showModel && !msg.streaming && msg.model ? (
+          <div className="mt-1 flex items-center gap-1 pl-1 text-[10px] text-gray-400">
+            <Cpu size={10} className="text-gray-400" />
+            <span className="font-medium">{formatModelLabel(msg.model)}</span>
+          </div>
+        ) : null}
       </div>
     )
   },
@@ -145,6 +153,8 @@ export const ProChatMessageItem = memo(
     prev.msg.role === next.msg.role &&
     prev.msg.content === next.msg.content &&
     prev.msg.streaming === next.msg.streaming &&
+    prev.msg.model === next.msg.model &&
+    prev.showModel === next.showModel &&
     prev.expandedTools === next.expandedTools &&
     toolCallsEqual(prev.msg.tool_calls, next.msg.tool_calls),
 )

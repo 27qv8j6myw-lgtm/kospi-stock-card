@@ -140,9 +140,6 @@ export function AdminDashboardHeader() {
           {buttonLabel}
         </button>
       </div>
-      <p className="text-[12px] text-gray-500">
-        집계는 user_summary 기준입니다. 보유 평단·수량·평가금은 조회하지 않습니다.
-      </p>
       {result ? (
         <p
           className={`mt-2 text-[12px] ${result.success ? 'text-green-700' : 'text-red-700'}`}

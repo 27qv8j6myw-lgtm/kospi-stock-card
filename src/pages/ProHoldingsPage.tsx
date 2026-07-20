@@ -11,7 +11,7 @@ import {
   useSensors,
   type DragEndEvent,
 } from '@dnd-kit/core'
-import { ArrowLeft, Briefcase, Check, Filter, FolderPlus, RotateCw, Sparkles } from 'lucide-react'
+import { Archive, ArrowLeft, Briefcase, Check, Filter, FolderPlus, RotateCw, Sparkles } from 'lucide-react'
 import { AddHoldingModal } from '@/components/pro/AddHoldingModal'
 import { TradeModal } from '@/components/pro/TradeModal'
 import { DragHoldingPreview } from '@/components/pro/DragHoldingPreview'
@@ -595,6 +595,15 @@ export default function ProHoldingsPage() {
               className={refreshing ? 'animate-spin' : undefined}
               aria-hidden
             />
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate('/pro/archive')}
+            aria-label="진단 아카이브"
+            title="진단 아카이브"
+            className="flex-shrink-0 rounded-lg p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+          >
+            <Archive size={16} strokeWidth={2} aria-hidden />
           </button>
 
           <div className="ml-auto flex flex-shrink-0 items-center gap-1 sm:gap-2">

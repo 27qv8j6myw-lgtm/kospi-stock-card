@@ -25,6 +25,8 @@ export type ProMessage = {
   tool_calls?: ProToolCallUi[] | null
   created_at?: string
   streaming?: boolean
+  /** 실제 응답 모델 ID (관리자에게만 배지 표시) */
+  model?: string | null
 }
 
 export type ProStockLink = { name: string; code: string }
@@ -174,7 +176,7 @@ export type ProStreamEvent =
   | { event: 'tool_start'; data: { name: string } }
   | { event: 'tool_executing'; data: { name: string; input?: unknown } }
   | { event: 'tool_result'; data: { name: string; result: unknown } }
-  | { event: 'done'; data: { title?: string } }
+  | { event: 'done'; data: { title?: string; model?: string } }
   | { event: 'error'; data: { message: string } }
 
 async function parseJson<T>(res: Response): Promise<T> {
@@ -231,11 +233,38 @@ export async function deleteProConversation(id: string): Promise<void> {
   await parseJson<{ ok: boolean }>(res)
 }
 
+export type ProMemory = {
+  id: string
+  content: string
+  created_at: string
+}
+
+export async function fetchProMemories(): Promise<ProMemory[]> {
+  const res = await fetchWithAuth(apiUrl('/api/pro-memory'))
+  const data = await parseJson<{ items: ProMemory[] }>(res)
+  return data.items || []
+}
+
+export async function addProMemory(content: string): Promise<ProMemory | null> {
+  const res = await fetchWithAuth(apiUrl('/api/pro-memory'), {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  })
+  const data = await parseJson<{ ok: boolean; item: ProMemory | null }>(res)
+  return data.item
+}
+
+export async function deleteProMemory(id: string): Promise<void> {
+  const q = new URLSearchParams({ id })
+  const res = await fetchWithAuth(apiUrl(`/api/pro-memory?${q}`), { method: 'DELETE' })
+  await parseJson<{ ok: boolean }>(res)
+}
+
 /** 레거시 비스트리밍 (유지) */
 export async function sendProChatMessage(
   conversationId: string,
   message: string,
-): Promise<{ text: string; toolCalls: ProMessage['tool_calls']; title?: string }> {
+): Promise<{ text: string; toolCalls: ProMessage['tool_calls']; title?: string; model?: string }> {
   const res = await fetchWithAuth(apiUrl('/api/pro-chat'), {
     method: 'POST',
     body: JSON.stringify({ conversationId, message }),

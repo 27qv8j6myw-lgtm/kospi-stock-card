@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, Loader2, Menu, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Brain, Loader2, Menu, Plus, Trash2 } from 'lucide-react'
 import { ProChatComposer } from '@/components/pro/ProChatComposer'
 import { ProChatMessageList } from '@/components/pro/ProChatMessageList'
+import { ProMemoryModal } from '@/components/pro/ProMemoryModal'
 import { UserMenu } from '@/components/portfolio/UserMenu'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
+import { useAuth } from '@/hooks/useAuth'
+import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { useProChatStreamBuffer } from '@/hooks/useProChatStreamBuffer'
 import { useProChatViewportHeight } from '@/hooks/useProChatViewportHeight'
 import { classifyProChatError, type ProChatErrorType } from '@/lib/friendlyAnthropicError'
@@ -43,6 +46,9 @@ export default function ProChatPage() {
 
   useProChatViewportHeight(true)
 
+  const { user } = useAuth()
+  const { isAdmin } = useIsAdmin(user)
+
   useEffect(() => {
     if (typeof document === 'undefined') return
     document.documentElement.classList.add('pro-chat-active')
@@ -51,6 +57,7 @@ export default function ProChatPage() {
       document.documentElement.classList.remove('pro-chat-kb-open')
       document.documentElement.style.removeProperty('--pro-chat-kb-bottom')
       document.documentElement.style.removeProperty('--pro-chat-app-height')
+      document.documentElement.style.removeProperty('--pro-chat-vv-top')
       document.documentElement.style.removeProperty('--pro-chat-composer-height')
     }
   }, [])
@@ -68,6 +75,7 @@ export default function ProChatPage() {
   const [pageError, setPageError] = useState<string | null>(null)
   const [chatError, setChatError] = useState<ChatErrorState | null>(null)
   const [autoScroll, setAutoScroll] = useState(true)
+  const [memoryOpen, setMemoryOpen] = useState(false)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -245,7 +253,11 @@ export default function ProChatPage() {
       } else if (ev.event === 'done') {
         setExpandedTools((prev) => ({ ...prev, [aiMsgId]: false }))
         setMessages((prev) =>
-          prev.map((m) => (m.id === aiMsgId ? { ...m, streaming: false } : m)),
+          prev.map((m) =>
+            m.id === aiMsgId
+              ? { ...m, streaming: false, model: ev.data.model ?? m.model ?? null }
+              : m,
+          ),
         )
         if (ev.data.title) {
           const updatedAt = new Date().toISOString()
@@ -380,6 +392,15 @@ export default function ProChatPage() {
           <span>새 대화</span>
         </button>
 
+        <button
+          type="button"
+          onClick={() => setMemoryOpen(true)}
+          className="mb-4 flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-[12px] font-semibold text-gray-700 hover:bg-gray-100"
+        >
+          <Brain size={12} strokeWidth={2.5} />
+          <span>기억 관리</span>
+        </button>
+
         {pageError ? (
           <p className="mb-3 px-1 text-[11px] text-red-600" role="alert">
             {pageError}
@@ -463,7 +484,7 @@ export default function ProChatPage() {
         <div
           ref={messagesContainerRef}
           onScroll={handleScroll}
-          className="pro-chat-messages-scroll flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-gray-50 px-4 py-2 md:py-3"
+          className="pro-chat-messages-scroll flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-contain bg-gray-50 px-4 py-2 md:py-3"
         >
           <ProChatMessageList
             messages={messages}
@@ -471,6 +492,7 @@ export default function ProChatPage() {
             expandedTools={expandedTools}
             onToggleTools={toggleTools}
             messagesEndRef={messagesEndRef}
+            showModel={isAdmin}
           />
         </div>
 
@@ -507,6 +529,8 @@ export default function ProChatPage() {
         />
       ) : null}
       </div>
+
+      <ProMemoryModal open={memoryOpen} onClose={() => setMemoryOpen(false)} />
     </div>
   )
 }

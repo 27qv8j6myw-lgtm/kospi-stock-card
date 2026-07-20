@@ -28,6 +28,7 @@ type UsageStats = {
     inputTokens: number
     outputTokens: number
     costUsd: number
+    activity?: { view_stock: number; chat: number; diagnosis: number }
   }>
   byDayCost: Array<{
     day: string
@@ -86,7 +87,7 @@ function displayName(u: { full_name?: string | null; email: string }): string {
 }
 
 export function ApiUsageDashboard() {
-  const [days, setDays] = useState(7)
+  const [days, setDays] = useState(1)
   const [data, setData] = useState<UsageStats | null>(null)
   const [summary, setSummary] = useState<SummaryData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -137,7 +138,7 @@ export function ApiUsageDashboard() {
           <h2 className="text-sm font-bold text-primary">API 비용 (Opus)</h2>
         </div>
         <div className="ml-auto flex items-center gap-2">
-          {[7, 14, 30].map((d) => (
+          {[1, 7, 14, 30].map((d) => (
             <button
               key={d}
               type="button"
@@ -146,7 +147,7 @@ export function ApiUsageDashboard() {
                 days === d ? 'bg-gray-900 text-white' : 'bg-neutral-bg text-secondary'
               }`}
             >
-              {d}일
+              {d === 1 ? '당일' : `${d}일`}
             </button>
           ))}
           <button
@@ -176,7 +177,7 @@ export function ApiUsageDashboard() {
             <Stat label="호출 수" value={String(data.summary.totalCalls)} />
             <Stat label="입력 토큰" value={fmtTokens(data.summary.inputTokens)} />
             <Stat label="출력 토큰" value={fmtTokens(data.summary.outputTokens)} />
-            <Stat label="추정 비용" value={fmtUsd(data.summary.costUsd)} highlight />
+            <Stat label={days === 1 ? '추정 비용 (당일)' : `추정 비용 (${days}일)`} value={fmtUsd(data.summary.costUsd)} highlight />
           </div>
 
           {data.byDayCost?.length ? (
@@ -290,6 +291,7 @@ function TopUserRow({
   const email = profile?.email || row.email
   const name = displayName({ full_name: profile?.full_name || null, email })
   const avatarUrl = profile?.avatar_url || null
+  const activity = row.activity ?? profile?.activity
 
   return (
     <li className="flex items-center gap-3 px-4 py-2.5 text-[12px]">
@@ -309,10 +311,14 @@ function TopUserRow({
         <div className="truncate text-[12px] font-semibold text-gray-900">{name}</div>
         <div className="truncate text-[10px] text-gray-400">{email}</div>
       </div>
-      <span className="shrink-0 tabular-nums text-gray-400">{row.calls}회</span>
-      <span className="w-16 shrink-0 text-right font-bold tabular-nums text-emerald-600">
-        {fmtUsd(row.costUsd)}
-      </span>
+      <div className="shrink-0 text-right">
+        <div className="tabular-nums text-[10px] text-gray-400">
+          {activity
+            ? `조회 ${activity.view_stock} · 채팅 ${activity.chat} · 진단 ${activity.diagnosis}`
+            : `${row.calls}회`}
+        </div>
+        <div className="font-bold tabular-nums text-emerald-600">{fmtUsd(row.costUsd)}</div>
+      </div>
     </li>
   )
 }

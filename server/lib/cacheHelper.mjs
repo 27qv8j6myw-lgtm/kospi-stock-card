@@ -19,12 +19,27 @@ function getSupabaseService() {
 }
 
 /**
+ * 짧은 안정 해시(djb2) — 캐시 키 길이 제한용.
+ * @param {string} s
+ * @returns {string}
+ */
+export function hashKey(s) {
+  let h = 5381
+  const str = String(s)
+  for (let i = 0; i < str.length; i += 1) {
+    h = (h * 33) ^ str.charCodeAt(i)
+  }
+  return (h >>> 0).toString(36)
+}
+
+/**
  * market_cache — `cache_key`, `data`, `expires_at` (프로젝트 Supabase 스키마)
  * @param {string} cacheKey
  * @param {() => Promise<unknown>} fetcher
  * @param {number} [ttlHours]
+ * @param {(value: unknown) => boolean} [shouldCache] true 일 때만 캐시에 기록 (실패 응답 캐싱 방지)
  */
-export async function getCachedOrFetch(cacheKey, fetcher, ttlHours = 6) {
+export async function getCachedOrFetch(cacheKey, fetcher, ttlHours = 6, shouldCache) {
   const sb = getSupabaseService()
   if (!sb) {
     return fetcher()
@@ -48,7 +63,8 @@ export async function getCachedOrFetch(cacheKey, fetcher, ttlHours = 6) {
     console.log(`[Cache MISS] ${cacheKey}`)
     const value = await fetcher()
 
-    if (value != null) {
+    const allowCache = typeof shouldCache === 'function' ? shouldCache(value) : value != null
+    if (value != null && allowCache) {
       const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString()
       void sb
         .from('market_cache')

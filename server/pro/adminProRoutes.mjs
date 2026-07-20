@@ -13,6 +13,7 @@ import { inquireDomesticPrice } from '../kisClient.mjs'
 import { fetchYahooMarketSnapshot } from '../marketIndices.mjs'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
 import { logApiUsage } from '../lib/usageLogger.mjs'
+import { resolveModelId } from '../lib/userModel.mjs'
 import { getCachedOrFetch } from '../lib/cacheHelper.mjs'
 import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
 import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
@@ -151,6 +152,16 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     return new Date(Date.now() - SEVEN_DAYS_MS).toISOString()
   }
 
+  // 현재 적용 중인 실제 모델 ID (env override → /v1/models 최신 → 기본값)
+  app.get('/api/admin-ai-models', async (req, res) => {
+    if (!(await requireAdmin(req, res))) return
+    res.json({
+      opus: resolveModelId('opus'),
+      sonnet: resolveModelId('sonnet'),
+      fable: resolveModelId('fable'),
+    })
+  })
+
   /**
    * @param {import('@supabase/supabase-js').SupabaseClient} supabaseService
    * @param {string[]} userIds
@@ -185,6 +196,73 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
       {
         user_id: targetUserId,
         pro_enabled: enabled,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' },
+    )
+
+    if (error) {
+      res.status(500).json({ error: error.message })
+      return
+    }
+
+    res.json({ ok: true })
+  })
+
+  // 상단 누적 사용금액 배지 노출 토글 (개인별)
+  app.post('/api/admin-usage-cost-toggle', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    if (!(await requireAdmin(req, res))) return
+
+    const targetUserId = String(req.body?.userId ?? '').trim()
+    const enabled = Boolean(req.body?.enabled)
+    if (!targetUserId) {
+      res.status(400).json({ error: 'userId 필요' })
+      return
+    }
+
+    const { error } = await supabaseService.from('user_settings').upsert(
+      {
+        user_id: targetUserId,
+        show_usage_cost: enabled,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' },
+    )
+
+    if (error) {
+      res.status(500).json({ error: error.message })
+      return
+    }
+
+    res.json({ ok: true })
+  })
+
+  app.post('/api/admin-screener-toggle', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+
+    if (!(await requireAdmin(req, res))) return
+
+    const targetUserId = String(req.body?.userId ?? '').trim()
+    const enabled = Boolean(req.body?.enabled)
+    if (!targetUserId) {
+      res.status(400).json({ error: 'userId 필요' })
+      return
+    }
+
+    const { error } = await supabaseService.from('user_settings').upsert(
+      {
+        user_id: targetUserId,
+        screener_enabled: enabled,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' },
@@ -696,6 +774,28 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
       const userIds = Object.keys(byUser)
       const emailMap = await emailMapForUserIds(supabaseService, userIds)
 
+      // 선택 기간 내 사용자별 활동(조회/채팅/진단) 집계 — TOP 표시에 기간 정합성 부여
+      /** @type {Record<string, { view_stock: number, chat: number, diagnosis: number }>} */
+      const activityByUser = {}
+      if (userIds.length) {
+        const { data: acts } = await supabaseService
+          .from('activity_logs')
+          .select('user_id, action, created_at')
+          .gte('created_at', sinceSummary)
+          .in('user_id', userIds)
+          .in('action', ['view_stock', 'chat', 'diagnosis'])
+          .limit(20000)
+        for (const a of acts || []) {
+          if (!a.user_id) continue
+          if (!activityByUser[a.user_id]) {
+            activityByUser[a.user_id] = { view_stock: 0, chat: 0, diagnosis: 0 }
+          }
+          if (a.action === 'view_stock' || a.action === 'chat' || a.action === 'diagnosis') {
+            activityByUser[a.user_id][a.action] += 1
+          }
+        }
+      }
+
       const endpointStats = Object.values(byEndpoint)
         .sort((a, b) => b.costUsd - a.costUsd)
 
@@ -707,6 +807,7 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
           inputTokens: byUser[uid].inputTokens,
           outputTokens: byUser[uid].outputTokens,
           costUsd: byUser[uid].costUsd,
+          activity: activityByUser[uid] || { view_stock: 0, chat: 0, diagnosis: 0 },
         }))
         .sort((a, b) => b.costUsd - a.costUsd)
         .slice(0, 15)
@@ -1210,6 +1311,296 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[admin-crowd-sentiment]', e)
+      res.status(500).json({ error: message })
+    }
+  })
+
+  /** 인사이트 — 사용자 포트폴리오 종합 (매수/매도 패턴·섹터 비중·수익/손해 비중·중복 보유, 집계·익명) */
+  app.get('/api/admin-crowd-portfolio', async (req, res) => {
+    const supabaseService = getSupabaseService()
+    if (!supabaseService) {
+      res.status(503).json({ error: 'Supabase 미설정' })
+      return
+    }
+    if (!(await requireAdmin(req, res))) return
+
+    /** 6자리 종목코드로 정규화 (fetchRealtimePrices 와 동일 규칙) */
+    const normalizeCode = (c) => {
+      const up = String(c ?? '')
+        .trim()
+        .toUpperCase()
+      if (/^[0-9A-Z]{6}$/.test(up)) return up
+      const digits = String(c ?? '')
+        .replace(/\D/g, '')
+        .padStart(6, '0')
+      return /^\d{6}$/.test(digits) && digits !== '000000' ? digits : ''
+    }
+
+    const build = async () => {
+      const PRICE_CODE_CAP = 200
+      const OVERLAP_TOP_N = 12
+      const HOLDERS_RANK_N = 15
+      const SECTOR_TOP_N = 12
+      const DAILY_DAYS = 14
+
+      // 보유 — (user,code) 포지션 + 종목별 보유자 집계
+      const { data: holdings } = await supabaseService
+        .from('pro_holdings')
+        .select('user_id, code, quantity, avg_price')
+      /** @type {Array<{ code: string, qty: number, avg: number }>} */
+      const positions = []
+      /** @type {Map<string, { holders: Set<string>, qty: number, costSum: number }>} */
+      const heldMap = new Map()
+      for (const h of holdings || []) {
+        const code = normalizeCode(h.code)
+        if (!code) continue
+        const qty = Number(h.quantity) || 0
+        const avg = Number(h.avg_price) || 0
+        if (qty <= 0) continue
+        positions.push({ code, qty, avg })
+        if (!heldMap.has(code)) heldMap.set(code, { holders: new Set(), qty: 0, costSum: 0 })
+        const e = heldMap.get(code)
+        if (h.user_id) e.holders.add(String(h.user_id))
+        e.qty += qty
+        e.costSum += avg * qty
+      }
+
+      // 보유 종목 메타(이름·섹터) + 현재가
+      const heldCodes = [...heldMap.keys()]
+      /** @type {Record<string, { name: string, sector: string }>} */
+      const metaMap = {}
+      if (heldCodes.length) {
+        const { data: stocks } = await supabaseService
+          .from('stocks_master')
+          .select('code, name, sector')
+          .in('code', heldCodes)
+        for (const s of stocks || []) {
+          const sector = String(s.sector || '').trim()
+          metaMap[s.code] = {
+            name: s.name || s.code,
+            sector: sector && sector !== '—' ? sector : '기타',
+          }
+        }
+      }
+      // 보유자 많은 순으로 현재가 조회 상한 적용
+      const priceCodes = [...heldMap.entries()]
+        .sort((a, b) => b[1].holders.size - a[1].holders.size)
+        .slice(0, PRICE_CODE_CAP)
+        .map(([code]) => code)
+      const priceMap = priceCodes.length ? await fetchRealtimePrices(priceCodes) : new Map()
+      const curOf = (code) => Number(priceMap.get(code)?.currentPrice) || 0
+
+      // 섹터 비중 — 평가액(현재가 우선, 없으면 원가) 기준
+      /** @type {Map<string, { value: number, positions: number }>} */
+      const sectorMap = new Map()
+      for (const p of positions) {
+        const cur = curOf(p.code)
+        const evalAmount = (cur > 0 ? cur : p.avg) * p.qty
+        const sector = metaMap[p.code]?.sector || '기타'
+        if (!sectorMap.has(sector)) sectorMap.set(sector, { value: 0, positions: 0 })
+        const e = sectorMap.get(sector)
+        e.value += evalAmount
+        e.positions += 1
+      }
+      const totalSectorValue = [...sectorMap.values()].reduce((s, e) => s + e.value, 0)
+      const sectors = [...sectorMap.entries()]
+        .map(([sector, e]) => ({
+          sector,
+          value: Math.round(e.value),
+          valuePct: totalSectorValue > 0 ? (e.value / totalSectorValue) * 100 : 0,
+          positions: e.positions,
+        }))
+        .sort((a, b) => b.value - a.value)
+        .slice(0, SECTOR_TOP_N)
+
+      // 수익/손해 비중 — 현재가 있는 포지션 기준
+      let profitPositions = 0
+      let lossPositions = 0
+      let flatPositions = 0
+      let profitValue = 0
+      let lossValue = 0
+      for (const p of positions) {
+        const cur = curOf(p.code)
+        if (cur <= 0 || p.avg <= 0) continue
+        const pnl = (cur - p.avg) * p.qty
+        if (pnl > 0) {
+          profitPositions += 1
+          profitValue += pnl
+        } else if (pnl < 0) {
+          lossPositions += 1
+          lossValue += pnl
+        } else {
+          flatPositions += 1
+        }
+      }
+
+      // 매수/매도 패턴 + 실현 승/패 — 최근 30일 거래
+      const since30 = new Date(Date.now() - 30 * DAY_MS).toISOString().slice(0, 10)
+      const since7 = new Date(Date.now() - SEVEN_DAYS_MS).toISOString().slice(0, 10)
+      const { data: trades } = await supabaseService
+        .from('pro_trades')
+        .select('user_id, code, side, traded_at, realized_profit')
+        .gte('traded_at', since30)
+      let buyCount = 0
+      let sellCount = 0
+      let realizedWin = 0
+      let realizedLoss = 0
+      /** @type {Map<string, { buy: number, sell: number }>} */
+      const dailyMap = new Map()
+      // 최근 7일 종목별 순매매 (매수/매도 사용자 수)
+      /** @type {Map<string, { buyers: Set<string>, sellers: Set<string>, buyCount: number, sellCount: number }>} */
+      const flowMap = new Map()
+      for (const t of trades || []) {
+        const day = String(t.traded_at || '').slice(0, 10)
+        if (!dailyMap.has(day)) dailyMap.set(day, { buy: 0, sell: 0 })
+        const d = dailyMap.get(day)
+        if (t.side === 'buy') {
+          buyCount += 1
+          d.buy += 1
+        } else if (t.side === 'sell') {
+          sellCount += 1
+          d.sell += 1
+          const realized = Number(t.realized_profit)
+          if (Number.isFinite(realized)) {
+            if (realized > 0) realizedWin += 1
+            else if (realized < 0) realizedLoss += 1
+          }
+        }
+        if (day >= since7) {
+          const fc = normalizeCode(t.code)
+          if (fc) {
+            if (!flowMap.has(fc)) {
+              flowMap.set(fc, { buyers: new Set(), sellers: new Set(), buyCount: 0, sellCount: 0 })
+            }
+            const fe = flowMap.get(fc)
+            if (t.side === 'buy') {
+              fe.buyCount += 1
+              if (t.user_id) fe.buyers.add(String(t.user_id))
+            } else if (t.side === 'sell') {
+              fe.sellCount += 1
+              if (t.user_id) fe.sellers.add(String(t.user_id))
+            }
+          }
+        }
+      }
+      // 최근 14일 일별 추이 (거래 없는 날 0)
+      const daily = []
+      for (let i = DAILY_DAYS - 1; i >= 0; i--) {
+        const day = new Date(Date.now() - i * DAY_MS).toISOString().slice(0, 10)
+        const d = dailyMap.get(day) || { buy: 0, sell: 0 }
+        daily.push({ date: day, buy: d.buy, sell: d.sell })
+      }
+
+      // 순매매 상위 — |순매수자| 우선, 거래량 보조
+      const netFlowRanked = [...flowMap.entries()]
+        .map(([code, e]) => ({
+          code,
+          netUsers: e.buyers.size - e.sellers.size,
+          buyCount: e.buyCount,
+          sellCount: e.sellCount,
+        }))
+        .sort(
+          (a, b) =>
+            Math.abs(b.netUsers) - Math.abs(a.netUsers) ||
+            b.buyCount + b.sellCount - (a.buyCount + a.sellCount),
+        )
+        .slice(0, 8)
+      // 순매매 종목명 보강 (보유 메타에 없는 코드)
+      const flowMissing = netFlowRanked.map((x) => x.code).filter((c) => !metaMap[c])
+      if (flowMissing.length) {
+        const { data: flowStocks } = await supabaseService
+          .from('stocks_master')
+          .select('code, name')
+          .in('code', flowMissing)
+        for (const s of flowStocks || []) {
+          if (!metaMap[s.code]) metaMap[s.code] = { name: s.name || s.code, sector: '기타' }
+        }
+      }
+      const netFlow7d = netFlowRanked.map((x) => ({
+        code: x.code,
+        name: metaMap[x.code]?.name || x.code,
+        netUsers: x.netUsers,
+        buyCount: x.buyCount,
+        sellCount: x.sellCount,
+      }))
+
+      // 중복 보유 종목 — 2명 이상 동시 보유
+      const multiHeld = [...heldMap.entries()].filter(([, e]) => e.holders.size >= 2)
+      const overlapTop = multiHeld
+        .sort((a, b) => b[1].holders.size - a[1].holders.size)
+        .slice(0, OVERLAP_TOP_N)
+        .map(([code, e]) => {
+          const avgCost = e.qty > 0 ? e.costSum / e.qty : 0
+          const cur = curOf(code)
+          const avgPnlPct = avgCost > 0 && cur > 0 ? ((cur - avgCost) / avgCost) * 100 : null
+          return {
+            code,
+            name: metaMap[code]?.name || code,
+            sector: metaMap[code]?.sector || '기타',
+            holders: e.holders.size,
+            avgPnlPct,
+          }
+        })
+
+      // 보유종목 순위 — 1명 이상 전체, 보유자 수 내림차순
+      const holdersRank = [...heldMap.entries()]
+        .sort(
+          (a, b) =>
+            b[1].holders.size - a[1].holders.size || b[1].qty - a[1].qty,
+        )
+        .slice(0, HOLDERS_RANK_N)
+        .map(([code, e]) => {
+          const avgCost = e.qty > 0 ? e.costSum / e.qty : 0
+          const cur = curOf(code)
+          const avgPnlPct = avgCost > 0 && cur > 0 ? ((cur - avgCost) / avgCost) * 100 : null
+          return {
+            code,
+            name: metaMap[code]?.name || code,
+            sector: metaMap[code]?.sector || '기타',
+            holders: e.holders.size,
+            qty: e.qty,
+            avgPnlPct,
+          }
+        })
+
+      return {
+        buySell: {
+          days: 30,
+          buyCount,
+          sellCount,
+          buyRatio: buyCount + sellCount > 0 ? buyCount / (buyCount + sellCount) : null,
+          daily,
+          netFlow7d,
+        },
+        sectors,
+        pnl: {
+          profitPositions,
+          lossPositions,
+          flatPositions,
+          profitValue: Math.round(profitValue),
+          lossValue: Math.round(lossValue),
+          realizedWin,
+          realizedLoss,
+        },
+        overlap: {
+          multiHolderCount: multiHeld.length,
+          totalHeldCodes: heldMap.size,
+          top: overlapTop,
+        },
+        holdersRank,
+        generatedAt: new Date().toISOString(),
+      }
+    }
+
+    try {
+      const refresh = String(req.query?.refresh ?? '') === '1'
+      const payload = refresh
+        ? await build()
+        : await getCachedOrFetch('admin-crowd-portfolio', build, 0.5)
+      res.json(payload)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.error('[admin-crowd-portfolio]', e)
       res.status(500).json({ error: message })
     }
   })

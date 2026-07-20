@@ -264,10 +264,6 @@ export function ProTopFlow({ refreshSignal = 0 }: ProTopFlowProps) {
           </span>
 
           <div className="ml-auto hidden items-center gap-2 md:flex">
-            <span className="text-[11px] tabular-nums text-gray-400">
-              {formatTime(updatedAt)} 기준
-            </span>
-
             <div className="flex gap-0.5 rounded-md bg-gray-100 p-0.5">
               <button
                 type="button"

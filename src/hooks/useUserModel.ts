@@ -5,10 +5,11 @@ import { supabase } from '@/lib/supabase'
 import { useAuth } from './useAuth'
 import { useIsAdmin } from './useIsAdmin'
 
-export type AiUserModel = 'opus' | 'sonnet'
+export type AiUserModel = 'opus' | 'sonnet' | 'fable'
 
 /**
  * 본인에게 적용되는 AI 티어 (표시 전용 — 변경은 관리자만).
+ * 관리자는 최상위 모델(fable)로 표시.
  */
 export function useUserModel(): { model: AiUserModel; loading: boolean } {
   const { user } = useAuth()
@@ -29,7 +30,7 @@ export function useUserModel(): { model: AiUserModel; loading: boolean } {
     }
 
     if (isAdmin) {
-      setModel('opus')
+      setModel('fable')
       setLoading(false)
       return
     }
@@ -46,7 +47,7 @@ export function useUserModel(): { model: AiUserModel; loading: boolean } {
           setModel('sonnet')
         } else {
           const m = typeof data === 'string' ? data.trim().toLowerCase() : ''
-          setModel(m === 'opus' ? 'opus' : 'sonnet')
+          setModel(m === 'fable' ? 'fable' : m === 'opus' ? 'opus' : 'sonnet')
         }
       } finally {
         if (!cancelled) setLoading(false)

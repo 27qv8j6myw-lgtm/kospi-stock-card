@@ -1,18 +1,38 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { User } from 'lucide-react'
 import { UserAccountModal } from '@/components/portfolio/UserAccountModal'
 import { useAuth } from '@/hooks/useAuth'
 import { useIsProUser } from '@/hooks/useIsProUser'
 import { useProInvestProfile } from '@/hooks/useProInvestProfile'
-import { PRO_CLAUDE_MODEL_BADGE, PRO_CLAUDE_MODEL_LABEL } from '@/lib/claudeModelDisplay'
+import { authFetch } from '@/lib/api'
+import { apiUrl } from '@/lib/apiBase'
 
 export function UserMenu() {
   const { user, signOut } = useAuth()
   const { isProUser: showPro } = useIsProUser(user)
   const [open, setOpen] = useState(false)
   const [logoutBusy, setLogoutBusy] = useState(false)
+  const [usageCost, setUsageCost] = useState<number | null>(null)
+
+  useEffect(() => {
+    if (!showPro) return
+    let active = true
+    void (async () => {
+      try {
+        const r = await authFetch(apiUrl('/api/pro-usage-cost'))
+        if (!r.ok) return
+        const d = (await r.json().catch(() => ({}))) as { costUsd?: number }
+        if (active && typeof d.costUsd === 'number') setUsageCost(d.costUsd)
+      } catch {
+        // 조용히 숨김
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [showPro])
 
   const { profile, loading, saving, error, saveField } = useProInvestProfile({
     enabled: open && showPro,
@@ -43,12 +63,20 @@ export function UserMenu() {
   return (
     <>
       <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+        {showPro && usageCost != null ? (
+          <span
+            className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-emerald-700 sm:text-[11px]"
+            title="내 누적 AI 사용금액(USD)"
+          >
+            {usageCost < 0.01 ? '$0.00' : `$${usageCost.toFixed(2)}`}
+          </span>
+        ) : null}
         {showPro ? (
           <span
-            className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium tracking-wide text-gray-500 sm:text-[11px]"
-            title={`AI 모델: ${PRO_CLAUDE_MODEL_LABEL}`}
+            className="rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-bold tracking-wide text-white sm:text-[11px]"
+            title="PRO 모드 사용자"
           >
-            {PRO_CLAUDE_MODEL_BADGE}
+            PRO
           </span>
         ) : null}
         <button

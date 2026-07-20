@@ -75,7 +75,7 @@ export async function analyzeStockScenario(code6, stockData, userId = null) {
   const userModel = await getUserModel(userId)
   const envModel = process.env.ANTHROPIC_SCENARIO_MODEL?.trim()
   const modelId = envModel || resolveModelId(userModel)
-  const maxTokens = userModel === 'opus' ? 3500 : 2500
+  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 4500 : 3500
 
   const bucket = Math.floor(Date.now() / CACHE_TTL_MS)
   const cacheKey = `${code}-${userModel}-${bucket}`

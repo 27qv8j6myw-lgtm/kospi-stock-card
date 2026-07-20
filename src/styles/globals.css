@@ -82,10 +82,18 @@ body {
   }
 
   html.pro-chat-active,
-  html.pro-chat-active body,
   html.pro-chat-active #root {
     height: var(--pro-chat-app-height, 100dvh);
     max-height: var(--pro-chat-app-height, 100dvh);
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  /* 레이아웃 뷰포트 자체를 잠궈 키보드가 떠도 페이지가 스크롤되지 않게 함 */
+  html.pro-chat-active body {
+    position: fixed;
+    inset: 0;
+    width: 100%;
     overflow: hidden;
     overscroll-behavior: none;
   }
@@ -95,7 +103,7 @@ body {
   }
 
   .pro-chat-app-root {
-    height: 100%;
+    height: var(--pro-chat-app-height, 100dvh);
     min-height: 0;
   }
 
@@ -104,23 +112,26 @@ body {
     min-height: 0;
   }
 
+  /** 입력창 위/아래 여백 대칭(py-1.5=0.375rem) + 키보드 닫힘 시 홈 인디케이터 영역만 추가 */
   .pro-chat-composer-bar {
     flex-shrink: 0;
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: calc(0.375rem + env(safe-area-inset-bottom, 0px));
   }
 
-  /** 키보드 열림 — 입력창만 키보드(액세서리 바) 바로 위에 고정 */
-  html.pro-chat-kb-open .pro-chat-composer-bar {
+  /** 키보드 열림 — visualViewport 에 컨테이너를 매핑해 헤더·입력창 고정, 메시지만 스크롤 */
+  html.pro-chat-kb-open .pro-chat-app-root {
     position: fixed;
+    top: 0;
     left: 0;
     right: 0;
-    bottom: var(--pro-chat-kb-bottom, 0px);
-    z-index: 40;
-    padding-bottom: 0;
+    height: var(--pro-chat-app-height);
+    transform: translateY(var(--pro-chat-vv-top, 0px));
+    will-change: transform;
   }
 
-  html.pro-chat-kb-open .pro-chat-messages-scroll {
-    padding-bottom: var(--pro-chat-composer-height, 5rem);
+  /** 키보드 열림 — 홈 인디케이터가 가려지므로 위쪽과 동일한 여백만 유지 */
+  html.pro-chat-kb-open .pro-chat-composer-bar {
+    padding-bottom: 0.375rem;
   }
 }
 
@@ -163,6 +174,30 @@ input[type='search'].pro-search-input::-webkit-search-decoration,
 input[type='search'].pro-search-input::-webkit-search-cancel-button {
   -webkit-appearance: none;
   appearance: none;
+}
+
+/** iOS Safari — 채팅 입력(contenteditable) 연락처 Autofill·서식 붙여넣기 방지 */
+.pro-chat-composer-input {
+  -webkit-user-modify: read-write-plaintext-only;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.pro-chat-composer-input:empty::before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+  pointer-events: none;
+}
+
+.pro-chat-composer-input::-webkit-contacts-auto-fill-button,
+.pro-chat-composer-input::-webkit-credentials-auto-fill-button {
+  visibility: hidden;
+  display: none !important;
+  pointer-events: none;
+  height: 0;
+  width: 0;
+  margin: 0;
 }
 
 ::selection {

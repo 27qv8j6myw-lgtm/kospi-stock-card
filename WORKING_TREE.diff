@@ -1,0 +1,2532 @@
+diff --git a/server/index.mjs b/server/index.mjs
+index 1ce7ea6..32fcaf4 100644
+--- a/server/index.mjs
++++ b/server/index.mjs
+@@ -99,6 +99,90 @@ function parseNumberText(v) {
+   return Number.isFinite(n) ? n : null
+ }
+ 
++const MS_DAY = 86_400_000
++/** 서울일 기준 평균 목표가 스냅샷(메모리). 재시작 시 초기화되어 4·12주 추세는 누적 후 표시됩니다. */
++const consensusDaySnapshots = new Map()
++
++function seoulDayKey(d = new Date()) {
++  return new Intl.DateTimeFormat('en-CA', {
++    timeZone: 'Asia/Seoul',
++    year: 'numeric',
++    month: '2-digit',
++    day: '2-digit',
++  }).format(d)
++}
++
++function dayKeyToUtcMs(dayKey) {
++  return new Date(`${String(dayKey)}T06:00:00+09:00`).getTime()
++}
++
++function recordConsensusSnapshot(code6, avg, min, max) {
++  if (!avg || avg <= 0) return
++  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
++  const day = seoulDayKey()
++  let rows = consensusDaySnapshots.get(code) || []
++  const last = rows[rows.length - 1]
++  if (last && last.day === day) {
++    last.avg = avg
++    last.min = min
++    last.max = max
++  } else {
++    rows = [...rows, { day, avg, min, max }].slice(-420)
++  }
++  consensusDaySnapshots.set(code, rows)
++}
++
++function consensusTrendPctFromHistory(code6, currentAvg, lookbackDays) {
++  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
++  const rows = consensusDaySnapshots.get(code) || []
++  if (!rows.length || !currentAvg || currentAvg <= 0) return null
++  const cutoff = Date.now() - lookbackDays * MS_DAY
++  let best = null
++  for (const r of rows) {
++    const t = dayKeyToUtcMs(r.day)
++    if (t > cutoff) continue
++    if (!best || t > dayKeyToUtcMs(best.day)) best = r
++  }
++  if (!best?.avg || best.avg <= 0) return null
++  return ((currentAvg / best.avg) - 1) * 100
++}
++
++function parseFnGuideEstDate(s) {
++  const raw = String(s || '').trim().replace(/\//g, '-')
++  if (!raw) return null
++  const d = new Date(`${raw}T12:00:00+09:00`)
++  return Number.isFinite(d.getTime()) ? d : null
++}
++
++function countBrokerTargetRevisions7d(comp) {
++  const rows = Array.isArray(comp) ? comp : []
++  const now = Date.now()
++  let up = 0
++  let down = 0
++  let flat = 0
++  let reports = 0
++  for (const row of rows) {
++    const est = parseFnGuideEstDate(row.EST_DT)
++    if (!est) continue
++    if (now - est.getTime() > 7 * MS_DAY) continue
++    const cur = parseNumberText(row.TARGET_PRC)
++    const bf = parseNumberText(row.TARGET_PRC_BF)
++    if (cur == null || bf == null) continue
++    reports += 1
++    if (cur > bf) up += 1
++    else if (cur < bf) down += 1
++    else flat += 1
++  }
++  return { up, down, flat, reports }
++}
++
++function dispersionLabelFromWidth(widthPct) {
++  if (widthPct == null || !Number.isFinite(widthPct)) return '분포 미산출'
++  if (widthPct <= 20) return '컨센서스 수렴'
++  if (widthPct >= 55) return '컨센서스 분기'
++  return '컨센서스 분포 보통'
++}
++
+ /** FnGuide 컨센서스 JSON — 증권사별 목표가(TARGET_PRC) + 평균(AVG_PRC) */
+ async function fetchFnGuideConsensus(code6) {
+   const code = String(code6).replace(/\D/g, '').padStart(6, '0')
+@@ -140,16 +224,27 @@ async function fetchFnGuideConsensus(code6) {
+   const safeMin = Math.min(minTargetPrice, avgTargetPrice)
+ 
+   const avgRecomCd = parseNumberText(comp[0].AVG_RECOM_CD)
++  const avgBf = parseNumberText(comp[0].AVG_PRC_BF)
++  const avgVsBfPct =
++    avgBf != null && avgBf > 0 && avgTargetPrice > 0 ? ((avgTargetPrice - avgBf) / avgBf) * 100 : null
++
++  const dispersionWidthPct =
++    avgTargetPrice > 0 ? ((safeMax - safeMin) / avgTargetPrice) * 100 : null
++  const dispersionHighSkewPct =
++    avgTargetPrice > 0 ? ((safeMax - avgTargetPrice) / avgTargetPrice) * 100 : null
++  const dispersionLowSkewPct =
++    avgTargetPrice > 0 ? ((avgTargetPrice - safeMin) / avgTargetPrice) * 100 : null
++  const dispersionLabelKo = dispersionLabelFromWidth(dispersionWidthPct)
++
++  const rev = countBrokerTargetRevisions7d(comp)
+ 
+   let latestEst = 0
+   for (const row of comp) {
+-    const raw = String(row.EST_DT || '').trim()
+-    const normalized = raw.replace(/\//g, '-')
+-    const ts = Date.parse(normalized)
+-    if (Number.isFinite(ts) && ts > latestEst) latestEst = ts
++    const d = parseFnGuideEstDate(row.EST_DT)
++    if (d && d.getTime() > latestEst) latestEst = d.getTime()
+   }
+   const lastUpdateDays =
+-    latestEst > 0 ? Math.max(0, Math.floor((Date.now() - latestEst) / 86_400_000)) : null
++    latestEst > 0 ? Math.max(0, Math.floor((Date.now() - latestEst) / MS_DAY)) : null
+ 
+   return {
+     avgTargetPrice,
+@@ -158,6 +253,16 @@ async function fetchFnGuideConsensus(code6) {
+     analystCount: comp.length,
+     lastUpdateDays,
+     avgRecomCd,
++    avgTargetPriceBf: avgBf,
++    avgVsBfPct,
++    dispersionWidthPct,
++    dispersionHighSkewPct,
++    dispersionLowSkewPct,
++    dispersionLabelKo,
++    revision7dUp: rev.up,
++    revision7dDown: rev.down,
++    revision7dFlat: rev.flat,
++    revision7dReports: rev.reports,
+   }
+ }
+ 
+@@ -205,12 +310,23 @@ async function fetchNaverConsensus(code6) {
+ 
+ /** FnGuide 우선(증권사별 목표가 분포), 실패 시 네이버 단일 목표가 */
+ async function fetchConsensusDetails(code6) {
++  const code = String(code6).replace(/\D/g, '').padStart(6, '0')
+   const [fg, nv] = await Promise.all([
+-    fetchFnGuideConsensus(code6).catch(() => null),
+-    fetchNaverConsensus(code6).catch(() => null),
++    fetchFnGuideConsensus(code).catch(() => null),
++    fetchNaverConsensus(code).catch(() => null),
+   ])
+ 
++  const emptyRevision = { revision7dUp: 0, revision7dDown: 0, revision7dFlat: 0, revision7dReports: 0 }
++
+   if (fg) {
++    recordConsensusSnapshot(code, fg.avgTargetPrice, fg.minTargetPrice, fg.maxTargetPrice)
++    const trend4w = consensusTrendPctFromHistory(code, fg.avgTargetPrice, 28)
++    const trend12w = consensusTrendPctFromHistory(code, fg.avgTargetPrice, 84)
++    const rows = consensusDaySnapshots.get(code) || []
++    const trendNote =
++      trend4w == null && trend12w == null
++        ? `4·12주 평균 목표가 추세는 서버에 일별 스냅샷이 쌓이면 표시됩니다. (현재 ${rows.length}일치)`
++        : null
+     return {
+       source: 'fnguide',
+       avgTargetPrice: fg.avgTargetPrice,
+@@ -220,13 +336,49 @@ async function fetchConsensusDetails(code6) {
+       recommendationText: nv?.recommendationText ?? recommendationLabelFromFnGuideScore(fg.avgRecomCd),
+       analystCount: fg.analystCount,
+       lastUpdateDays: fg.lastUpdateDays ?? nv?.lastUpdateDays ?? null,
++      avgTargetPriceBf: fg.avgTargetPriceBf,
++      avgVsBfPct: fg.avgVsBfPct,
++      dispersionWidthPct: fg.dispersionWidthPct,
++      dispersionHighSkewPct: fg.dispersionHighSkewPct,
++      dispersionLowSkewPct: fg.dispersionLowSkewPct,
++      dispersionLabelKo: fg.dispersionLabelKo,
++      revision7dUp: fg.revision7dUp,
++      revision7dDown: fg.revision7dDown,
++      revision7dFlat: fg.revision7dFlat,
++      revision7dReports: fg.revision7dReports,
++      consensusAvgTrend4wPct: trend4w,
++      consensusAvgTrend12wPct: trend12w,
++      consensusTrendNote: trendNote,
++    }
++  }
++  if (nv) {
++    recordConsensusSnapshot(code, nv.avgTargetPrice, nv.avgTargetPrice, nv.maxTargetPrice ?? nv.avgTargetPrice)
++    const trend4w = consensusTrendPctFromHistory(code, nv.avgTargetPrice, 28)
++    const trend12w = consensusTrendPctFromHistory(code, nv.avgTargetPrice, 84)
++    const rows = consensusDaySnapshots.get(code) || []
++    const trendNote =
++      trend4w == null && trend12w == null
++        ? `4·12주 추세는 FnGuide 다증권 데이터 연동 시 정확해집니다. (스냅샷 ${rows.length}일치)`
++        : null
++    return {
++      ...nv,
++      minTargetPrice: nv.minTargetPrice ?? nv.avgTargetPrice,
++      ...emptyRevision,
++      avgTargetPriceBf: null,
++      avgVsBfPct: null,
++      dispersionWidthPct: 0,
++      dispersionHighSkewPct: 0,
++      dispersionLowSkewPct: 0,
++      dispersionLabelKo: '단일 출처(분산 미표시)',
++      consensusAvgTrend4wPct: trend4w,
++      consensusAvgTrend12wPct: trend12w,
++      consensusTrendNote: trendNote,
+     }
+   }
+-  if (nv) return nv
+   return null
+ }
+ 
+-function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
++function computeKisLogicIndicators(quote, chart1m, investor, consensus, ctx = {}) {
+   const closes = chart1m.map((p) => Number(p.price)).filter((n) => Number.isFinite(n))
+   const last = closes.length ? closes[closes.length - 1] : quote.price
+   const prev = closes.length > 1 ? closes[closes.length - 2] : last
+@@ -274,10 +426,128 @@ function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
+     ),
+   )
+ 
++  const ctxIndexChart = Array.isArray(ctx.indexChart) ? ctx.indexChart : []
++  const idxCls = ctxIndexChart.map((p) => Number(p.price)).filter((n) => Number.isFinite(n) && n > 0)
++  const idxLast = idxCls.length ? idxCls[idxCls.length - 1] : null
++  const idxSma20x = idxCls.length >= 20 ? mean(idxCls.slice(-20)) : null
++  const idxSma60x = idxCls.length >= 60 ? mean(idxCls.slice(-60)) : null
++  const idxM20Base = idxCls.length >= 21 ? idxCls[idxCls.length - 21] : null
++  const indexTrend20 =
++    idxLast != null && idxM20Base != null && idxM20Base > 0 ? ((idxLast - idxM20Base) / idxM20Base) * 100 : null
++  const idxGap20 =
++    idxLast != null && idxSma20x != null && idxSma20x > 0 ? ((idxLast / idxSma20x - 1) * 100) : null
++  const idxGap60 =
++    idxLast != null && idxSma60x != null && idxSma60x > 0 ? ((idxLast / idxSma60x - 1) * 100) : null
++  const idxRets = []
++  for (let i = 1; i < idxCls.length; i++) {
++    if (idxCls[i - 1] > 0) idxRets.push((idxCls[i] - idxCls[i - 1]) / idxCls[i - 1])
++  }
++  const idxVolAnn =
++    idxRets.length >= 20
++      ? stddev(idxRets.slice(-20)) * Math.sqrt(252) * 100
++      : idxRets.length >= 5
++        ? stddev(idxRets) * Math.sqrt(252) * 100
++        : null
++  const hasIdx = indexTrend20 != null && idxGap20 != null
++  const marketSparkline5 = idxCls.length >= 5 ? idxCls.slice(-5) : idxCls.slice()
++  const idxInv = ctx.indexInvestor
++  const indexQuote = ctx.indexQuote
++  const f5a = idxInv?.cumulative5d?.foreignNetAmount
++  const f20a = idxInv?.cumulative20d?.foreignNetAmount
++  const fmtAmtEok = (a) => {
++    if (a == null || !Number.isFinite(a)) return '데이터 없음'
++    const e = a / 100_000_000
++    const sign = e >= 0 ? '+' : ''
++    return `${sign}${e.toFixed(1)}억`
++  }
++  const intradayAbs = Math.abs(Number(quote.changePercent) || 0)
++  const etfTv = indexQuote?.tradeValue
++  const tradeLine =
++    etfTv != null && Number.isFinite(Number(etfTv)) && Number(etfTv) > 0
++      ? `KOSPI200 ETF(069500) 당일 거래대금 약 ${(Number(etfTv) / 100_000_000).toFixed(0)}억원`
++      : '거래대금(ETF): 미수신 · 추세는 별도 미연동'
++  const creditLine = '신용잔고: 미연동 (별도 데이터 소스 없음)'
++  const trendIdxLabel =
++    indexTrend20 == null
++      ? 'KOSPI 20일 추세: 지수 프록시(069500) 데이터 부족'
++      : `KOSPI 20일 추세 ${indexTrend20 >= 0 ? '+' : ''}${indexTrend20.toFixed(1)}%, ${
++          indexTrend20 >= 1 ? '상승' : indexTrend20 <= -1 ? '하락' : '횡보'
++        } (KOSPI200 ETF 일봉)`
++  const gapLine =
++    idxGap20 == null
++      ? '이격도(현재/20MA·60MA): 데이터 부족'
++      : `현재가 대비 20MA ${idxGap20 >= 0 ? '+' : ''}${idxGap20.toFixed(1)}% · 60MA ${
++          idxGap60 == null ? 'n/a' : `${idxGap60 >= 0 ? '+' : ''}${idxGap60.toFixed(1)}%`
++        }`
++  const foreignLine = `외국인 누적(ETF ${idxInv?.code || '069500'} 프록시) 5일 ${fmtAmtEok(f5a)} · 20일 ${fmtAmtEok(f20a)}`
++  const vkLine =
++    idxVolAnn != null
++      ? `VKOSPI 대체·지수 연환산 실현변동 약 ${idxVolAnn.toFixed(1)}% (일봉 수익률 기반)`
++      : 'VKOSPI 대체: 산출 불가'
++  const intradayLine = `선택 종목 일중 변동 ${(Number(quote.changePercent) || 0) >= 0 ? '+' : ''}${Number(quote.changePercent || 0).toFixed(2)}% (판정 보조)`
++
++  let regimeKey = 'neutral'
++  let verdictKr = '박스권 (Sideways)'
++  let marketScoreN = 60
++  const volHigh = idxVolAnn != null && idxVolAnn > 25
++  const volMed = idxVolAnn != null && idxVolAnn > 18
++  const dayWild = intradayAbs >= 3.0
++  const dayElev = intradayAbs >= 2.3
++  if (hasIdx) {
++    if (volHigh || dayWild || (dayElev && volMed)) {
++      regimeKey = 'volatile'
++      verdictKr = '변동성 확대 (Volatile)'
++      marketScoreN = 44
++    } else if (indexTrend20 <= -2.0 || (indexTrend20 <= -1.2 && idxGap20 <= -1.2)) {
++      regimeKey = 'riskoff'
++      verdictKr = '약세장 (Trend Down)'
++      marketScoreN = 38
++    } else if (indexTrend20 >= 2.0 && idxGap20 >= -0.4) {
++      regimeKey = 'riskon'
++      verdictKr = '강세장 (Trend Up)'
++      marketScoreN = 78
++    } else if (indexTrend20 < 0 && indexTrend20 > -2.5 && idxGap20 < -0.5) {
++      regimeKey = 'caution'
++      verdictKr = '조정장 (Pullback)'
++      marketScoreN = 47
++    } else if (Math.abs(indexTrend20) < 1.4 && Math.abs(idxGap20) < 1.1) {
++      regimeKey = 'neutral'
++      verdictKr = '박스권 (Sideways)'
++      marketScoreN = 60
++    } else if (indexTrend20 > 0 && indexTrend20 < 2.0) {
++      regimeKey = 'neutral'
++      verdictKr = '박스권 (Sideways)'
++      marketScoreN = 62
++    }
++  } else if (dayWild) {
++    regimeKey = 'volatile'
++    verdictKr = '변동성 확대 (Volatile)'
++    marketScoreN = 45
++  }
++  if (regimeKey === 'riskon' && f5a != null && f5a < 0 && (f20a == null || f20a < 0)) {
++    marketScoreN = Math.min(marketScoreN, 70)
++  }
++  const marketHeadline = verdictKr
++  const marketDetail = [trendIdxLabel, gapLine, foreignLine, vkLine, tradeLine, creditLine, intradayLine].join('\n')
+   const market =
+-    Math.abs(quote.changePercent) >= 2.5
+-      ? `Caution (일중 변동 ${quote.changePercent.toFixed(2)}%)`
+-      : `Neutral (일중 변동 ${quote.changePercent.toFixed(2)}%)`
++    regimeKey === 'riskon'
++      ? `Risk-On — ${verdictKr}`
++      : regimeKey === 'riskoff'
++        ? `Risk-Off — ${verdictKr}`
++        : regimeKey === 'volatile' || regimeKey === 'caution'
++          ? `Caution — ${verdictKr}`
++          : `Neutral — ${verdictKr}`
++  const marketRegime = verdictKr.includes('강세장')
++    ? 'TrendUp'
++    : verdictKr.includes('조정장')
++      ? 'Pullback'
++      : verdictKr.includes('박스권')
++        ? 'Sideways'
++        : verdictKr.includes('약세장')
++          ? 'TrendDown'
++          : verdictKr.includes('변동성')
++            ? 'Volatile'
++            : 'Sideways'
+ 
+   const c3 = investor?.cumulative3d
+   const c5 = investor?.cumulative5d
+@@ -320,6 +590,11 @@ function computeKisLogicIndicators(quote, chart1m, investor, consensus) {
+     structure: `${structureScore} / 100`,
+     execution: `${executionScore} / 100`,
+     market,
++    marketHeadline,
++    marketDetail,
++    marketSparkline5,
++    marketScore: marketScoreN,
++    marketRegime,
+     flow,
+     technical: `RSI ${rsi == null ? 'N/A' : rsi.toFixed(1)} | SMA20 ${Math.round(sma20).toLocaleString('ko-KR')}`,
+     stats,
+@@ -866,10 +1141,19 @@ app.get('/api/logic-indicators', async (req, res) => {
+     if (!task) {
+       task = (async () => {
+         const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
+-        const chart1m = await inquireChartByTimeframe(appKey, appSecret, env, code, '1M')
+-        const investor = await inquireInvestorByStock(appKey, appSecret, env, code)
+-        const consensus = await fetchConsensusDetails(code).catch(() => null)
+-        return computeKisLogicIndicators(quote, chart1m, investor, consensus)
++        const [chart1m, indexChart, indexQuote, investor, indexInvestor, consensus] = await Promise.all([
++          inquireChartByTimeframe(appKey, appSecret, env, code, '1M'),
++          inquireChartByTimeframe(appKey, appSecret, env, '069500', '1M').catch(() => []),
++          inquireDomesticPrice(appKey, appSecret, env, '069500').catch(() => null),
++          inquireInvestorByStock(appKey, appSecret, env, code),
++          inquireInvestorByStock(appKey, appSecret, env, '069500').catch(() => null),
++          fetchConsensusDetails(code).catch(() => null),
++        ])
++        return computeKisLogicIndicators(quote, chart1m, investor, consensus, {
++          indexChart,
++          indexQuote,
++          indexInvestor,
++        })
+       })()
+       logicInflight.set(key, task)
+     }
+diff --git a/server/kisClient.mjs b/server/kisClient.mjs
+index 4ae648b..588d17f 100644
+--- a/server/kisClient.mjs
++++ b/server/kisClient.mjs
+@@ -333,6 +333,7 @@ export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
+       rows: [],
+       cumulative3d: emptyCumulative(),
+       cumulative5d: emptyCumulative(),
++      cumulative20d: emptyCumulative(),
+     }
+   }
+ 
+@@ -350,6 +351,7 @@ export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
+     rows,
+     cumulative3d: sumInvestorRows(rows, 3),
+     cumulative5d: sumInvestorRows(rows, 5),
++    cumulative20d: sumInvestorRows(rows, 20),
+   }
+ }
+ 
+diff --git a/src/app/page.tsx b/src/app/page.tsx
+index c8f2e04..6111516 100644
+--- a/src/app/page.tsx
++++ b/src/app/page.tsx
+@@ -22,34 +22,51 @@ import {
+   stockInfo,
+   stopInfo as mockStopInfo,
+ } from '../lib/mockData'
++import { buildThreeDayFiSupplyReasonSentence } from '../lib/supplyFlowTone'
++import { resolveTargetPriceDisplayMode } from '../lib/targetPriceDisplayMode'
+ import {
+   calculateConsensusScore,
+   calculateConsensusUpside,
+-  calculateRiskReward,
+   calculateSupplyScore,
+   calculateThreeMonthStrategy,
+   calculateValuationScore,
++  computeStrategyRiskRewardMetrics,
+   formatKrwAmountToEok,
+   calculateFinalScore,
+   calculateStopPrice,
+   calculateTargetPrices,
+-  getEntryStage,
+   getEntryStageCode,
+-  getFinalGrade,
+   getStrategy,
++  marketScoreFromLogicIndicators,
++  marketStatusFromLogicIndicators,
+   parseAtrDistance,
+   parseConsecutiveRiseDays,
+   inferSectorFlowSnapshot,
+   parseMomentumScoreFromLogic,
++  resolveFirstTakeProfitSellPct,
+   sectorFlowMainTitle,
+   sectorFlowSubLines,
++  summarizeExecutionUi,
+ } from '../lib/signalLogic'
+ import { buildInvestmentMemoPrompt, generateDetailedInvestmentMemo } from '../lib/aiBriefing'
+ import { getMockNewsByStockCode } from '../lib/mockNews'
+ import { fetchAiBriefing } from '../lib/aiBriefingApi'
+ import { sortNewsByDateDesc } from '../lib/newsAnalyzer'
+ import { generateMetricSummary } from '../lib/summaryLogic'
++import {
++  parseAtrDistanceValue,
++  resolveAtrDistanceRiskVisual,
++  resolveIndicatorRiskVisual,
++  resolveStatsRiskVisual,
++} from '../lib/metricRiskVisual'
++import { buildValuationCardModel } from '../lib/valuationCard'
++import {
++  CONSENSUS_LAG_NOTE,
++  CONSENSUS_RECOMMENDATION_TOOLTIP,
++  formatConsensusTrendPct,
++} from '../lib/consensusPresentation'
+ import type {
++  EntryStage,
+   LogicMetric,
+   Strategy,
+   TargetPriceInput,
+@@ -92,24 +109,50 @@ export default function Page() {
+       price: quoteState.data.price,
+       change: quoteState.data.change,
+       changePercent: quoteState.data.changePercent,
+-      investmentBadge: getStrategy(72, 47, 10).replace('_ONLY', ''),
++      investmentBadge: stockInfo.investmentBadge,
+       asOfDate: `${new Date(quoteState.data.fetchedAt).getFullYear()}.${String(
+         new Date(quoteState.data.fetchedAt).getMonth() + 1,
+       ).padStart(2, '0')}.${String(new Date(quoteState.data.fetchedAt).getDate()).padStart(2, '0')} 기준`,
+     }
+   }, [quoteState, pickedName])
+ 
+-  const summaryInfo = useMemo(() => {
+-    const structure = Number(logicState.data?.structure?.split('/')[0]?.trim() || 60)
+-    const execution = Number(logicState.data?.execution?.split('/')[0]?.trim() || 50)
+-    const rsi = Number(logicState.data?.rsi?.replace(/[^\d.]/g, '') || 47)
+-    const market =
+-      logicState.data?.market?.includes('Caution')
+-        ? 42
+-        : logicState.data?.market?.includes('Risk-On')
+-          ? 78
+-          : 60
+-    const consensus = logicState.data?.consensusDetails
++  const valuationLiveModel = useMemo(() => {
++    const d = logicState.data
++    const consensus = d?.consensusDetails
++    let consensusAvgUpside: number | null = null
++    if (
++      consensus?.avgTargetPrice &&
++      consensus?.maxTargetPrice &&
++      liveStock.price > 0
++    ) {
++      consensusAvgUpside = calculateConsensusUpside(
++        liveStock.price,
++        consensus.avgTargetPrice,
++        consensus.maxTargetPrice,
++      ).avgUpsidePct
++    }
++    if (quoteState.status !== 'ok') return null
++    const q = quoteState.data
++    return buildValuationCardModel({
++      trailingPER: q.per,
++      price: q.price,
++      eps: q.eps,
++      pbr: q.pbr,
++      sectorName: (q.sector ?? liveStock.sector ?? '').trim(),
++      consensusAvgUpsidePct: consensusAvgUpside,
++      fetchedAt: q.fetchedAt,
++    })
++  }, [logicState.data, quoteState, liveStock.price, liveStock.sector])
++
++  const executionUiBundle = useMemo(() => {
++    const d = logicState.data
++    if (!d) return null
++
++    const structure = Number(d.structure?.split('/')[0]?.trim() || 60)
++    const execution = Number(d.execution?.split('/')[0]?.trim() || 50)
++    const rsi = Number(d.rsi?.replace(/[^\d.]/g, '') || 47)
++    const market = marketScoreFromLogicIndicators(d)
++    const consensus = d.consensusDetails
+     const consensusScore =
+       consensus?.avgTargetPrice && consensus?.maxTargetPrice
+         ? calculateConsensusScore({
+@@ -122,7 +165,7 @@ export default function Page() {
+         : 50
+     const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
+     const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
+-    const sdNav = logicState.data?.supplyDetails
++    const sdNav = d.supplyDetails
+     const foreignNetAmount3D = sdNav?.foreignNetAmount3D ?? 0
+     const institutionNetAmount3D = sdNav?.institutionNetAmount3D ?? 0
+     const retailNetAmount3D = sdNav?.retailNetAmount3D ?? 0
+@@ -134,8 +177,9 @@ export default function Page() {
+       institutionNetAmount5D: sdNav?.institutionNetAmount5D ?? null,
+       retailNetAmount5D: sdNav?.retailNetAmount5D ?? null,
+     })
+-    const valuationScore =
+-      hasPer
++    const valuationScore = valuationLiveModel
++      ? calculateValuationScore(valuationLiveModel.valuationInputs)
++      : hasPer && trailingPER != null
+         ? calculateValuationScore({
+             trailingPER,
+             forwardPER: trailingPER,
+@@ -151,10 +195,10 @@ export default function Page() {
+         : inferSectorFlowSnapshot({
+             sectorName: liveStock.sector || '해당 섹터',
+             supplyScore,
+-            rotationLine: logicState.data?.rotation,
+-            momentumLine: logicState.data?.momentum,
++            rotationLine: d.rotation,
++            momentumLine: d.momentum,
+           })
+-    const momentumScoreNav = parseMomentumScoreFromLogic(logicState.data?.momentum, rsi)
++    const momentumScoreNav = parseMomentumScoreFromLogic(d.momentum, rsi)
+     const score = calculateFinalScore({
+       structure,
+       execution,
+@@ -166,7 +210,59 @@ export default function Page() {
+       market,
+       news: 58,
+     })
+-    const strategy = getStrategy(score, rsi, execution)
++    const strategy = getStrategy(score, rsi, execution) as Strategy
++    const entryStageCode = getEntryStageCode(strategy, score, execution)
++    const executionUi = summarizeExecutionUi(strategy, entryStageCode)
++    return {
++      score,
++      structure,
++      execution,
++      rsi,
++      strategy,
++      entryStageCode,
++      executionUi,
++      foreignNetAmount3D,
++      institutionNetAmount3D,
++      consensusScore,
++      hasPer,
++      trailingPER,
++    }
++  }, [logicState.data, quoteState, liveStock.price, liveStock.sector, queryCode, valuationLiveModel])
++
++  const liveStockForDisplay = useMemo(
++    () => ({
++      ...liveStock,
++      investmentBadge: executionUiBundle?.executionUi.strategyLabelKo ?? liveStock.investmentBadge,
++    }),
++    [liveStock, executionUiBundle],
++  )
++
++  const summaryInfo = useMemo(() => {
++    if (!executionUiBundle) {
++      const executionUi = summarizeExecutionUi('HOLD', 'CAUTION')
++      return {
++        title: '신호 강도가 약해 관망이 유리',
++        description: '일부 점수는 유지되나 신규 진입 근거는 아직 부족',
++        strategy: 'HOLD' as Strategy,
++        entryStageCode: 'CAUTION' as EntryStage,
++        executionUi,
++        reason: '로직 지표를 불러오면 맞춤 요약이 표시됩니다.',
++      }
++    }
++    const {
++      score,
++      structure,
++      execution,
++      strategy,
++      entryStageCode,
++      executionUi,
++      foreignNetAmount3D,
++      institutionNetAmount3D,
++      consensusScore,
++      hasPer,
++      trailingPER,
++    } = executionUiBundle
++
+     const detailParts: string[] = []
+     if (structure >= 70) detailParts.push('구조 점수가 높아 추세 훼손 가능성은 제한적입니다')
+     else if (structure <= 45) detailParts.push('구조 점수가 낮아 추세 신뢰도가 떨어집니다')
+@@ -176,34 +272,31 @@ export default function Page() {
+     else if (execution <= 45) detailParts.push('실행 점수가 낮아 추격 진입은 불리합니다')
+     else detailParts.push('실행 점수는 보통 수준입니다')
+ 
+-    if (supplyScore >= 60) {
+-      detailParts.push(
+-        `직전 3거래일 누적 수급은 외국인 ${formatKrwAmountToEok(foreignNetAmount3D)}, 기관 ${formatKrwAmountToEok(institutionNetAmount3D)}로 우호적입니다`,
+-      )
+-    } else if (supplyScore <= 45) {
+-      detailParts.push(
+-        `직전 3거래일 누적 수급은 외국인 ${formatKrwAmountToEok(foreignNetAmount3D)}, 기관 ${formatKrwAmountToEok(institutionNetAmount3D)}로 부담 구간입니다`,
+-      )
+-    } else {
+-      detailParts.push('직전 3거래일 누적 수급은 중립에 가깝습니다')
+-    }
++    detailParts.push(buildThreeDayFiSupplyReasonSentence(foreignNetAmount3D, institutionNetAmount3D))
+ 
+     if (consensusScore >= 60) detailParts.push('컨센서스 기준 기대수익 여지가 남아 있습니다')
+     else if (consensusScore <= 45) detailParts.push('컨센서스 업사이드가 제한적입니다')
+ 
+-    if (hasPer) detailParts.push(`현재 PER ${trailingPER.toFixed(1)}x를 밸류에이션 점수에 반영했습니다`)
+-    else detailParts.push('PER 실데이터 미수신으로 밸류에이션은 중립 처리했습니다')
++    if (hasPer && trailingPER != null) {
++      detailParts.push(`현재 PER ${trailingPER.toFixed(1)}x를 밸류에이션 점수에 반영했습니다`)
++    } else detailParts.push('PER 실데이터 미수신으로 밸류에이션은 중립 처리했습니다')
+ 
+     const reason = detailParts.slice(0, 4).join(' · ')
++    let title = '신호 강도가 약해 관망이 유리'
++    if (strategy === 'HOLD') title = '지금은 보유가 더 좋은 구간'
++    else if (strategy === 'REJECT') title = '진입은 피하는 편이 유리'
++    else if (strategy === 'TAKE_PROFIT') title = '단기 과열·익절 관리 구간'
++    else if (strategy === 'BUY' && score >= 80) title = '진입 타이밍이 비교적 유리한 구간'
++
+     return {
+-      title: strategy === 'HOLD' ? '지금은 보유가 더 좋은 구간' : '신호 강도가 약해 관망이 유리',
++      title,
+       description: '일부 점수는 유지되나 신규 진입 근거는 아직 부족',
+-      finalGrade: getFinalGrade(score),
+       strategy,
+-      entryStage: getEntryStage(score, strategy),
++      entryStageCode,
++      executionUi,
+       reason,
+     }
+-  }, [logicState.data, quoteState, liveStock.price, liveStock.sector, queryCode])
++  }, [executionUiBundle])
+ 
+   const metricSummary = useMemo(() => {
+     const d = logicState.data
+@@ -234,8 +327,9 @@ export default function Page() {
+           })
+     const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
+     const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
+-    const valuationScore =
+-      hasPer
++    const valuationScore = valuationLiveModel
++      ? calculateValuationScore(valuationLiveModel.valuationInputs)
++      : hasPer && trailingPER != null
+         ? calculateValuationScore({
+             trailingPER,
+             forwardPER: trailingPER,
+@@ -246,11 +340,7 @@ export default function Page() {
+         : 50
+     const indicatorScore = Number(d?.rsi?.replace(/[^\d.]/g, '') || 55)
+     const candleQualityScore = Number(d?.candleQuality?.match(/-?\d+(\.\d+)?/)?.[0] || 56)
+-    const marketScore = d?.market?.includes('Caution')
+-      ? 42
+-      : d?.market?.includes('Risk-On')
+-        ? 78
+-        : 60
++    const marketScore = marketScoreFromLogicIndicators(d)
+     const consensus = d?.consensusDetails
+     const consensusScore =
+       consensus?.avgTargetPrice && consensus?.maxTargetPrice
+@@ -305,7 +395,7 @@ export default function Page() {
+       strategy,
+       entryStage,
+     })
+-  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState])
++  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState, valuationLiveModel])
+ 
+   const liveMetrics: LogicMetric[] = useMemo(() => {
+     const d = logicState.data
+@@ -321,11 +411,7 @@ export default function Page() {
+     const structureScore = Number(d.structure?.split('/')[0]?.trim() || 60)
+     const executionScore = Number(d.execution?.split('/')[0]?.trim() || 50)
+     const indicatorScore = Number(d.rsi?.replace(/[^\d.]/g, '') || 55)
+-    const marketScore = d.market?.includes('Caution')
+-      ? 45
+-      : d.market?.includes('Risk-On')
+-        ? 78
+-        : 60
++    const marketScore = marketScoreFromLogicIndicators(d)
+     const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
+     const consensus = d.consensusDetails
+     const consensusScore =
+@@ -347,8 +433,9 @@ export default function Page() {
+           )
+         : null
+     const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
+-    const valuationScore =
+-      hasPer
++    const valuationScore = valuationLiveModel
++      ? calculateValuationScore(valuationLiveModel.valuationInputs)
++      : hasPer && trailingPER != null
+         ? calculateValuationScore({
+             trailingPER,
+             forwardPER: trailingPER,
+@@ -378,9 +465,21 @@ export default function Page() {
+     return [
+       { title: '구조', value: d.structure || '데이터 없음', score: structureScore, descriptionKey: 'structure', icon: 'Layers', tone: 'blue' },
+       { title: '실행', value: d.execution || '데이터 없음', score: executionScore, descriptionKey: 'execution', icon: 'Zap', tone: 'violet' },
+-      { title: 'ATR 이격', value: d.atrGap || '데이터 없음', score: 60, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
++      { title: 'ATR 이격', value: d.atrGap || '데이터 없음', ...resolveAtrDistanceRiskVisual(parseAtrDistanceValue(d.atrGap)), score: 60, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
+       { title: '연속상승', value: d.streak || '데이터 없음', score: 62, descriptionKey: 'consecutiveRise', icon: 'TrendingUp', tone: 'sky' },
+-      { title: '시장', value: d.market || '데이터 없음', score: marketScore, descriptionKey: 'market', icon: 'Globe2', tone: 'emerald' },
++      {
++        title: '시장',
++        value: d.marketHeadline || d.market || '데이터 없음',
++        subValue: d.marketDetail,
++        score: marketScore,
++        descriptionKey: 'market',
++        icon: 'Globe2',
++        tone: 'emerald',
++        sparkline:
++          Array.isArray(d.marketSparkline5) && d.marketSparkline5.length >= 2
++            ? d.marketSparkline5
++            : undefined,
++      },
+       {
+         title: '섹터 자금흐름',
+         value: sectorFlowMainTitle(sectorSnapM),
+@@ -431,16 +530,52 @@ export default function Page() {
+                   : `평균 ${avg}원 / 최고 ${hi}원`
+               })()
+             : '데이터 없음',
+-        subValue:
+-          consensusUpside != null
+-            ? `평균 ${consensusUpside.avgUpsidePct >= 0 ? '+' : ''}${consensusUpside.avgUpsidePct.toFixed(1)}% / 최고 ${consensusUpside.maxUpsidePct >= 0 ? '+' : ''}${consensusUpside.maxUpsidePct.toFixed(1)}%`
+-            : '외부 컨센서스 데이터 미수신',
++        subValue: (() => {
++          if (!consensus?.avgTargetPrice || !consensus?.maxTargetPrice) {
++            return '외부 컨센서스 데이터 미수신'
++          }
++          const lines: string[] = []
++          if (consensusUpside != null) {
++            lines.push(
++              `현재가 대비 업사이드: 평균 ${consensusUpside.avgUpsidePct >= 0 ? '+' : ''}${consensusUpside.avgUpsidePct.toFixed(1)}% / 최고 ${consensusUpside.maxUpsidePct >= 0 ? '+' : ''}${consensusUpside.maxUpsidePct.toFixed(1)}%`,
++            )
++          }
++          lines.push(`4주 평균 목표가 변화: ${formatConsensusTrendPct(consensus.consensusAvgTrend4wPct)}`)
++          lines.push(`12주 평균 목표가 변화: ${formatConsensusTrendPct(consensus.consensusAvgTrend12wPct)}`)
++          const up = consensus.revision7dUp ?? 0
++          const down = consensus.revision7dDown ?? 0
++          lines.push(`1주일 내 상향 ${up}건, 하향 ${down}건`)
++          if (consensus.consensusTrendNote) lines.push(consensus.consensusTrendNote)
++          return lines.join('\n')
++        })(),
+         meta: (() => {
+-          if (consensus?.recommendationScore != null || consensus?.recommendationText) {
+-            return `투자의견 ${consensus.recommendationScore?.toFixed(2) ?? '-'} (${consensus.recommendationText ?? '-'})`
++          if (!consensus?.avgTargetPrice || !consensus?.maxTargetPrice) return undefined
++          const parts: string[] = []
++          const w = consensus.dispersionWidthPct
++          const hiSk = consensus.dispersionHighSkewPct
++          const loSk = consensus.dispersionLowSkewPct
++          if (
++            typeof w === 'number' &&
++            w > 0 &&
++            typeof hiSk === 'number' &&
++            Number.isFinite(hiSk) &&
++            typeof loSk === 'number' &&
++            Number.isFinite(loSk)
++          ) {
++            parts.push(
++              `최고·최저 편차(평균 대비): +${hiSk.toFixed(1)}% · −${loSk.toFixed(1)}% (전체 폭 ${w.toFixed(1)}%)`,
++            )
+           }
+-          return undefined
++          if (consensus.dispersionLabelKo) parts.push(consensus.dispersionLabelKo)
++          if (consensus.recommendationScore != null || consensus.recommendationText) {
++            parts.push(
++              `투자의견 ${consensus.recommendationScore?.toFixed(2) ?? '-'} (${consensus.recommendationText ?? '-'})`,
++            )
++          }
++          parts.push(CONSENSUS_LAG_NOTE)
++          return parts.join('\n')
+         })(),
++        tooltipSummary: CONSENSUS_RECOMMENDATION_TOOLTIP,
+         score: consensusScore,
+         descriptionKey: 'consensus',
+         icon: 'SlidersHorizontal',
+@@ -449,20 +584,46 @@ export default function Page() {
+       { title: '캔들질', value: d.candleQuality || '데이터 없음', score: 56, descriptionKey: 'candleQuality', icon: 'CandlestickChart', tone: 'rose' },
+       {
+         title: '밸류에이션',
+-        value:
+-          hasPer
+-            ? `PER ${trailingPER.toFixed(1)}x`
+-            : 'PER 데이터 없음',
+-        score: valuationScore,
++        ...(valuationLiveModel
++          ? {
++              value: valuationLiveModel.value,
++              subValue: valuationLiveModel.subValue,
++              meta: valuationLiveModel.meta,
++              riskStrip: valuationLiveModel.riskStrip,
++              score: calculateValuationScore(valuationLiveModel.valuationInputs),
++            }
++          : {
++              value:
++                hasPer && trailingPER != null
++                  ? `Trailing PER ${trailingPER.toFixed(1)}x`
++                  : 'PER 데이터 없음',
++              score: valuationScore,
++            }),
+         descriptionKey: 'valuation',
+         icon: 'Droplets',
+         tone: 'slate',
+       },
+-      { title: '지표', value: d.indicator || d.rsi || '데이터 없음', score: indicatorScore, descriptionKey: 'indicators', icon: 'Activity', tone: 'blue' },
++      {
++        title: '지표',
++        value: d.indicator || d.rsi || '데이터 없음',
++        ...resolveIndicatorRiskVisual(d.indicator || d.rsi),
++        score: indicatorScore,
++        descriptionKey: 'indicators',
++        icon: 'Activity',
++        tone: 'blue',
++      },
+       { title: '특이', value: d.unusual || '데이터 없음', score: 60, descriptionKey: 'special', icon: 'CircleAlert', tone: 'red' },
+-      { title: '통계', value: d.stats || '데이터 없음', score: 55, descriptionKey: 'statistics', icon: 'Percent', tone: 'slate' },
++      {
++        title: '통계',
++        value: d.stats || '데이터 없음',
++        ...resolveStatsRiskVisual(d.stats),
++        score: 55,
++        descriptionKey: 'statistics',
++        icon: 'Percent',
++        tone: 'slate',
++      },
+     ]
+-  }, [logicState.data, liveStock.price, liveStock.sector, queryCode])
++  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState, valuationLiveModel])
+ 
+   const logicSubtitle = useMemo(() => {
+     const statusLabel =
+@@ -511,11 +672,8 @@ export default function Page() {
+           })
+     const sectorFlowScore = sectorSnap.sectorFlowScore
+     const momentumScore = parseMomentumScoreFromLogic(d?.momentum, rsi14)
+-    const marketScore = d?.market?.includes('Caution')
+-      ? 42
+-      : d?.market?.includes('Risk-On')
+-        ? 78
+-        : 60
++    const marketScore = marketScoreFromLogicIndicators(d)
++    const marketStatus = marketStatusFromLogicIndicators(d)
+ 
+     const consensus = d?.consensusDetails
+     const consensusScore =
+@@ -531,15 +689,17 @@ export default function Page() {
+ 
+     const trailingPER = quoteState.status === 'ok' ? quoteState.data.per : null
+     const hasPer = typeof trailingPER === 'number' && Number.isFinite(trailingPER)
+-    const valuationScore = hasPer
+-      ? calculateValuationScore({
+-          trailingPER,
+-          forwardPER: trailingPER,
+-          forwardEPSGrowthPct: 0,
+-          sectorAveragePER: trailingPER,
+-          historicalPERPercentile: 50,
+-        })
+-      : 50
++    const valuationScore = valuationLiveModel
++      ? calculateValuationScore(valuationLiveModel.valuationInputs)
++      : hasPer && trailingPER != null
++        ? calculateValuationScore({
++            trailingPER,
++            forwardPER: trailingPER,
++            forwardEPSGrowthPct: 0,
++            sectorAveragePER: trailingPER,
++            historicalPERPercentile: 50,
++          })
++        : 50
+ 
+     const finalScore = calculateFinalScore({
+       structure: structureScore,
+@@ -553,13 +713,6 @@ export default function Page() {
+       news: 58,
+     })
+ 
+-    const marketStatus =
+-      d?.market?.includes('Caution')
+-        ? 'Caution'
+-        : d?.market?.includes('Risk-On')
+-          ? 'RiskOn'
+-          : 'Neutral'
+-
+     const supportPrice =
+       quoteState.status === 'ok' ? (quoteState.data.low ?? price * 0.95) : price * 0.95
+     const resistancePrice =
+@@ -609,12 +762,21 @@ export default function Page() {
+       consensusAvgTargetPrice: consensus?.avgTargetPrice,
+       consensusMaxTargetPrice: consensus?.maxTargetPrice,
+       marketStatus,
++      stopPrice: stop.stopPrice,
+     }
+ 
+     const targetPriceResult = calculateTargetPrices(targetPriceInput)
+-    const oneMonthTarget =
+-      targetPriceResult.targets.find((t) => t.label === '1M')?.targetPrice ?? price
+-    const rr = calculateRiskReward(price, stop.stopPrice, oneMonthTarget)
++    const t1m = targetPriceResult.targets.find((t) => t.label === '1M')
++    const t3m = targetPriceResult.targets.find((t) => t.label === '3M')
++    /** 헤더: 순수·가중·기대(확률) 모두 표시. 3M 전략 점수·비중 로직에는 가중 R/R만 전달 */
++    const riskRewardMetrics = computeStrategyRiskRewardMetrics({
++      stopLossPct: stop.stopLossPct,
++      firstTakeProfitPct: 9,
++      firstTakeProfitSellPct: resolveFirstTakeProfitSellPct(rsi14, finalScore, supplyScore),
++      finalTargetPct: 15,
++      prob1M: t1m?.probability ?? 0,
++      prob3M: t3m?.probability ?? 0,
++    })
+ 
+     const strategy = getStrategy(finalScore, rsi14, executionScore) as Strategy
+ 
+@@ -629,7 +791,9 @@ export default function Page() {
+       strategy,
+       marketStatus,
+       marketScore,
+-      riskRewardRatio: Number.isFinite(rr.ratio) ? rr.ratio : 0,
++      riskRewardRatio: Number.isFinite(riskRewardMetrics.weightedRatio)
++        ? riskRewardMetrics.weightedRatio
++        : 0,
+       supportPrice,
+       consensusAvgTargetPrice: consensus?.avgTargetPrice ?? null,
+       consensusMaxTargetPrice: consensus?.maxTargetPrice ?? null,
+@@ -647,7 +811,7 @@ export default function Page() {
+       rsi14,
+       atrDistance,
+       marketStatus,
+-      marketLabel: d?.market ?? '',
++      marketLabel: d?.marketHeadline || d?.market || '',
+       strategy,
+       entryStage,
+       threeMonthEntry: threeMonth.entryDecision,
+@@ -657,11 +821,11 @@ export default function Page() {
+     return {
+       targetPriceResult,
+       stop,
+-      rr,
++      riskRewardMetrics,
+       threeMonth,
+       briefingInput,
+     }
+-  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState])
++  }, [logicState.data, liveStock.price, liveStock.sector, queryCode, quoteState, valuationLiveModel])
+ 
+   const mockNewsSorted = useMemo(
+     () => sortNewsByDateDesc(getMockNewsByStockCode(queryCode)),
+@@ -758,6 +922,24 @@ export default function Page() {
+ 
+   const targetPricePanelResult = logicDerived?.targetPriceResult ?? null
+ 
++  const targetPriceDisplayMode = useMemo(
++    () =>
++      resolveTargetPriceDisplayMode({
++        entryStageTier: summaryInfo.executionUi.tier,
++        entryStageLabel: summaryInfo.executionUi.entryStageLabel,
++        strategy: summaryInfo.strategy,
++        threeMonthEntryDecision: logicDerived?.threeMonth?.entryDecision,
++        recommendedPositionPct: logicDerived?.threeMonth?.recommendedPositionPct ?? Number.NaN,
++      }),
++    [
++      summaryInfo.executionUi.tier,
++      summaryInfo.executionUi.entryStageLabel,
++      summaryInfo.strategy,
++      logicDerived?.threeMonth?.entryDecision,
++      logicDerived?.threeMonth?.recommendedPositionPct,
++    ],
++  )
++
+   const stopInfo = useMemo(() => {
+     if (!logicDerived) return mockStopInfo
+     return {
+@@ -823,7 +1005,7 @@ export default function Page() {
+               }}
+             />
+           </div>
+-          <MainStockCard stock={liveStock} />
++          <MainStockCard stock={liveStockForDisplay} />
+ 
+           <div className="grid grid-cols-1 md:grid-cols-2 md:items-stretch">
+             <SummaryPanel
+@@ -859,12 +1041,13 @@ export default function Page() {
+           <MetricGrid metrics={liveMetrics} subtitle={logicSubtitle} />
+           <ExecutionStrategy
+             strategy={logicDerived?.threeMonth ?? null}
+-            riskReward={logicDerived?.rr ?? { ratio: 0, verdict: '애매' }}
++            riskRewardMetrics={logicDerived?.riskRewardMetrics ?? null}
+             loading={logicState.status === 'loading'}
+           />
+           <TargetPricePanel
+             result={targetPricePanelResult}
+             loading={logicState.status === 'loading' && !targetPricePanelResult}
++            displayMode={targetPriceDisplayMode}
+           />
+           <StopPanel stop={stopInfo} />
+ 
+diff --git a/src/components/ExecutionStrategy.tsx b/src/components/ExecutionStrategy.tsx
+index 304c2be..cc5dc3a 100644
+--- a/src/components/ExecutionStrategy.tsx
++++ b/src/components/ExecutionStrategy.tsx
+@@ -4,13 +4,14 @@ import {
+   ClipboardList,
+   Clock,
+   Flag,
++  Info,
+   PieChart,
+   PlusCircle,
+   ShieldAlert,
+   Target,
+   TrendingUp,
+ } from 'lucide-react'
+-import type { ThreeMonthStrategy } from '../types/stock'
++import type { StrategyRiskRewardMetrics, ThreeMonthStrategy } from '../types/stock'
+ import { useMediaQuery } from '../hooks/useMediaQuery'
+ import { useUniformCellHeights } from '../hooks/useUniformCellHeights'
+ import { ExecutionInfoTooltip } from './ExecutionInfoTooltip'
+@@ -18,7 +19,7 @@ import type { ExecutionEducationKey } from '../lib/executionEducation'
+ 
+ type ExecutionStrategyProps = {
+   strategy: ThreeMonthStrategy | null
+-  riskReward: { ratio: number; verdict: string }
++  riskRewardMetrics: StrategyRiskRewardMetrics | null
+   loading?: boolean
+ }
+ 
+@@ -74,7 +75,7 @@ const articleClass =
+ 
+ export function ExecutionStrategy({
+   strategy,
+-  riskReward,
++  riskRewardMetrics,
+   loading,
+ }: ExecutionStrategyProps) {
+   const [openKey, setOpenKey] = useState<string | null>(null)
+@@ -129,8 +130,36 @@ export function ExecutionStrategy({
+   return (
+     <section className="overflow-visible border-t border-slate-200 px-6 py-6 sm:px-8">
+       <h3 className={sectionTitleClass}>실행 전략</h3>
+-      <p className="mt-1 text-xs text-slate-500">
+-        3개월 +15% 전략 · R/R {riskReward.ratio.toFixed(2)} ({riskReward.verdict})
++      <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-500">
++        <span>3개월 +15% 전략</span>
++        {riskRewardMetrics ? (
++          <>
++            <span aria-hidden>·</span>
++            <span
++              className="tabular-nums"
++              title="최종 목표 상승률(%) ÷ |손절%|. 1차 익절 분할은 반영하지 않습니다."
++            >
++              순수 R/R {riskRewardMetrics.pureRatio.toFixed(2)} ({riskRewardMetrics.pureVerdict})
++            </span>
++            <span aria-hidden>·</span>
++            <span
++              className="tabular-nums"
++              title="(1차 익절% × 분할매도% + 최종% × 잔여) ÷ |손절%|. 3M 전략의 분할 규칙과 동일합니다."
++            >
++              가중 R/R {riskRewardMetrics.weightedRatio.toFixed(2)} (
++              {riskRewardMetrics.weightedVerdict})
++            </span>
++            <span aria-hidden>·</span>
++            <span
++              className="inline-flex items-center gap-0.5 tabular-nums"
++              title="기대 손익비(확률 가중): (1차 익절% × 1M 달성확률 + 최종% × 3M 달성확률) ÷ |손절%|. 목표가 패널의 1M·3M 확률을 사용합니다. 괄호 안 등급은 이 기대 R/R 기준입니다."
++            >
++              <Info className="size-3 shrink-0 text-slate-400" aria-hidden />
++              기대 R/R {riskRewardMetrics.expectedProbWeightedRatio.toFixed(2)} (
++              {riskRewardMetrics.expectedProbWeightedVerdict})
++            </span>
++          </>
++        ) : null}
+       </p>
+ 
+       <div ref={gridRef} className="mt-4 grid grid-cols-2 gap-2.5 md:grid-cols-3">
+diff --git a/src/components/MetricGrid.tsx b/src/components/MetricGrid.tsx
+index 64f3d39..288dc86 100644
+--- a/src/components/MetricGrid.tsx
++++ b/src/components/MetricGrid.tsx
+@@ -5,6 +5,7 @@ import {
+   CircleAlert,
+   Droplets,
+   Globe2,
++  Info,
+   Landmark,
+   Layers,
+   Map,
+@@ -22,7 +23,37 @@ import { formatKrwAmountToEok, formatSignedSharesKr } from '../lib/signalLogic'
+ import { useMediaQuery } from '../hooks/useMediaQuery'
+ import { useUniformCellHeights } from '../hooks/useUniformCellHeights'
+ import { MetricInfoTooltip } from './MetricInfoTooltip'
+-import type { LogicMetric } from '../types/stock'
++import type { LogicMetric, MetricRiskStrip } from '../types/stock'
++
++function stripBarClass(strip: MetricRiskStrip | undefined): string {
++  switch (strip) {
++    case 'info':
++      return 'bg-sky-500'
++    case 'warning':
++      return 'bg-amber-400'
++    case 'orange':
++      return 'bg-orange-500'
++    case 'danger':
++      return 'bg-rose-500'
++    default:
++      return ''
++  }
++}
++
++function riskBadgeWrapClass(strip: MetricRiskStrip | undefined): string {
++  switch (strip) {
++    case 'info':
++      return 'border-sky-200 bg-sky-50 text-sky-900'
++    case 'warning':
++      return 'border-amber-300 bg-amber-50 text-amber-900'
++    case 'orange':
++      return 'border-orange-300 bg-orange-50 text-orange-950'
++    case 'danger':
++      return 'border-rose-300 bg-rose-50 text-rose-950'
++    default:
++      return 'border-slate-200 bg-slate-50 text-slate-800'
++  }
++}
+ 
+ const iconMap: Record<string, LucideIcon> = {
+   Layers,
+@@ -88,15 +119,36 @@ export function MetricGrid({ metrics, subtitle }: MetricGridProps) {
+           const key = `${metric.title}:${metric.value}`
+           const col = index % cols
+           const tooltipSide = col === cols - 1 ? 'end' : 'start'
++          const strip = metric.riskStrip
++          const showStrip = strip != null && strip !== 'neutral'
++          const bar = stripBarClass(strip)
+           return (
+             <article
+               key={metric.title}
+               data-uniform-cell
+               className="relative flex h-full min-h-0 flex-col overflow-visible rounded-lg border border-slate-200 bg-white p-3 shadow-sm"
+             >
++              {showStrip && bar ? (
++                <span
++                  className={`pointer-events-none absolute bottom-3 left-0 top-3 w-1 rounded-sm ${bar}`}
++                  aria-hidden
++                />
++              ) : null}
+               <div className="flex flex-wrap items-center gap-2.5">
+                 <Icon className={`size-6 ${toneClass[metric.tone]}`} />
+                 <p className="text-sm font-semibold text-slate-700">{metric.title}</p>
++                {metric.showRiskInfoIcon ? (
++                  <span className="inline-flex shrink-0" title="주의 구간">
++                    <Info className="size-4 text-sky-600" aria-hidden />
++                  </span>
++                ) : null}
++                {metric.riskBadge ? (
++                  <span
++                    className={`max-w-[min(100%,11rem)] rounded-full border px-2 py-0.5 text-[10px] font-semibold leading-tight ${riskBadgeWrapClass(strip)}`}
++                  >
++                    {metric.riskBadge}
++                  </span>
++                ) : null}
+                 {metric.statusBadge ? (
+                   <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-800">
+                     {metric.statusBadge}
+@@ -114,6 +166,39 @@ export function MetricGrid({ metrics, subtitle }: MetricGridProps) {
+                 />
+               </div>
+               <p className="mt-2 text-[13px] font-semibold leading-snug text-slate-900">{metric.value}</p>
++              {metric.sparkline && metric.sparkline.length >= 2 ? (
++                <div className="mt-2" aria-hidden>
++                  <svg
++                    viewBox="0 0 100 28"
++                    preserveAspectRatio="none"
++                    className={`h-8 w-full opacity-90 ${toneClass[metric.tone]}`}
++                    role="img"
++                  >
++                    <polyline
++                      fill="none"
++                      stroke="currentColor"
++                      strokeWidth="1.75"
++                      strokeLinecap="round"
++                      strokeLinejoin="round"
++                      vectorEffect="non-scaling-stroke"
++                      points={(() => {
++                        const vals = metric.sparkline
++                        const min = Math.min(...vals)
++                        const max = Math.max(...vals)
++                        const span = max - min || 1
++                        return vals
++                          .map((v, i) => {
++                            const x = (i / (vals.length - 1)) * 100
++                            const y = 26 - ((v - min) / span) * 24
++                            return `${x.toFixed(2)},${y.toFixed(2)}`
++                          })
++                          .join(' ')
++                      })()}
++                    />
++                  </svg>
++                  <p className="mt-0.5 text-[10px] text-slate-400">지수 프록시 5일 종가</p>
++                </div>
++              ) : null}
+               {metric.descriptionKey === 'candleQuality' ? (() => {
+                 const { clv5, clv10 } = parseClvFromMetricValue(metric.value)
+                 if (clv5 == null && clv10 == null) return null
+@@ -175,14 +260,29 @@ export function MetricGrid({ metrics, subtitle }: MetricGridProps) {
+               {metric.subValue ? (
+                 <p
+                   className={`mt-1 text-[12px] leading-snug text-slate-700 ${
+-                    metric.descriptionKey === 'sectorFlow' ? 'whitespace-pre-line' : ''
++                    metric.descriptionKey === 'sectorFlow' ||
++                    metric.descriptionKey === 'valuation' ||
++                    metric.descriptionKey === 'market' ||
++                    metric.descriptionKey === 'consensus'
++                      ? 'whitespace-pre-line'
++                      : ''
+                   }`}
+                 >
+                   {metric.subValue}
+                 </p>
+               ) : null}
+               {metric.meta ? (
+-                <p className="mt-1 text-[11px] text-slate-500">{metric.meta}</p>
++                <p
++                  className={`mt-1 text-slate-500 ${
++                    metric.descriptionKey === 'valuation'
++                      ? 'text-[10px] leading-relaxed'
++                      : metric.descriptionKey === 'consensus'
++                        ? 'text-[10px] leading-relaxed whitespace-pre-line'
++                        : 'text-[11px]'
++                  }`}
++                >
++                  {metric.meta}
++                </p>
+               ) : null}
+             </article>
+           )
+diff --git a/src/components/MetricInfoTooltip.tsx b/src/components/MetricInfoTooltip.tsx
+index f790e3c..354ef76 100644
+--- a/src/components/MetricInfoTooltip.tsx
++++ b/src/components/MetricInfoTooltip.tsx
+@@ -264,10 +264,13 @@ export function MetricInfoTooltip({
+             <p className={sectionLabelClass}>핵심 요약</p>
+             <p className="mt-1.5 text-xs font-medium leading-relaxed text-slate-800">{edu.takeaway}</p>
+ 
+-            {metric.descriptionKey === 'supply' && metric.tooltipSummary ? (
++            {(metric.descriptionKey === 'supply' || metric.descriptionKey === 'consensus') &&
++            metric.tooltipSummary ? (
+               <>
+                 <hr className="my-3 border-slate-200" />
+-                <p className={sectionLabelClass}>이 종목 수급 요약</p>
++                <p className={sectionLabelClass}>
++                  {metric.descriptionKey === 'consensus' ? '투자의견 점수 안내' : '이 종목 수급 요약'}
++                </p>
+                 <p className="mt-1.5 whitespace-pre-line text-xs leading-relaxed text-slate-700">
+                   {metric.tooltipSummary}
+                 </p>
+diff --git a/src/components/StockCard.tsx b/src/components/StockCard.tsx
+index 8e9921a..8cf174a 100644
+--- a/src/components/StockCard.tsx
++++ b/src/components/StockCard.tsx
+@@ -10,6 +10,11 @@ import {
+ import { useKisQuote } from '../hooks/useKisQuote'
+ import { useKisChart, type Timeframe } from '../hooks/useKisChart'
+ import { useKisLogicIndicators } from '../hooks/useKisLogicIndicators'
++import {
++  executionUiFromAiLoose,
++  marketScoreFromLogicIndicators,
++} from '../lib/signalLogic'
++import { UnifiedEntryStageCard } from './ExecutionStageCard'
+ import { StockNameSearch } from './StockNameSearch'
+ import {
+   Activity,
+@@ -18,7 +23,6 @@ import {
+   CalendarDays,
+   CandlestickChart,
+   FileSpreadsheet,
+-  Gauge,
+   Globe2,
+   Info,
+   Layers,
+@@ -41,6 +45,8 @@ import {
+   XAxis,
+   YAxis,
+ } from 'recharts'
++import type { UnifiedEntryStageTier } from '../types/stock'
++
+ const TIMEFRAMES: Timeframe[] = ['3D', '1W', '1M', '3M', '1Y']
+ 
+ /** 레퍼런스: 라운드 화이트 카드, 얇은 보더 */
+@@ -119,21 +125,19 @@ function SectionTitle({ children }: { children: ReactNode }) {
+   )
+ }
+ 
+-function HeroEntryBadge({ stage }: { stage: string }) {
+-  const u = stage.toUpperCase()
+-  const isRisk =
+-    u.includes('REJECT') || u.includes('거부') || stage.includes('거절')
+-  return (
+-    <span
+-      className={`rounded-md border px-2.5 py-0.5 text-xs font-bold ${
+-        isRisk
+-          ? 'border-red-300 bg-white text-red-600'
+-          : 'border-slate-200 bg-slate-50 text-slate-800'
+-      }`}
+-    >
+-      {u === 'REJECT' || stage === 'REJECT' ? 'REJECT' : stage}
+-    </span>
+-  )
++function heroTierBadgeClass(tier: UnifiedEntryStageTier): string {
++  switch (tier) {
++    case 'NEW_ENTRY':
++      return 'border-emerald-300 bg-emerald-50 text-emerald-900'
++    case 'SCALE_IN':
++      return 'border-teal-300 bg-teal-50 text-teal-900'
++    case 'HOLD_STEADY':
++      return 'border-slate-200 bg-slate-50 text-slate-800'
++    case 'SCALE_OUT':
++      return 'border-amber-300 bg-amber-50 text-amber-900'
++    default:
++      return 'border-red-300 bg-white text-red-600'
++  }
+ }
+ 
+ function MetricTile({
+@@ -408,22 +412,18 @@ export function StockCard({
+   const finalOpinion = aiFill?.finalOpinion
+   const executionSignals = aiFill?.executionSignals
+ 
+-  const opinionGrade =
+-    finalOpinion?.finalGrade || aiFill?.finalGrade || 'C'
+   const opinionStrategy =
+     finalOpinion?.strategy || aiFill?.strategy || 'WATCH_ONLY'
+   const opinionEntryStage =
+     finalOpinion?.entryStage || aiFill?.entryStage || 'REJECT'
++  const executionUiDemo = executionUiFromAiLoose(opinionStrategy, opinionEntryStage)
++
+   const keyReasons =
+     finalOpinion?.keyReasons?.slice(0, 3) || [
+       aiFill?.reason ||
+         '일부 점수는 유지되나 진입 근거는 아직 부족합니다.',
+     ]
+ 
+-  const strategyDisplay = String(opinionStrategy)
+-    .replace(/\s+/g, '_')
+-    .toUpperCase()
+-
+   const rsiText =
+     logic?.rsi ??
+     extractRsi(logic?.technical) ??
+@@ -555,11 +555,13 @@ export function StockCard({
+       {
+         label: '시장',
+         icon: Target,
+-        iconClass: 'text-amber-500',
+-        value:
+-          logic?.market?.includes('Caution') || logic?.market?.includes('주의')
+-            ? logic.market
+-            : logic?.market || 'Caution (KOSPI200 변동성 1.2σ)',
++        iconClass:
++          marketScoreFromLogicIndicators(logic) <= 44 ||
++          Boolean(logic?.market?.includes('Caution')) ||
++          Boolean(logic?.market?.includes('주의'))
++            ? 'text-amber-500'
++            : 'text-emerald-600',
++        value: logic?.marketHeadline || logic?.market || '데이터 없음',
+       },
+       {
+         label: '수급',
+@@ -709,7 +711,11 @@ export function StockCard({
+                     ? '···'
+                     : formatKrw(basePrice)}
+               </p>
+-              <HeroEntryBadge stage={opinionEntryStage} />
++              <span
++                className={`rounded-md border px-2.5 py-0.5 text-xs font-bold ${heroTierBadgeClass(executionUiDemo.tier)}`}
++              >
++                {executionUiDemo.entryStageLabel}
++              </span>
+             </div>
+             <p className={`text-sm font-semibold tabular-nums sm:text-right ${ch.className}`}>
+               <span className="mr-1">{ch.arrow}</span>
+@@ -743,20 +749,17 @@ export function StockCard({
+               '일부 점수는 유지되나 진입 근거는 아직 부족'}
+           </p>
+           <ul className="mt-6 space-y-4 border-t border-slate-100 pt-6">
+-            <li className="flex items-center gap-2 text-sm">
+-              <Gauge className="size-4 shrink-0 text-amber-500" strokeWidth={2} />
+-              <span className="text-slate-500">최종 등급</span>
+-              <span className="ml-auto font-semibold text-amber-600">{opinionGrade}</span>
+-            </li>
+             <li className="flex items-center gap-2 text-sm">
+               <Activity className="size-4 shrink-0 text-blue-600" strokeWidth={2} />
+               <span className="text-slate-500">전략</span>
+-              <span className="ml-auto font-semibold text-blue-600">{strategyDisplay}</span>
++              <span className="ml-auto font-semibold text-blue-800">{executionUiDemo.strategyLabelKo}</span>
+             </li>
+-            <li className="flex items-center gap-2 text-sm">
+-              <Target className="size-4 shrink-0 text-red-500" strokeWidth={2} />
+-              <span className="text-slate-500">진입 단계</span>
+-              <span className="ml-auto font-semibold text-red-600">{opinionEntryStage}</span>
++            <li className="flex flex-col gap-2 text-sm">
++              <div className="flex items-center gap-2">
++                <Target className="size-4 shrink-0 text-rose-500" strokeWidth={2} />
++                <span className="text-slate-500">진입 단계</span>
++              </div>
++              <UnifiedEntryStageCard ui={executionUiDemo} />
+             </li>
+             <li className="flex items-start gap-2 text-sm">
+               <Info className="mt-0.5 size-4 shrink-0 text-slate-400" strokeWidth={2} />
+diff --git a/src/components/SummaryPanel.tsx b/src/components/SummaryPanel.tsx
+index 720e4b1..104f5d5 100644
+--- a/src/components/SummaryPanel.tsx
++++ b/src/components/SummaryPanel.tsx
+@@ -1,9 +1,10 @@
+ import { useMemo } from 'react'
+-import { Activity, Gauge, Info, Target } from 'lucide-react'
++import { Activity, Info, Target } from 'lucide-react'
++import type { DetailedInvestmentMemoResult } from '../types/aiBriefing'
+ import type { SummaryInfo } from '../types/stock'
+ import type { MetricSummaryResult } from '../lib/summaryLogic'
+-import type { DetailedInvestmentMemoResult } from '../types/aiBriefing'
+ import { investmentMemoAtAGlance } from '../lib/investmentMemoAtAGlance'
++import { UnifiedEntryStageCard } from './ExecutionStageCard'
+ 
+ type SummaryPanelProps = {
+   summary: SummaryInfo
+@@ -70,22 +71,21 @@ export function SummaryPanel({ summary, metricSummary, investmentMemo, aiLoading
+ 
+       <ul className="mt-6 space-y-4 border-t border-slate-100 pt-6 text-sm">
+         <li className="flex items-center gap-2">
+-          <Gauge className="size-4 text-amber-500" />
+-          <span className="text-slate-500">Final Grade</span>
+-          <span className="ml-auto font-semibold text-amber-600">{summary.finalGrade}</span>
+-        </li>
+-        <li className="flex items-center gap-2">
+-          <Activity className="size-4 text-blue-600" />
+-          <span className="text-slate-500">Strategy</span>
+-          <span className="ml-auto font-semibold text-blue-600">{summary.strategy}</span>
++          <Activity className="size-4 shrink-0 text-blue-600" />
++          <span className="text-slate-500">전략</span>
++          <span className="ml-auto font-semibold text-blue-800">{summary.executionUi.strategyLabelKo}</span>
+         </li>
+-        <li className="flex items-center gap-2">
+-          <Target className="size-4 text-rose-500" />
+-          <span className="text-slate-500">Entry Stage</span>
+-          <span className="ml-auto font-semibold text-rose-600">{summary.entryStage}</span>
++        <li className="flex flex-col gap-2.5 sm:flex-row sm:items-start sm:gap-3">
++          <div className="flex shrink-0 items-center gap-2 sm:min-w-[5.5rem]">
++            <Target className="size-4 shrink-0 text-rose-500" />
++            <span className="text-slate-500">진입 단계</span>
++          </div>
++          <div className="min-w-0 flex-1">
++            <UnifiedEntryStageCard ui={summary.executionUi} />
++          </div>
+         </li>
+         <li className="flex items-start gap-2">
+-          <Info className="mt-0.5 size-4 text-slate-400" />
++          <Info className="mt-0.5 size-4 shrink-0 text-slate-400" />
+           <div className="min-w-0">
+             <span className="text-slate-500">Reason</span>
+             <p className="mt-1 whitespace-pre-line font-medium leading-relaxed text-slate-800">{summary.reason}</p>
+diff --git a/src/components/TargetPricePanel.tsx b/src/components/TargetPricePanel.tsx
+index 23f2026..c884e0c 100644
+--- a/src/components/TargetPricePanel.tsx
++++ b/src/components/TargetPricePanel.tsx
+@@ -1,9 +1,12 @@
+-import { Crosshair } from 'lucide-react'
+-import type { CalculateTargetPricesResult } from '../types/stock'
++import { Crosshair, Info } from 'lucide-react'
++import type { CalculateTargetPricesResult, TargetPriceRow } from '../types/stock'
++import type { TargetPriceDisplayMode } from '../lib/targetPriceDisplayMode'
++import { TARGET_PRICE_HEURISTIC_DISCLAIMER } from '../lib/targetPriceDisclaimer'
+ 
+ type TargetPricePanelProps = {
+   result: CalculateTargetPricesResult | null
+   loading?: boolean
++  displayMode?: TargetPriceDisplayMode
+ }
+ 
+ function formatKrw(v: number) {
+@@ -15,11 +18,65 @@ function formatReturnPct(pct: number) {
+   return `${sign}${pct.toFixed(1)}%`
+ }
+ 
+-export function TargetPricePanel({ result, loading }: TargetPricePanelProps) {
++function formatStopLossPct(pct: number) {
++  const sign = pct >= 0 ? '+' : ''
++  return `${sign}${pct.toFixed(1)}%`
++}
++
++/** 상방 휴리스틱 %가 중립대일 때 직설적 표현 */
++function upsideProbabilityHint(p: number): string | null {
++  if (p >= 48 && p <= 52) return '기대값 중립 (동전 던지기에 가까운 50:50)'
++  return null
++}
++
++function upDownRatioLine(target: TargetPriceRow): string {
++  const d = target.stopHitProbability
++  if (!(d > 0)) return '▲/▼ 비율: —'
++  const r = target.probability / d
++  if (!Number.isFinite(r)) return '▲/▼ 비율: —'
++  return `▲/▼ 비율: ${r.toFixed(1)}x`
++}
++
++export function TargetPricePanel({ result, loading, displayMode = 'normal' }: TargetPricePanelProps) {
++  const mode = displayMode
++  const sectionTitle =
++    mode === 'takeProfitReference'
++      ? '참고: 잔여 상승 여력'
++      : mode === 'nonEntryReference'
++        ? '참고: 목표가'
++        : '목표가'
++
+   const titleRow = (
+-    <h3 className="text-lg font-bold tracking-tight text-slate-900">목표가</h3>
++    <div className="flex flex-wrap items-center gap-2">
++      <h3 className="text-lg font-bold tracking-tight text-slate-900">{sectionTitle}</h3>
++      <span
++        className="inline-flex shrink-0 rounded-full border border-slate-200 bg-slate-50 p-1 text-slate-500"
++        title={TARGET_PRICE_HEURISTIC_DISCLAIMER}
++      >
++        <Info className="size-3.5" aria-hidden />
++      </span>
++    </div>
+   )
+ 
++  const banner =
++    mode === 'takeProfitReference' ? (
++      <div
++        className="mt-3 rounded-lg border border-amber-300/80 bg-amber-50 px-3 py-2.5 text-[13px] font-medium leading-snug text-amber-950"
++        role="status"
++      >
++        현재 익절 단계입니다. 아래 목표가는 추가 상승 시나리오일 뿐, 매수 근거가 아닙니다.
++      </div>
++    ) : mode === 'nonEntryReference' ? (
++      <div
++        className="mt-3 rounded-lg border border-slate-300/90 bg-slate-100 px-3 py-2.5 text-[13px] font-medium leading-snug text-slate-800"
++        role="status"
++      >
++        현재 진입 권장 단계가 아닙니다. 목표가는 참고용입니다.
++      </div>
++    ) : null
++
++  const cardsDimClass = mode !== 'normal' ? 'opacity-[0.45] transition-opacity' : ''
++
+   if (loading) {
+     return (
+       <section className="border-t border-slate-200 px-6 py-6 sm:px-8">
+@@ -38,11 +95,12 @@ export function TargetPricePanel({ result, loading }: TargetPricePanelProps) {
+     )
+   }
+ 
+-  const { targets, warnings, notes } = result
++  const { targets, warnings, notes, stopPrice, stopLossPct } = result
+ 
+   return (
+     <section className="border-t border-slate-200 px-6 py-6 sm:px-8">
+       {titleRow}
++      {banner}
+ 
+       {warnings.length > 0 ? (
+         <ul className="mt-3 list-inside list-disc space-y-1 text-xs text-amber-800">
+@@ -59,30 +117,58 @@ export function TargetPricePanel({ result, loading }: TargetPricePanelProps) {
+         </ul>
+       ) : null}
+ 
+-      <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+-        {targets.map((target) => (
+-          <article
+-            key={target.label}
+-            className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
+-          >
+-            <p className="flex items-center gap-2.5 text-base font-semibold text-slate-700">
+-              <Crosshair className="size-5 shrink-0 text-blue-600" strokeWidth={2.25} aria-hidden />
+-              {target.label}
+-            </p>
+-            <p className="mt-1 text-base font-semibold text-slate-900">
+-              {formatKrw(target.targetPrice)}
+-            </p>
+-            <p className="mt-1 text-xs font-medium text-blue-600">
+-              {formatReturnPct(target.expectedReturnPct)}
+-            </p>
+-            <p className="mt-2 text-xs text-slate-500">
+-              달성확률 {target.probability}% · {target.method}
+-            </p>
+-            {target.note ? (
+-              <p className="mt-2 text-[11px] leading-snug text-slate-500">{target.note}</p>
+-            ) : null}
+-          </article>
+-        ))}
++      <p className="mt-3 text-[11px] leading-relaxed text-slate-500">{TARGET_PRICE_HEURISTIC_DISCLAIMER}</p>
++
++      <div className={`mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 ${cardsDimClass}`}>
++        {targets.map((target) => {
++          const bearish = target.stopHitProbability > target.probability
++          const hint = upsideProbabilityHint(target.probability)
++          return (
++            <article
++              key={target.label}
++              title={TARGET_PRICE_HEURISTIC_DISCLAIMER}
++              className="relative overflow-visible rounded-lg border border-slate-200 bg-white p-4 shadow-sm"
++            >
++              {bearish ? (
++                <span
++                  className="pointer-events-none absolute bottom-3 left-0 top-3 w-1 rounded-sm bg-rose-500"
++                  aria-hidden
++                />
++              ) : null}
++              <p className="flex items-center gap-2.5 text-sm font-semibold text-slate-600">
++                <Crosshair className="size-4 shrink-0 text-blue-600" strokeWidth={2.25} aria-hidden />
++                {target.label} 목표
++              </p>
++              <p className="mt-1 text-base font-bold tabular-nums text-slate-900">
++                {formatKrw(target.targetPrice)}{' '}
++                <span className="font-semibold text-blue-600">/ {formatReturnPct(target.expectedReturnPct)}</span>
++              </p>
++              <p className="mt-3 flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1 text-[13px] tabular-nums text-slate-800">
++                <span>
++                  <span className="text-emerald-600" aria-hidden>
++                    ▲
++                  </span>{' '}
++                  도달 {target.probability}%
++                </span>
++                <span>
++                  <span className="text-rose-600" aria-hidden>
++                    ▼
++                  </span>{' '}
++                  손절 도달 {target.stopHitProbability}%
++                </span>
++              </p>
++              {hint ? <p className="mt-1 text-[10px] leading-snug text-slate-500">{hint}</p> : null}
++              <p className="mt-2 text-[12px] font-semibold tabular-nums text-slate-700">{upDownRatioLine(target)}</p>
++              <p className="mt-2 text-[11px] leading-snug text-slate-600">
++                손절 {formatKrw(stopPrice)} ({formatStopLossPct(stopLossPct)}) · 전 기간 동일
++              </p>
++              <p className="mt-1.5 text-[10px] text-slate-400">{target.method}</p>
++              {target.note ? (
++                <p className="mt-2 text-[11px] leading-snug text-slate-500">{target.note}</p>
++              ) : null}
++            </article>
++          )
++        })}
+       </div>
+     </section>
+   )
+diff --git a/src/hooks/useKisLogicIndicators.ts b/src/hooks/useKisLogicIndicators.ts
+index 075d3ec..1060ead 100644
+--- a/src/hooks/useKisLogicIndicators.ts
++++ b/src/hooks/useKisLogicIndicators.ts
+@@ -6,6 +6,15 @@ export type KISLogicIndicators = {
+   atrGap?: string
+   streak?: string
+   market?: string
++  /** 복합 시장 판정 한 줄 (예: 강세장 (Trend Up)) */
++  marketHeadline?: string
++  /** 추세·이격·수급·변동성·거래대금 등 멀티라인 근거 */
++  marketDetail?: string
++  /** KOSPI200 ETF(069500) 등 프록시 지수 최근 5거래일 종가 */
++  marketSparkline5?: number[]
++  /** 1~99, 최종 점수·손절 로직에 사용 */
++  marketScore?: number
++  marketRegime?: 'TrendUp' | 'Pullback' | 'Sideways' | 'TrendDown' | 'Volatile'
+   rotation?: string
+   structureState?: string
+   flow?: string
+@@ -45,6 +54,23 @@ export type KISLogicIndicators = {
+     recommendationText: string | null
+     analystCount: number | null
+     lastUpdateDays: number | null
++    /** 직전 FnGuide 컨센서스 평균 목표가 (있을 때) */
++    avgTargetPriceBf?: number | null
++    /** 직전 대비 평균 목표가 변화율(%) */
++    avgVsBfPct?: number | null
++    /** (최고-최저)/평균 * 100 */
++    dispersionWidthPct?: number | null
++    dispersionHighSkewPct?: number | null
++    dispersionLowSkewPct?: number | null
++    dispersionLabelKo?: string | null
++    revision7dUp?: number | null
++    revision7dDown?: number | null
++    revision7dFlat?: number | null
++    revision7dReports?: number | null
++    /** 서버 일별 스냅샷 기준 28일 전 대비 평균 목표가 변화율 */
++    consensusAvgTrend4wPct?: number | null
++    consensusAvgTrend12wPct?: number | null
++    consensusTrendNote?: string | null
+   } | null
+ }
+ 
+diff --git a/src/lib/metricEducation.ts b/src/lib/metricEducation.ts
+index 0d457b8..bdaf38a 100644
+--- a/src/lib/metricEducation.ts
++++ b/src/lib/metricEducation.ts
+@@ -206,6 +206,16 @@ export const metricEducation: Record<LogicMetric['descriptionKey'], MetricEducat
+         meaning:
+           '가장 낙관적인 의견과 평균의 차이가 크면, 의견 분산이 크다는 뜻입니다. 기대가 한쪽으로 쏠렸거나 불확실성이 크다는 신호로 읽을 수 있습니다.',
+       },
++      {
++        label: '4·12주 평균 목표가 변화',
++        meaning:
++          '서버에 쌓인 일별 평균 목표가와 비교한 변화율입니다. 변화가 빠르면 컨센서스가 종목을 다시 매기는 중일 수 있습니다.',
++      },
++      {
++        label: '최고·최저 편차와 수렴·분기',
++        meaning:
++          '평균 대비 최고·최저가 얼마나 벌어졌는지(폭)를 봅니다. 폭이 좁으면 의견이 수렴한 편이고, 넓으면 증권사 간 분기가 큽니다.',
++      },
+       {
+         label: '후행일 수 있음',
+         meaning:
+diff --git a/src/lib/mockData.ts b/src/lib/mockData.ts
+index cac1a9c..0ab39c2 100644
+--- a/src/lib/mockData.ts
++++ b/src/lib/mockData.ts
+@@ -2,21 +2,34 @@ import {
+   calculateConsensusScore,
+   calculateConsensusUpside,
+   calculateFinalScore,
+-  calculateRiskReward,
+   calculateSectorFlowScore,
+   calculateSupplyScore,
+-  calculateStopPrice,
+-  calculateTargetPrices,
+   calculateThreeMonthStrategy,
+   calculateValuationScore,
++  computeStrategyRiskRewardMetrics,
+   formatKrwAmountToEok,
+-  getEntryStage,
+-  getFinalGrade,
++  calculateStopPrice,
++  calculateTargetPrices,
++  getEntryStageCode,
+   getStrategy,
++  resolveFirstTakeProfitSellPct,
+   sectorFlowMainTitle,
+   sectorFlowStatusFromScore,
+   sectorFlowSubLines,
++  summarizeExecutionUi,
+ } from './signalLogic'
++import type { Strategy } from '../types/stock'
++import { buildValuationCardModel } from './valuationCard'
++import {
++  CONSENSUS_LAG_NOTE,
++  CONSENSUS_RECOMMENDATION_TOOLTIP,
++  formatConsensusTrendPct,
++} from './consensusPresentation'
++import {
++  resolveAtrDistanceRiskVisual,
++  resolveIndicatorRiskVisual,
++  resolveStatsRiskVisual,
++} from './metricRiskVisual'
+ import type {
+   ChartPoint,
+   ExecutionCard,
+@@ -159,9 +172,9 @@ const scoreInputs: ScoreInputs = {
+ }
+ 
+ const score = calculateFinalScore(scoreInputs)
+-const grade = getFinalGrade(score)
+-const strategy = getStrategy(score, 47, scoreInputs.execution)
+-const entryStage = getEntryStage(score, strategy)
++const strategy = getStrategy(score, 47, scoreInputs.execution) as Strategy
++const entryStageCode = getEntryStageCode(strategy, score, scoreInputs.execution)
++const executionUi = summarizeExecutionUi(strategy, entryStageCode)
+ export const targetStopInput: TargetStopInput = {
+   currentPrice: 79_800,
+   atr14: 2_930,
+@@ -174,11 +187,11 @@ export const targetStopInput: TargetStopInput = {
+   finalScore: score,
+   executionScore: scoreInputs.execution,
+   atrDistance: 2.8,
+-  riskRewardRatio: 1.7,
+   marketStatus: 'Neutral',
+ }
+ export const consensusAvgTargetPrice = 91_000
+ export const consensusMaxTargetPrice = 105_000
++export const consensusMinTargetPrice = 84_000
+ export const analystCount = 12
+ export const lastConsensusUpdate = 12
+ export const trailingPER = 24.8
+@@ -192,8 +205,30 @@ const consensusUpside = calculateConsensusUpside(
+   consensusAvgTargetPrice,
+   consensusMaxTargetPrice,
+ )
++const mockConsensusDispersionWidthPct =
++  consensusAvgTargetPrice > 0
++    ? ((consensusMaxTargetPrice - consensusMinTargetPrice) / consensusAvgTargetPrice) * 100
++    : 0
++const mockConsensusHighSkewPct =
++  consensusAvgTargetPrice > 0
++    ? ((consensusMaxTargetPrice - consensusAvgTargetPrice) / consensusAvgTargetPrice) * 100
++    : 0
++const mockConsensusLowSkewPct =
++  consensusAvgTargetPrice > 0
++    ? ((consensusAvgTargetPrice - consensusMinTargetPrice) / consensusAvgTargetPrice) * 100
++    : 0
+ export const consensusUpsideAvgPct = consensusUpside.avgUpsidePct
+ export const consensusUpsideMaxPct = consensusUpside.maxUpsidePct
++
++const mockValuationCardModel = buildValuationCardModel({
++  trailingPER,
++  price: targetStopInput.currentPrice,
++  eps: targetStopInput.currentPrice / trailingPER,
++  pbr: 1.35,
++  sectorName: '반도체',
++  consensusAvgUpsidePct: consensusUpside.avgUpsidePct,
++  fetchedAt: new Date(Date.now() - 12 * 86_400_000).toISOString(),
++})!
+ const consensusScore = calculateConsensusScore({
+   currentPrice: targetStopInput.currentPrice,
+   avgTargetPrice: consensusAvgTargetPrice,
+@@ -201,13 +236,7 @@ const consensusScore = calculateConsensusScore({
+   analystCount,
+   lastConsensusUpdateDays: lastConsensusUpdate,
+ })
+-const valuationScore = calculateValuationScore({
+-  trailingPER,
+-  forwardPER,
+-  forwardEPSGrowthPct,
+-  sectorAveragePER,
+-  historicalPERPercentile,
+-})
++const valuationScore = calculateValuationScore(mockValuationCardModel.valuationInputs)
+ const stopCalc = calculateStopPrice(targetStopInput)
+ const targetPriceDemoInput: TargetPriceInput = {
+   currentPrice: targetStopInput.currentPrice,
+@@ -226,14 +255,23 @@ const targetPriceDemoInput: TargetPriceInput = {
+   consensusAvgTargetPrice,
+   consensusMaxTargetPrice,
+   marketStatus: targetStopInput.marketStatus,
++  stopPrice: stopCalc.stopPrice,
+ }
+ const targetPriceDemoResult = calculateTargetPrices(targetPriceDemoInput)
+-const rr = calculateRiskReward(
+-  targetStopInput.currentPrice,
+-  stopCalc.stopPrice,
+-  targetPriceDemoResult.targets.find((t) => t.label === '1M')?.targetPrice ??
+-    targetStopInput.currentPrice,
+-)
++const demoT1m = targetPriceDemoResult.targets.find((t) => t.label === '1M')
++const demoT3m = targetPriceDemoResult.targets.find((t) => t.label === '3M')
++const rrDemo = computeStrategyRiskRewardMetrics({
++  stopLossPct: stopCalc.stopLossPct,
++  firstTakeProfitPct: 9,
++  firstTakeProfitSellPct: resolveFirstTakeProfitSellPct(
++    targetStopInput.rsi14,
++    score,
++    scoreInputs.supply,
++  ),
++  finalTargetPct: 15,
++  prob1M: demoT1m?.probability ?? 0,
++  prob3M: demoT3m?.probability ?? 0,
++})
+ export const executionInput: ExecutionInput = {
+   currentPrice: targetStopInput.currentPrice,
+   finalScore: score,
+@@ -252,7 +290,7 @@ export const executionInput: ExecutionInput = {
+   consecutiveRiseDays: 2,
+   stopPrice: stopCalc.stopPrice,
+   stopLossPct: stopCalc.stopLossPct,
+-  riskRewardRatio: rr.ratio,
++  riskRewardRatio: rrDemo.weightedRatio,
+   marketStatus: targetStopInput.marketStatus,
+   strategy: strategy as ExecutionInput['strategy'],
+   entryStage: 'WATCH',
+@@ -270,7 +308,7 @@ export const mockThreeMonthStrategy: ThreeMonthStrategy = calculateThreeMonthStr
+   strategy: strategy as ExecutionInput['strategy'],
+   marketStatus: targetStopInput.marketStatus,
+   marketScore: 60,
+-  riskRewardRatio: rr.ratio,
++  riskRewardRatio: rrDemo.weightedRatio,
+   supportPrice: targetStopInput.supportPrice ?? Math.round(targetStopInput.currentPrice * 0.95),
+   consensusAvgTargetPrice: consensusAvgTargetPrice,
+   consensusMaxTargetPrice: consensusMaxTargetPrice,
+@@ -284,16 +322,16 @@ export const stockInfo: StockInfo = {
+   price: 79_800,
+   change: 700,
+   changePercent: 0.88,
+-  investmentBadge: 'HOLD',
++  investmentBadge: executionUi.strategyLabelKo,
+   asOfDate: '2025.05.31 기준',
+ }
+ 
+ export const summaryInfo: SummaryInfo = {
+   title: '지금은 보유가 더 좋은 구간',
+   description: '일부 점수는 유지되나 신규 진입 근거는 아직 부족',
+-  finalGrade: grade,
+-  strategy: 'HOLD',
+-  entryStage,
++  strategy,
++  entryStageCode,
++  executionUi,
+   reason: '일부 점수는 유지되나 진입 근거 부족',
+ }
+ 
+@@ -339,9 +377,19 @@ export const chartByTimeframe: Record<Timeframe, ChartPoint[]> = {
+ export const logicMetrics: LogicMetric[] = [
+   { title: '구조', value: '72 / 100', score: 72, descriptionKey: 'structure', icon: 'Layers', tone: 'blue' },
+   { title: '실행', value: '10 / 100', score: 10, descriptionKey: 'execution', icon: 'Zap', tone: 'violet' },
+-  { title: 'ATR 이격', value: '2.8 ATR', score: 56, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
++  { title: 'ATR 이격', value: '7.3 ATR', ...resolveAtrDistanceRiskVisual(7.3), score: 56, descriptionKey: 'atrDistance', icon: 'Ruler', tone: 'amber' },
+   { title: '연속상승', value: '2일', score: 64, descriptionKey: 'consecutiveRise', icon: 'TrendingUp', tone: 'sky' },
+-  { title: '시장', value: 'Caution, KOSPI 2,640', score: 52, descriptionKey: 'market', icon: 'Globe2', tone: 'emerald' },
++  {
++    title: '시장',
++    value: '박스권 (Sideways)',
++    subValue:
++      'KOSPI 20일 추세 +0.4%, 횡보 (KOSPI200 ETF 일봉)\n현재가 대비 20MA +0.2% · 60MA n/a\n외국인 누적(ETF 069500 프록시) 5일 +120.0억 · 20일 +85.0억\nVKOSPI 대체·지수 연환산 실현변동 약 16.2% (일봉 수익률 기반)\nKOSPI200 ETF(069500) 당일 거래대금 약 450억원\n신용잔고: 미연동 (KIS 미연계)\n선택 종목 일중 변동 +0.35% (판정 보조)',
++    score: 60,
++    sparkline: [42_800, 43_050, 42_900, 43_200, 43_100],
++    descriptionKey: 'market',
++    icon: 'Globe2',
++    tone: 'emerald',
++  },
+   {
+     title: '섹터 자금흐름',
+     value: sectorFlowMainTitle(mockSectorFlowSnapshot),
+@@ -376,9 +424,20 @@ export const logicMetrics: LogicMetric[] = [
+   },
+   {
+     title: '컨센서스',
+-    value: `평균 ${consensusAvgTargetPrice.toLocaleString('ko-KR')}원`,
+-    subValue: `최고 ${consensusMaxTargetPrice.toLocaleString('ko-KR')}원 · 평균 ${consensusUpside.avgUpsidePct >= 0 ? '+' : ''}${consensusUpside.avgUpsidePct.toFixed(1)}% / 최고 ${consensusUpside.maxUpsidePct >= 0 ? '+' : ''}${consensusUpside.maxUpsidePct.toFixed(1)}%`,
+-    meta: `애널리스트 ${analystCount}명 · 업데이트 ${lastConsensusUpdate}일 전`,
++    value: `평균 ${consensusAvgTargetPrice.toLocaleString('ko-KR')}원 / 최고 ${consensusMaxTargetPrice.toLocaleString('ko-KR')}원 / 최저 ${consensusMinTargetPrice.toLocaleString('ko-KR')}원`,
++    subValue: [
++      `현재가 대비 업사이드: 평균 ${consensusUpside.avgUpsidePct >= 0 ? '+' : ''}${consensusUpside.avgUpsidePct.toFixed(1)}% / 최고 ${consensusUpside.maxUpsidePct >= 0 ? '+' : ''}${consensusUpside.maxUpsidePct.toFixed(1)}%`,
++      `4주 평균 목표가 변화: ${formatConsensusTrendPct(8.2)}`,
++      `12주 평균 목표가 변화: ${formatConsensusTrendPct(22)}`,
++      `1주일 내 상향 4건, 하향 0건`,
++    ].join('\n'),
++    meta: [
++      `최고·최저 편차(평균 대비): +${mockConsensusHighSkewPct.toFixed(1)}% · −${mockConsensusLowSkewPct.toFixed(1)}% (전체 폭 ${mockConsensusDispersionWidthPct.toFixed(1)}%)`,
++      mockConsensusDispersionWidthPct <= 20 ? '컨센서스 수렴' : '컨센서스 분포 보통',
++      `투자의견 4.04 (매수)`,
++      CONSENSUS_LAG_NOTE,
++    ].join('\n'),
++    tooltipSummary: CONSENSUS_RECOMMENDATION_TOOLTIP,
+     score: consensusScore,
+     descriptionKey: 'consensus',
+     icon: 'SlidersHorizontal',
+@@ -387,17 +446,34 @@ export const logicMetrics: LogicMetric[] = [
+   { title: '캔들질', value: 'CLV5 -0.12 / CLV10 -0.25', score: 50, descriptionKey: 'candleQuality', icon: 'CandlestickChart', tone: 'rose' },
+   {
+     title: '밸류에이션',
+-    value: `Trailing PER ${trailingPER.toFixed(1)}x`,
+-    subValue: `Forward PER ${forwardPER.toFixed(1)}x · Forward EPS Growth +${forwardEPSGrowthPct}%`,
+-    meta: `섹터 평균 ${sectorAveragePER.toFixed(1)}x · 역사적 PER 상위 ${historicalPERPercentile}% · ${valuationUpdatedAt}`,
++    value: mockValuationCardModel.value,
++    subValue: mockValuationCardModel.subValue,
++    meta: mockValuationCardModel.meta,
++    riskStrip: mockValuationCardModel.riskStrip,
+     score: valuationScore,
+     descriptionKey: 'valuation',
+     icon: 'Droplets',
+     tone: 'slate',
+   },
+-  { title: '지표', value: 'RSI 47 / MFI 46', score: 57, descriptionKey: 'indicators', icon: 'Activity', tone: 'blue' },
++  {
++    title: '지표',
++    value: 'RSI 84 / MFI 86',
++    ...resolveIndicatorRiskVisual('RSI 84 / MFI 86'),
++    score: 57,
++    descriptionKey: 'indicators',
++    icon: 'Activity',
++    tone: 'blue',
++  },
+   { title: '특이', value: '특이사항 없음', score: 60, descriptionKey: 'special', icon: 'CircleAlert', tone: 'red' },
+-  { title: '통계', value: '유사패턴 승률 54.3% / 참조수익률 +1.8% / N=67', score: 54, descriptionKey: 'statistics', icon: 'Percent', tone: 'slate' },
++  {
++    title: '통계',
++    value: '20일 평균 76,800원 대비 +26.20%',
++    ...resolveStatsRiskVisual('20일 평균 76,800원 대비 +26.20%'),
++    score: 54,
++    descriptionKey: 'statistics',
++    icon: 'Percent',
++    tone: 'slate',
++  },
+ ]
+ 
+ export const executionCards: ExecutionCard[] = [
+diff --git a/src/lib/screener.ts b/src/lib/screener.ts
+index 6c1a9ab..a818f24 100644
+--- a/src/lib/screener.ts
++++ b/src/lib/screener.ts
+@@ -230,6 +230,7 @@ async function buildStock(
+       consensusAvgTargetPrice: consensus?.avgTargetPrice || undefined,
+       consensusMaxTargetPrice: consensus?.maxTargetPrice || undefined,
+       marketStatus: marketScore >= 70 ? 'RiskOn' : marketScore <= 45 ? 'Caution' : 'Neutral',
++      stopPrice: Math.round(q.price * 0.94),
+     })
+     const oneMonth = targets.targets.find((r) => r.label === '1M') ?? targets.targets[1]
+     const tm = calculateThreeMonthStrategy({
+diff --git a/src/lib/signalLogic.ts b/src/lib/signalLogic.ts
+index 02197bf..fd1ea55 100644
+--- a/src/lib/signalLogic.ts
++++ b/src/lib/signalLogic.ts
+@@ -3,18 +3,30 @@ import type {
+   EntryStage,
+   ExecutionInput,
+   ExecutionPlan,
++  ExecutionSummaryUi,
++  MarketStatus,
+   RiskReward,
+   ScoreInputs,
+   SectorFlowSnapshot,
+   SectorFlowStatusLabel,
+   Strategy,
++  StrategyRiskRewardMetrics,
++  StrategyRiskRewardVerdict,
+   TargetPriceInput,
+   TargetPriceRow,
+   TargetStopInput,
+   ThreeMonthStrategy,
+   ThreeMonthStrategyInput,
++  UnifiedEntryStageTier,
+ } from '../types/stock'
+ 
++/** `/api/logic-indicators` 및 AI 보조 필드용 최소 형태 */
++export type LogicMarketSignals = {
++  marketScore?: number
++  marketHeadline?: string
++  market?: string
++}
++
+ export function calculateFinalScore(inputs: ScoreInputs): number {
+   const sectorFlowN = Number.isFinite(inputs.sectorFlow)
+     ? inputs.sectorFlow
+@@ -34,6 +46,7 @@ export function calculateFinalScore(inputs: ScoreInputs): number {
+   return Math.round(weighted)
+ }
+ 
++/** @deprecated Final Grade UI 폐지. 서버/AI 스키마 호환용으로만 유지 가능 */
+ export function getFinalGrade(score: number): string {
+   if (score >= 85) return 'A'
+   if (score >= 75) return 'B+'
+@@ -52,7 +65,7 @@ export function getStrategy(score: number, rsi: number, execution: number): stri
+ }
+ 
+ export function getEntryStage(score: number, strategy: string): string {
+-  if (strategy === 'REJECT') return '관망'
++  if (strategy === 'REJECT') return '제외'
+   if (strategy === 'TAKE_PROFIT') return '익절'
+   if (strategy === 'WATCH_ONLY') return '관망'
+   if (score >= 80) return '신규진입'
+@@ -78,6 +91,92 @@ export function getEntryStageCode(
+   return 'WATCH'
+ }
+ 
++const ENTRY_TIER_COPY: Record<
++  UnifiedEntryStageTier,
++  { label: string; action: string }
++> = {
++  NEW_ENTRY: {
++    label: '신규 진입',
++    action: '손절·비중 한도를 정한 뒤, 시그널이 유지될 때 소액 신규 매수를 검토하세요.',
++  },
++  SCALE_IN: {
++    label: '분할 매수',
++    action: '한 번에 몰지 말고 지지·눌림에서 소액씩 나눠 매수하세요.',
++  },
++  HOLD_STEADY: {
++    label: '보유 유지',
++    action: '추가 매수나 급매도 없이 포지션을 유지하세요.',
++  },
++  SCALE_OUT: {
++    label: '분할 익절',
++    action: '과열·수익 구간이 겹치므로 일부 물량부터 차익 실현하세요.',
++  },
++  EXIT_ALL_OR_AVOID: {
++    label: '전량 익절 또는 회피',
++    action: '신규 진입은 피하고, 보유 시 손절·전량 청산 가능성을 검토하세요.',
++  },
++}
++
++export function summarizeExecutionUi(
++  strategy: Strategy,
++  entryCode: EntryStage,
++): ExecutionSummaryUi {
++  let tier: UnifiedEntryStageTier
++  if (strategy === 'REJECT' || entryCode === 'REJECT') tier = 'EXIT_ALL_OR_AVOID'
++  else if (strategy === 'TAKE_PROFIT') tier = 'SCALE_OUT'
++  else if (strategy === 'BUY') tier = entryCode === 'ACCEPT' ? 'NEW_ENTRY' : 'SCALE_IN'
++  else tier = 'HOLD_STEADY'
++
++  const strategyLabelKo =
++    strategy === 'BUY' && entryCode !== 'ACCEPT'
++      ? '추가 매수'
++      : strategy === 'BUY'
++        ? '신규 매수'
++        : strategy === 'HOLD'
++          ? '보유'
++          : strategy === 'WATCH_ONLY'
++            ? '관망'
++            : strategy === 'TAKE_PROFIT'
++              ? '익절'
++              : '회피'
++
++  const { label, action } = ENTRY_TIER_COPY[tier]
++  return {
++    tier,
++    strategyLabelKo,
++    entryStageLabel: label,
++    entryStageAction: action,
++  }
++}
++
++export function coerceStrategyFromAi(raw: string): Strategy {
++  const u = String(raw).toUpperCase().replace(/[^A-Z_]/g, '')
++  if (u.includes('TAKE_PROFIT') || u.includes('TAKEPROFIT')) return 'TAKE_PROFIT'
++  if (u.includes('WATCHONLY') || u === 'WATCH_ONLY') return 'WATCH_ONLY'
++  if (u === 'WATCH') return 'WATCH_ONLY'
++  if (u.includes('REJECT')) return 'REJECT'
++  if (u === 'BUY') return 'BUY'
++  if (u.includes('HOLD')) return 'HOLD'
++  return 'HOLD'
++}
++
++export function coerceEntryStageFromAiLoose(raw: string, strategy: Strategy): EntryStage {
++  const t = String(raw).trim()
++  if (/REJECT|제외|거부/i.test(t)) return 'REJECT'
++  if (/익절/i.test(t) || /TAKE_PROFIT/i.test(t)) return 'CAUTION'
++  if (/관망|WATCH_ONLY|WATCHONLY/i.test(t)) return 'WATCH'
++  if (/신규\s*진입|신규진입|ACCEPT/i.test(t)) return 'ACCEPT'
++  if (/눌림|CAUTION|보수/i.test(t)) return 'CAUTION'
++  if (/보유|HOLD/i.test(t)) return strategy === 'HOLD' ? 'CAUTION' : 'CAUTION'
++  return getEntryStageCode(strategy, 72, 55)
++}
++
++export function executionUiFromAiLoose(strategyRaw: string, entryRaw: string): ExecutionSummaryUi {
++  const strategy = coerceStrategyFromAi(strategyRaw)
++  const code = coerceEntryStageFromAiLoose(entryRaw, strategy)
++  return summarizeExecutionUi(strategy, code)
++}
++
+ export function calculatePositionSize(score: number): number {
+   if (score >= 85) return 20
+   if (score >= 75) return 15
+@@ -607,6 +706,44 @@ function finalizeTargetRow(
+   }
+ }
+ 
++/** 표준정규 CDF Φ(x) — 손절 도달 휴리스틱용 */
++function normalCdf(x: number): number {
++  const a1 = 0.254829592
++  const a2 = -0.284496736
++  const a3 = 1.421413741
++  const a4 = -1.453152027
++  const a5 = 1.061405429
++  const p = 0.3275911
++  const sign = x < 0 ? -1 : 1
++  const ax = Math.abs(x)
++  const t = 1 / (1 + p * ax)
++  const y = 1 - ((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax)
++  return 0.5 * (1 + sign * y)
++}
++
++/**
++ * 동일 ATR(14일) 근사 변동성·로그정규 말기 가정 하 손절가 이하 도달 휴리스틱(%).
++ * GARCH 미적용 — UI 참고용.
++ */
++function stopHitProbabilityHeuristic(
++  input: TargetPriceInput,
++  currentPrice: number,
++  stopPrice: number,
++  horizonDays: number,
++): number {
++  if (!(currentPrice > 0) || !(stopPrice > 0) || stopPrice >= currentPrice) {
++    return 6
++  }
++  const relAtr =
++    typeof input.atr14 === 'number' && Number.isFinite(input.atr14) && input.atr14 > 0
++      ? input.atr14 / currentPrice
++      : resolveAtrPctForTargets(input) / 100
++  const sigmaT = relAtr * Math.sqrt(Math.max(1, horizonDays))
++  const z = Math.log(stopPrice / currentPrice) / Math.max(sigmaT, 1e-9)
++  const raw = normalCdf(z)
++  return Math.round(clamp(raw * 100, 2, 94))
++}
++
+ /**
+  * 기간별 목표가·기대수익률·달성확률 (실제 입력값 기반). 컨센서스는 경고/참고만.
+  */
+@@ -632,6 +769,15 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
+   const warnings: string[] = []
+   const notes: string[] = []
+ 
++  const resolvedStop =
++    typeof input.stopPrice === 'number' &&
++    Number.isFinite(input.stopPrice) &&
++    input.stopPrice > 0 &&
++    input.stopPrice < currentPrice
++      ? Math.round(input.stopPrice)
++      : Math.round(currentPrice * 0.94)
++  const stopLossPctCard = Number((((resolvedStop / currentPrice) - 1) * 100).toFixed(2))
++
+   const atrPct = resolveAtrPctForTargets(input)
+ 
+   // --- 1D ---
+@@ -763,18 +909,21 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
+       label: '1D',
+       ...f1,
+       probability: targetProbability(input, '1D'),
++      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 1),
+       method: 'ATR 단기 변동',
+     },
+     {
+       label: '7D',
+       ...f7,
+       probability: targetProbability(input, '7D'),
++      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 7),
+       method: 'ATR + 모멘텀',
+     },
+     {
+       label: '1M',
+       ...f1m,
+       probability: targetProbability(input, '1M'),
++      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 21),
+       method: '점수 기반 1개월 목표',
+       ...(resistanceNote1M3M ? { note: resistanceNote1M3M } : {}),
+     },
+@@ -782,12 +931,19 @@ export function calculateTargetPrices(input: TargetPriceInput): CalculateTargetP
+       label: '3M',
+       ...f3m,
+       probability: targetProbability(input, '3M'),
++      stopHitProbability: stopHitProbabilityHeuristic(input, currentPrice, resolvedStop, 63),
+       method: '3개월 모멘텀 목표',
+       ...(resistanceNote1M3M ? { note: resistanceNote1M3M } : {}),
+     },
+   ]
+ 
+-  return { targets, warnings, notes }
++  return {
++    targets,
++    stopPrice: resolvedStop,
++    stopLossPct: stopLossPctCard,
++    warnings,
++    notes,
++  }
+ }
+ 
+ export function calculateRiskReward(
+@@ -808,6 +964,76 @@ export function calculateRiskReward(
+   }
+ }
+ 
++/** 손절·목표가(%) 기반 R/R 구간 평가 (순수·가중·기대 R/R 공통) */
++export function verdictForPctRiskReward(ratio: number): StrategyRiskRewardVerdict {
++  if (!Number.isFinite(ratio) || ratio <= 0) return '비효율'
++  if (ratio < 1.5) return '비효율'
++  if (ratio < 2.0) return '보통'
++  if (ratio < 3.0) return '양호'
++  return '우수'
++}
++
++/**
++ * 3개월 전략용 손익비 (모두 % / |손절%|).
++ * - 순수: 최종 목표%만
++ * - 가중: 1차 익절%×분할매도비율 + 최종%×잔여
++ * - 기대(확률): 1차%×(1M 달성확률/100) + 최종%×(3M 달성확률/100)
++ */
++export function computeStrategyRiskRewardMetrics(params: {
++  stopLossPct: number
++  firstTakeProfitPct: number
++  firstTakeProfitSellPct: number
++  finalTargetPct: number
++  prob1M: number
++  prob3M: number
++}): StrategyRiskRewardMetrics {
++  const d = Math.abs(params.stopLossPct)
++  if (!Number.isFinite(d) || d < 1e-6) {
++    const z: StrategyRiskRewardVerdict = '비효율'
++    return {
++      pureRatio: 0,
++      weightedRatio: 0,
++      expectedProbWeightedRatio: 0,
++      pureVerdict: z,
++      weightedVerdict: z,
++      expectedProbWeightedVerdict: z,
++    }
++  }
++  const sellFrac = Math.min(100, Math.max(0, params.firstTakeProfitSellPct)) / 100
++  const pureReward = params.finalTargetPct
++  const weightedReward =
++    params.firstTakeProfitPct * sellFrac + params.finalTargetPct * (1 - sellFrac)
++  const p1 = Math.min(100, Math.max(0, params.prob1M)) / 100
++  const p3 = Math.min(100, Math.max(0, params.prob3M)) / 100
++  const expectedReward =
++    params.firstTakeProfitPct * p1 + params.finalTargetPct * p3
++
++  const pureRatio = pureReward / d
++  const weightedRatio = weightedReward / d
++  const expectedProbWeightedRatio = expectedReward / d
++
++  return {
++    pureRatio: Number(pureRatio.toFixed(3)),
++    weightedRatio: Number(weightedRatio.toFixed(3)),
++    expectedProbWeightedRatio: Number(expectedProbWeightedRatio.toFixed(3)),
++    pureVerdict: verdictForPctRiskReward(pureRatio),
++    weightedVerdict: verdictForPctRiskReward(weightedRatio),
++    expectedProbWeightedVerdict: verdictForPctRiskReward(expectedProbWeightedRatio),
++  }
++}
++
++/** `calculateThreeMonthStrategy` 와 동일한 1차 익절 분할 비율 규칙 */
++export function resolveFirstTakeProfitSellPct(
++  rsi14: number,
++  finalScore: number,
++  supplyScore: number,
++): number {
++  let firstTakeProfitSellPct = 30
++  if (rsi14 >= 75) firstTakeProfitSellPct = 50
++  else if (finalScore >= 85 && supplyScore >= 75) firstTakeProfitSellPct = 25
++  return firstTakeProfitSellPct
++}
++
+ function maxPositionBase(strategy: Strategy): number {
+   switch (strategy) {
+     case 'REJECT':
+@@ -1066,9 +1292,7 @@ export function calculateThreeMonthStrategy(input: ThreeMonthStrategyInput): Thr
+ 
+   const firstTakeProfitPrice = Math.round(price * 1.09)
+   const firstTakeProfitPct = 9
+-  let firstTakeProfitSellPct = 30
+-  if (rsi14 >= 75) firstTakeProfitSellPct = 50
+-  else if (finalScore >= 85 && supplyScore >= 75) firstTakeProfitSellPct = 25
++  const firstTakeProfitSellPct = resolveFirstTakeProfitSellPct(rsi14, finalScore, supplyScore)
+ 
+   let finalTargetPrice = Math.round(price * 1.15)
+   if (finalTargetPrice <= price) {
+@@ -1243,3 +1467,30 @@ export function calculateExecutionPlan(input: ExecutionInput): ExecutionPlan {
+     warnings,
+   }
+ }
++
++export function marketScoreFromLogicIndicators(
++  d: LogicMarketSignals | null | undefined,
++): number {
++  const n = d?.marketScore
++  if (typeof n === 'number' && Number.isFinite(n)) {
++    return Math.round(Math.max(1, Math.min(99, n)))
++  }
++  const h = d?.marketHeadline || ''
++  if (h.includes('변동성 확대')) return 44
++  if (h.includes('약세장')) return 38
++  if (h.includes('조정장')) return 47
++  if (h.includes('강세장')) return 78
++  if (d?.market?.includes('Risk-On')) return 78
++  if (d?.market?.includes('Risk-Off')) return 40
++  if (d?.market?.includes('Caution')) return 42
++  return 60
++}
++
++export function marketStatusFromLogicIndicators(
++  d: LogicMarketSignals | null | undefined,
++): MarketStatus {
++  const s = marketScoreFromLogicIndicators(d)
++  if (s >= 72) return 'RiskOn'
++  if (s <= 44) return 'Caution'
++  return 'Neutral'
++}
+diff --git a/src/types/stock.ts b/src/types/stock.ts
+index d8b86bf..1791400 100644
+--- a/src/types/stock.ts
++++ b/src/types/stock.ts
+@@ -12,12 +12,31 @@ export type StockInfo = {
+   asOfDate: string
+ }
+ 
++export type UnifiedEntryStageTier =
++  | 'NEW_ENTRY'
++  | 'SCALE_IN'
++  | 'HOLD_STEADY'
++  | 'SCALE_OUT'
++  | 'EXIT_ALL_OR_AVOID'
++
++export type Strategy = 'BUY' | 'HOLD' | 'WATCH_ONLY' | 'TAKE_PROFIT' | 'REJECT'
++export type EntryStage = 'ACCEPT' | 'CAUTION' | 'WATCH' | 'REJECT'
++export type MarketStatus = 'RiskOn' | 'Neutral' | 'Caution'
++
++/** 전략·진입 단계 UI (Final Grade 대신 단일 행동 프레임) */
++export type ExecutionSummaryUi = {
++  tier: UnifiedEntryStageTier
++  strategyLabelKo: string
++  entryStageLabel: string
++  entryStageAction: string
++}
++
+ export type SummaryInfo = {
+   title: string
+   description: string
+-  finalGrade: string
+-  strategy: string
+-  entryStage: string
++  strategy: Strategy
++  entryStageCode: EntryStage
++  executionUi: ExecutionSummaryUi
+   reason: string
+ }
+ 
+@@ -26,6 +45,8 @@ export type ChartPoint = {
+   value: number | null
+ }
+ 
++export type MetricRiskStrip = 'neutral' | 'info' | 'warning' | 'orange' | 'danger'
++
+ export type LogicMetric = {
+   title: string
+   value: string
+@@ -45,6 +66,8 @@ export type LogicMetric = {
+     supplyPeriod: string
+   }
+   score?: number
++  /** 시장 카드 등 미니 추세선 (정규화 전 원시 값) */
++  sparkline?: number[]
+   /** 섹터 자금흐름 등 상태 칩 (주도섹터·관심섹터 등) */
+   statusBadge?: string
+   descriptionKey:
+@@ -63,6 +86,12 @@ export type LogicMetric = {
+     | 'statistics'
+   icon: string
+   tone: 'blue' | 'violet' | 'amber' | 'sky' | 'emerald' | 'indigo' | 'orange' | 'cyan' | 'teal' | 'rose' | 'slate' | 'red'
++  /** 좌측 4px 리스크 스트립 (ATR·지표·통계·밸류 등) */
++  riskStrip?: MetricRiskStrip
++  /** 임계 초과 시 제목 옆 경고 문구 */
++  riskBadge?: string
++  /** 주의(파란) 구간에서 정보 아이콘 표시 */
++  showRiskInfoIcon?: boolean
+ }
+ 
+ export type ExecutionCard = {
+@@ -71,10 +100,6 @@ export type ExecutionCard = {
+   hint?: string
+ }
+ 
+-export type Strategy = 'BUY' | 'HOLD' | 'WATCH_ONLY' | 'TAKE_PROFIT' | 'REJECT'
+-export type EntryStage = 'ACCEPT' | 'CAUTION' | 'WATCH' | 'REJECT'
+-export type MarketStatus = 'RiskOn' | 'Neutral' | 'Caution'
+-
+ /** @deprecated 목표가 패널은 TargetPriceRow / CalculateTargetPricesResult 사용 */
+ export type TargetPrice = {
+   horizon: string
+@@ -107,6 +132,8 @@ export type TargetPriceInput = {
+   consensusAvgTargetPrice?: number
+   consensusMaxTargetPrice?: number
+   marketStatus: MarketStatus
++  /** 실행 전략과 동일 손절가(없으면 내부에서 현재가 대비 근사) */
++  stopPrice?: number
+ }
+ 
+ export type TargetPriceRow = {
+@@ -114,12 +141,17 @@ export type TargetPriceRow = {
+   targetPrice: number
+   expectedReturnPct: number
+   probability: number
++  /** 동일 변동성(ATR) 근사 하 말기 손절가 이하 도달 휴리스틱 확률(%) */
++  stopHitProbability: number
+   method: string
+   note?: string
+ }
+ 
+ export type CalculateTargetPricesResult = {
+   targets: TargetPriceRow[]
++  /** 카드 공통 손절가(원) */
++  stopPrice: number
++  stopLossPct: number
+   warnings: string[]
+   notes: string[]
+ }
+@@ -162,9 +194,22 @@ export type RiskReward = {
+   risk: number
+   reward: number
+   ratio: number
++  /** @deprecated 가격(1M 목표) 기반 R/R — UI는 `StrategyRiskRewardMetrics` 사용 */
+   verdict: '좋음' | '가능' | '애매' | '비추천'
+ }
+ 
++export type StrategyRiskRewardVerdict = '비효율' | '보통' | '양호' | '우수'
++
++/** 손익% 기준 순수·가중·확률가중 R/R (실행 전략 헤더 표시용) */
++export type StrategyRiskRewardMetrics = {
++  pureRatio: number
++  weightedRatio: number
++  expectedProbWeightedRatio: number
++  pureVerdict: StrategyRiskRewardVerdict
++  weightedVerdict: StrategyRiskRewardVerdict
++  expectedProbWeightedVerdict: StrategyRiskRewardVerdict
++}
++
+ export type ExecutionInput = {
+   currentPrice: number
+   finalScore: number

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Archive, Download, Loader2, RotateCw, Share2 } from 'lucide-react'
 import {
   ProActionButtons,
   ProChartQuoteSection,
@@ -7,8 +8,8 @@ import {
   ProOpusSection,
   ProSectionGrid,
   ProStickySearch,
+  ProStockShareCard,
 } from '@/components/stock/pro'
-import { PullToRefreshScroll } from '@/components/pro/PullToRefreshScroll'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
 import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
@@ -22,6 +23,7 @@ import {
   type TechnicalSnapshot,
 } from '@/lib/buildProStockCardSections'
 import { PRO_STOCK_SCROLL_OFFSET, proDesign } from '@/lib/proStockDesign'
+import { captureToBlob, downloadImage, shareStockImage } from '@/lib/shareStockCard'
 import { STOCK_CODE_PATH_RE } from '@/lib/stockCode'
 
 function detectCodeFromPath(pathname: string): string | undefined {
@@ -48,19 +50,23 @@ function changeClass(pct: number): string {
 }
 
 export default function ProStockCardPage() {
-  const { pathname } = useAppNavigation()
+  const { pathname, navigate } = useAppNavigation()
   const code = useMemo(() => detectCodeFromPath(pathname), [pathname])
   const urlName = useStockNameFromUrl(code)
 
   const [summary, setSummary] = useState<ProSummaryExtended | null>(null)
   const [technical, setTechnical] = useState<TechnicalSnapshot>(null)
   const [analysis, setAnalysis] = useState('')
+  const [analysisModel, setAnalysisModel] = useState<string | null>(null)
+  const [pastDiagnoses, setPastDiagnoses] = useState(0)
   const [loadingSummary, setLoadingSummary] = useState(true)
   const [loadingAnalysis, setLoadingAnalysis] = useState(false)
 
   const loadAnalysis = useCallback(async (summaryData: ProSummaryExtended, stockCode: string) => {
     setLoadingAnalysis(true)
     setAnalysis('')
+    setAnalysisModel(null)
+    setPastDiagnoses(0)
 
     try {
       const response = await authFetch(apiUrl('/api/pro-stock-analysis'), {
@@ -93,7 +99,16 @@ export default function ProStockCardPage() {
           }
           if (!dataStr) continue
           try {
-            const parsed = JSON.parse(dataStr) as { delta?: string; message?: string }
+            const parsed = JSON.parse(dataStr) as {
+              delta?: string
+              message?: string
+              model?: string
+              pastDiagnoses?: number
+            }
+            if (eventName === 'meta') {
+              if (parsed.model) setAnalysisModel(parsed.model)
+              if (typeof parsed.pastDiagnoses === 'number') setPastDiagnoses(parsed.pastDiagnoses)
+            }
             if (eventName === 'text' && parsed.delta) {
               setAnalysis((prev) => prev + parsed.delta)
             }
@@ -209,12 +224,69 @@ export default function ProStockCardPage() {
     [summary, technical],
   )
 
+  const shareRef = useRef<HTMLDivElement>(null)
+  const [sharing, setSharing] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [toast, setToast] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+
+  const shareReady = analysis.trim().length > 0 && !loadingAnalysis
+
+  const showToast = useCallback((kind: 'ok' | 'error', text: string) => {
+    setToast({ kind, text })
+    window.setTimeout(() => setToast(null), 2600)
+  }, [])
+
+  const captureWithRetry = useCallback(async (node: HTMLElement): Promise<Blob> => {
+    try {
+      return await captureToBlob(node)
+    } catch {
+      return await captureToBlob(node)
+    }
+  }, [])
+
+  const handleShare = useCallback(async () => {
+    const node = shareRef.current
+    if (!node || sharing) return
+    setSharing(true)
+    try {
+      const blob = await captureWithRetry(node)
+      const result = await shareStockImage(blob, {
+        filename: `${displayName}_${code ?? 'stock'}.png`,
+        title: `${displayName} 종목 분석`,
+        text: `${displayName} AI 종목 분석`,
+      })
+      if (result === 'shared') showToast('ok', '공유했어요')
+      else if (result === 'copied') showToast('ok', '클립보드에 복사했어요 (붙여넣기 하세요)')
+      else showToast('ok', '이미지를 저장했어요')
+    } catch (e) {
+      console.error('[share]', e)
+      showToast('error', '공유에 실패했어요')
+    } finally {
+      setSharing(false)
+    }
+  }, [sharing, displayName, code, showToast, captureWithRetry])
+
+  const handleDownload = useCallback(async () => {
+    const node = shareRef.current
+    if (!node || downloading) return
+    setDownloading(true)
+    try {
+      const blob = await captureWithRetry(node)
+      downloadImage(blob, `${displayName}_${code ?? 'stock'}.png`)
+      showToast('ok', '이미지를 저장했어요')
+    } catch (e) {
+      console.error('[download]', e)
+      showToast('error', '저장에 실패했어요')
+    } finally {
+      setDownloading(false)
+    }
+  }, [downloading, displayName, code, showToast, captureWithRetry])
+
   return (
     <div className="min-h-screen w-full min-w-0 max-w-full bg-gray-50">
       {code ? <ProStickySearch currentCode={code} /> : null}
 
-      <PullToRefreshScroll
-        onRefresh={refetchData}
+      <div
         className={`${proDesign.page} ${PRO_STOCK_SCROLL_OFFSET} max-md:overflow-y-auto max-md:overscroll-y-contain`}
       >
         {loadingSummary ? (
@@ -234,10 +306,53 @@ export default function ProStockCardPage() {
           <div className={proDesign.card}>
             <div className="border-b border-gray-100 px-4 py-4 sm:px-5">
               <div className="mb-1 flex items-center gap-2">
-                <h1 className="text-[22px] font-bold tracking-tight text-gray-900 md:text-[28px]">
+                <h1 className="min-w-0 flex-1 truncate text-[22px] font-bold tracking-tight text-gray-900 md:text-[28px]">
                   {displayName}
                 </h1>
-                <span className={proDesign.proBadge}>PRO</span>
+                <span className={`shrink-0 ${proDesign.proBadge}`}>PRO</span>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => void refetchData()}
+                    disabled={loadingSummary}
+                    aria-label="새로고침"
+                    title="새로고침"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2 py-1.5 text-[12px] font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 sm:px-3"
+                  >
+                    <RotateCw size={14} aria-hidden />
+                    <span className="hidden sm:inline">새로고침</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleShare()}
+                    disabled={sharing || downloading || !shareReady}
+                    aria-label="OPUS 분석 공유"
+                    title={shareReady ? 'OPUS 분석 공유' : '분석 생성 후 가능합니다'}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2 py-1.5 text-[12px] font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 sm:px-3"
+                  >
+                    {sharing ? (
+                      <Loader2 size={14} className="animate-spin" aria-hidden />
+                    ) : (
+                      <Share2 size={14} aria-hidden />
+                    )}
+                    <span className="hidden sm:inline">공유</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDownload()}
+                    disabled={sharing || downloading || !shareReady}
+                    aria-label="이미지로 저장"
+                    title={shareReady ? '이미지로 저장' : '분석 생성 후 가능합니다'}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2 py-1.5 text-[12px] font-semibold text-gray-700 transition-colors hover:bg-gray-50 disabled:opacity-50 sm:px-3"
+                  >
+                    {downloading ? (
+                      <Loader2 size={14} className="animate-spin" aria-hidden />
+                    ) : (
+                      <Download size={14} aria-hidden />
+                    )}
+                    <span className="hidden sm:inline">이미지 저장</span>
+                  </button>
+                </div>
               </div>
               {subtitleParts.length > 0 ? (
                 <p className="mb-3 text-[12px] text-gray-500">{subtitleParts.join(' · ')}</p>
@@ -255,7 +370,19 @@ export default function ProStockCardPage() {
               </div>
             </div>
 
-            <ProOpusSection analysis={analysis} loading={loadingAnalysis} />
+            {pastDiagnoses > 0 ? (
+              <div className="px-4 pt-2 pb-1 sm:px-5">
+                <button
+                  type="button"
+                  onClick={() => navigate(`/pro/archive?code=${encodeURIComponent(code)}`)}
+                  className="inline-flex items-center gap-1 text-[12px] font-semibold text-amber-700 underline-offset-2 hover:underline"
+                >
+                  <Archive size={13} aria-hidden />
+                  과거 진단 {pastDiagnoses}건 보기
+                </button>
+              </div>
+            ) : null}
+            <ProOpusSection analysis={analysis} loading={loadingAnalysis} model={analysisModel} />
 
             <ProChartQuoteSection
               code={code}
@@ -300,7 +427,40 @@ export default function ProStockCardPage() {
             <ProActionButtons code={code} name={summary.name || code} />
           </div>
         )}
-      </PullToRefreshScroll>
+      </div>
+
+      {summary && code ? (
+        <div
+          aria-hidden
+          style={{ position: 'fixed', left: -10000, top: 0, pointerEvents: 'none', zIndex: -1 }}
+        >
+          <ProStockShareCard
+            ref={shareRef}
+            displayName={displayName}
+            code={code}
+            market={summary.quote?.market}
+            sector={summary.quote?.sector}
+            price={summary.quote?.currentPrice ?? null}
+            changePct={pct}
+            analysis={analysis}
+            model={analysisModel}
+            generatedAt={new Date()}
+          />
+        </div>
+      ) : null}
+
+      {toast ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
+          <div
+            role="status"
+            className={`pointer-events-auto rounded-full px-4 py-2 text-[13px] font-semibold text-white shadow-lg ${
+              toast.kind === 'ok' ? 'bg-gray-900' : 'bg-red-600'
+            }`}
+          >
+            {toast.text}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

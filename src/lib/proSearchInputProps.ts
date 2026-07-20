@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
-/** 모바일 placeholder — 예시 문구 생략 (폭 부족으로 잘림 방지) */
-export const PRO_STOCK_SEARCH_PLACEHOLDER_MOBILE = '종목명 또는 코드'
+/** 모바일 placeholder — 폭이 좁아 문구 없이 빈칸 유지 */
+export const PRO_STOCK_SEARCH_PLACEHOLDER_MOBILE = ''
 
 export const PRO_STOCK_SEARCH_PLACEHOLDER_DESKTOP =
   '종목명 또는 코드 (예: 산일전기, 062040)'
