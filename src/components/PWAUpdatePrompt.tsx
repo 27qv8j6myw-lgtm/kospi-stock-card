@@ -8,11 +8,20 @@ export function PWAUpdatePrompt() {
     updateServiceWorker,
   } = useRegisterSW({
     onRegistered(r) {
-      if (r) {
-        setInterval(() => {
+      if (!r) return
+      // 주기적 폴링(5분) — 앱을 열어둔 상태에서 새 배포를 비교적 빠르게 감지
+      setInterval(
+        () => {
           void r.update()
-        }, 60 * 60 * 1000)
+        },
+        5 * 60 * 1000,
+      )
+      // 탭이 다시 보일 때(포그라운드 복귀) 즉시 새 버전 확인 → 팝업 체감 개선
+      const onVisible = () => {
+        if (document.visibilityState === 'visible') void r.update()
       }
+      document.addEventListener('visibilitychange', onVisible)
+      window.addEventListener('focus', onVisible)
     },
   })
 
