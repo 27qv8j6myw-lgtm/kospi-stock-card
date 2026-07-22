@@ -230,7 +230,7 @@ async function analyzeKeyCandidateBatch(client, modelId, stocks) {
     SCREENING_AI_TIMEOUT_MS,
   )
 
-  const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   const parsed = safeJsonParse(text, { context: 'Key Candidate Analysis' })
   const rows = Array.isArray(parsed?.analyses) ? parsed.analyses : []
 

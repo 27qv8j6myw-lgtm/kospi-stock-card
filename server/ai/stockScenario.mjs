@@ -75,7 +75,7 @@ export async function analyzeStockScenario(code6, stockData, userId = null) {
   const userModel = await getUserModel(userId)
   const envModel = process.env.ANTHROPIC_SCENARIO_MODEL?.trim()
   const modelId = envModel || resolveModelId(userModel)
-  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 4500 : 3500
+  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 7000 : 3500
 
   const bucket = Math.floor(Date.now() / CACHE_TTL_MS)
   const cacheKey = `${code}-${userModel}-${bucket}`
@@ -196,7 +196,7 @@ JSON 형식으로만 응답 (다른 텍스트 금지):
       messages: [{ role: 'user', content: prompt }],
     })
     const text =
-      response.content[0]?.type === 'text' ? response.content[0].text : ''
+      response.content.find((b) => b.type === 'text')?.text ?? ''
     const parsed = safeJsonParse(text, { context: 'AI Scenario' })
     if (parsed == null) {
       console.error('[AI Scenario] JSON 파싱 실패, tail:', text.slice(-200))

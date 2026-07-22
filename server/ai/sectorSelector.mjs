@@ -134,7 +134,7 @@ export async function selectActiveSectors(marketData, opts = {}) {
     SCREENING_SECTOR_AI_TIMEOUT_MS,
   )
 
-  const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+  const text = response.content.find((b) => b.type === 'text')?.text ?? ''
   const parsed = safeJsonParse(text, { context: 'AI Sector Select' })
 
   if (!parsed?.sectors || !Array.isArray(parsed.sectors)) {
@@ -206,7 +206,7 @@ ${[...excludeSet].join(', ') || '(없음)'}
       SCREENING_AI_TIMEOUT_MS,
     )
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
     const parsed = safeJsonParse(text, { context: 'AI Additional Candidates' })
     const rawCodes = Array.isArray(parsed?.codes) ? parsed.codes : []
     const out = []

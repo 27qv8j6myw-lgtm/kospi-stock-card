@@ -22,7 +22,7 @@ export async function analyzePortfolio(holdings, userId = null) {
   const userModel = await getUserModel(userId)
   const envModel = process.env.ANTHROPIC_PORTFOLIO_MODEL?.trim()
   const modelId = envModel || resolveModelId(userModel)
-  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 5000 : 4000
+  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 8000 : 4000
 
   const cacheKey = `${userId || 'anon'}|${userModel}|${holdings
     .map((h) => `${h.code}:${h.avgPrice}`)
@@ -139,7 +139,7 @@ ${lines.join('\n\n')}
       messages: [{ role: 'user', content: prompt }],
     })
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return null
 

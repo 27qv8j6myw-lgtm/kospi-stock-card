@@ -110,7 +110,7 @@ JSON 형식으로만 응답 (다른 텍스트 금지):
       max_tokens: 700,
       messages: [{ role: 'user', content: userContent }],
     })
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
     const jsonMatch = text.match(/\{[\s\S]*\}/)
     if (!jsonMatch) return null
     return JSON.parse(jsonMatch[0])

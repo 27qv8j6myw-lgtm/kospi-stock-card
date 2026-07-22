@@ -174,7 +174,7 @@ ${excludeKeywords.length > 0 ? excludeKeywords.join(', ') : '(없음)'}
       SCREENING_AI_TIMEOUT_MS,
     )
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
     const parsed = safeJsonParse(text, { context: 'AI Screening Candidates' })
     const rawCodes = Array.isArray(parsed?.codes) ? parsed.codes : []
     const out = []
@@ -215,8 +215,9 @@ export async function selectTopFiveWithAnalysis(candidates, userId = null, opts 
   const userModel = forced ?? (await getUserModel(userId))
   const envOverride = process.env.SCREENING_AI_MODEL?.trim()
   const modelId = envOverride || resolveModelId(userModel)
-  // fable/opus 는 상위 티어(넉넉한 토큰). sonnet 만 하위. fable 은 응답이 길어 여유를 더 준다.
-  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 5000 : 4000
+  // fable/opus 는 상위 티어(넉넉한 토큰). sonnet 만 하위.
+  // fable 은 thinking 블록이 토큰을 소비하므로 JSON 잘림 방지를 위해 크게 준다.
+  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 8000 : 4000
 
   if (rows.length === 0) {
     return { items: [], modelUsed: userModel, anthropicModel: modelId }
@@ -360,7 +361,7 @@ ${profileContext}`
       SCREENING_AI_TIMEOUT_MS,
     )
 
-    const text = response.content[0]?.type === 'text' ? response.content[0].text : ''
+    const text = response.content.find((b) => b.type === 'text')?.text ?? ''
     const parsed = safeJsonParse(text, { context: 'AI Screening' })
     if (parsed == null) {
       console.error('[AI Screening] JSON 파싱 실패, tail:', text.slice(-200))
