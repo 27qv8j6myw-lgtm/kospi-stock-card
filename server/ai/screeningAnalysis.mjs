@@ -361,6 +361,13 @@ ${profileContext}`
       SCREENING_AI_TIMEOUT_MS,
     )
 
+    const answeredModel = response.model || modelId
+    const fellBack =
+      Array.isArray(response.usage?.iterations) &&
+      response.usage.iterations.some((it) => it?.type === 'fallback_message')
+    console.log(
+      `[Screening AI] answered=${answeredModel} stop=${response.stop_reason} fellBack=${fellBack}`,
+    )
     const text = response.content.find((b) => b.type === 'text')?.text ?? ''
     const parsed = safeJsonParse(text, { context: 'AI Screening' })
     if (parsed == null) {
