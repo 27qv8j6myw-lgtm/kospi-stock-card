@@ -35,7 +35,7 @@ export async function logApiUsage(userId, endpoint, model, usage) {
     const { error } = await supabaseService.from('pro_api_usage').insert({
       user_id: userId,
       endpoint,
-      model: model || 'claude-opus-4-8',
+      model: model || 'claude-opus-5',
       input_tokens: input,
       output_tokens: output,
     })

@@ -1728,7 +1728,7 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
       const resp = await createAnthropicMessage(
         anthropic,
         {
-          model: 'claude-opus-4-8',
+          model: 'claude-opus-5',
           max_tokens: 400,
           messages: [
             {
@@ -1754,7 +1754,7 @@ ${lines.join('\n')}
       const block = resp.content?.find((b) => b.type === 'text')
       const content = block && 'text' in block ? String(block.text).trim() : ''
       if (resp.usage) {
-        await logApiUsage(adminUserId, 'admin-ops-briefing', 'claude-opus-4-8', resp.usage)
+        await logApiUsage(adminUserId, 'admin-ops-briefing', 'claude-opus-5', resp.usage)
       }
 
       const briefing = { content, stats, generatedAt: new Date().toISOString() }

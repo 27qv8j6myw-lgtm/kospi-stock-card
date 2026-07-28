@@ -14,8 +14,8 @@ const TTL_MS = 6 * 60 * 60 * 1000 // 6시간
 
 /** 조회 실패/미완료 시 폴백 (현재 시점 최신 GA) */
 export const DEFAULT_MODEL_IDS = {
-  opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-5',
+  sonnet: 'claude-sonnet-5',
   // haiku 는 무날짜 별칭이 제공되지 않아 날짜 포함 스냅샷을 폴백으로 사용
   // (pricing.normalizeModelKey 가 날짜 접미사를 떼어 단가 매칭)
   haiku: 'claude-haiku-4-5-20251001',

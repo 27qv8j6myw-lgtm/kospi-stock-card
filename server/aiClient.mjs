@@ -15,7 +15,7 @@ export function cleanEnvSecret(v) {
 export function getAiConfig() {
   const apiKey = cleanEnvSecret(process.env.ANTHROPIC_API_KEY)
   if (!apiKey) return null
-  const model = process.env.ANTHROPIC_MODEL?.trim() || 'claude-opus-4-8'
+  const model = process.env.ANTHROPIC_MODEL?.trim() || 'claude-opus-5'
   return { apiKey, model }
 }
 
@@ -109,7 +109,7 @@ export async function completeAnalyzeStockChat({
   const model =
     (modelOverride && String(modelOverride).trim()) ||
     process.env.ANTHROPIC_ANALYZE_MODEL?.trim() ||
-    'claude-opus-4-8'
+    'claude-opus-5'
 
   const { default: Anthropic } = await import('@anthropic-ai/sdk')
   const client = new Anthropic({ apiKey: cfg.apiKey })

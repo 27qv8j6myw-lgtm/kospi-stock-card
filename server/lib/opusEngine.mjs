@@ -8,7 +8,7 @@ import { logChatStockViewFromTool } from './chatStockActivity.mjs'
 import { executeTool } from './toolExecutor.mjs'
 import { logApiUsage, mergeUsage } from './usageLogger.mjs'
 
-export const OPUS_TOOL_MODEL = 'claude-opus-4-8'
+export const OPUS_TOOL_MODEL = 'claude-opus-5'
 
 /** Pro 종목·보유·포트폴리오 AI 분석 — 응답 잘림 방지 */
 export const PRO_ANALYSIS_MAX_TOKENS = 8000

@@ -14,7 +14,7 @@ import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { seoulSnapshotDateKey, verifyCronSecret } from '../lib/snapshotProGroups.mjs'
 import { getMarketSummary } from '../marketSummary.mjs'
 
-const BRIEF_MODEL = 'claude-opus-4-8'
+const BRIEF_MODEL = 'claude-opus-5'
 const BRIEF_TIMEOUT_MS = 30_000
 const QUOTE_DELAY_MS = 120
 
