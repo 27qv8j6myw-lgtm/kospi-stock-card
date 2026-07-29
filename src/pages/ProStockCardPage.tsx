@@ -12,6 +12,7 @@ import {
 } from '@/components/stock/pro'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
+import { clearAiTaskPending, markAiTaskPending, useResumeAiResult } from '@/hooks/useResumeAiResult'
 import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
 import { authFetch } from '@/lib/api'
 import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
@@ -58,74 +59,125 @@ export default function ProStockCardPage() {
   const [technical, setTechnical] = useState<TechnicalSnapshot>(null)
   const [analysis, setAnalysis] = useState('')
   const [analysisModel, setAnalysisModel] = useState<string | null>(null)
+  const [analysisGeneratedAt, setAnalysisGeneratedAt] = useState<string | null>(null)
   const [pastDiagnoses, setPastDiagnoses] = useState(0)
   const [loadingSummary, setLoadingSummary] = useState(true)
   const [loadingAnalysis, setLoadingAnalysis] = useState(false)
 
-  const loadAnalysis = useCallback(async (summaryData: ProSummaryExtended, stockCode: string) => {
-    setLoadingAnalysis(true)
-    setAnalysis('')
-    setAnalysisModel(null)
-    setPastDiagnoses(0)
+  const analysisTaskKey = `stock-analysis:${code ?? ''}`
 
-    try {
-      const response = await authFetch(apiUrl('/api/pro-stock-analysis'), {
-        method: 'POST',
-        body: JSON.stringify({ code: stockCode, summary: summaryData }),
-      })
+  const loadAnalysis = useCallback(
+    async (summaryData: ProSummaryExtended, stockCode: string, opts?: { force?: boolean }) => {
+      setLoadingAnalysis(true)
+      setAnalysis('')
+      setAnalysisModel(null)
+      setAnalysisGeneratedAt(null)
+      setPastDiagnoses(0)
+      markAiTaskPending(`stock-analysis:${stockCode}`)
 
-      if (!response.ok || !response.body) throw new Error('No stream')
+      try {
+        const response = await authFetch(apiUrl('/api/pro-stock-analysis'), {
+          method: 'POST',
+          body: JSON.stringify({
+            code: stockCode,
+            summary: summaryData,
+            force: opts?.force === true,
+          }),
+        })
 
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
+        if (!response.ok || !response.body) throw new Error('No stream')
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
 
-        buffer += decoder.decode(value, { stream: true })
-        const events = buffer.split('\n\n')
-        buffer = events.pop() || ''
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
 
-        for (const eventBlock of events) {
-          if (!eventBlock.trim()) continue
-          const lines = eventBlock.split('\n')
-          let eventName = ''
-          let dataStr = ''
-          for (const line of lines) {
-            if (line.startsWith('event: ')) eventName = line.slice(7)
-            if (line.startsWith('data: ')) dataStr = line.slice(6)
-          }
-          if (!dataStr) continue
-          try {
-            const parsed = JSON.parse(dataStr) as {
-              delta?: string
-              message?: string
-              model?: string
-              pastDiagnoses?: number
+          buffer += decoder.decode(value, { stream: true })
+          const events = buffer.split('\n\n')
+          buffer = events.pop() || ''
+
+          for (const eventBlock of events) {
+            if (!eventBlock.trim()) continue
+            const lines = eventBlock.split('\n')
+            let eventName = ''
+            let dataStr = ''
+            for (const line of lines) {
+              if (line.startsWith('event: ')) eventName = line.slice(7)
+              if (line.startsWith('data: ')) dataStr = line.slice(6)
             }
-            if (eventName === 'meta') {
-              if (parsed.model) setAnalysisModel(parsed.model)
-              if (typeof parsed.pastDiagnoses === 'number') setPastDiagnoses(parsed.pastDiagnoses)
+            if (!dataStr) continue
+            try {
+              const parsed = JSON.parse(dataStr) as {
+                delta?: string
+                message?: string
+                model?: string
+                pastDiagnoses?: number
+                generatedAt?: string | null
+              }
+              if (eventName === 'meta') {
+                if (parsed.model) setAnalysisModel(parsed.model)
+                if (typeof parsed.pastDiagnoses === 'number') setPastDiagnoses(parsed.pastDiagnoses)
+                setAnalysisGeneratedAt(parsed.generatedAt ?? null)
+              }
+              if (eventName === 'text' && parsed.delta) {
+                setAnalysis((prev) => prev + parsed.delta)
+              }
+              if (eventName === 'error') {
+                setAnalysis(friendlyProChatError(parsed.message || '분석에 실패했습니다'))
+              }
+            } catch {
+              // ignore malformed chunk
             }
-            if (eventName === 'text' && parsed.delta) {
-              setAnalysis((prev) => prev + parsed.delta)
-            }
-            if (eventName === 'error') {
-              setAnalysis(friendlyProChatError(parsed.message || '분석에 실패했습니다'))
-            }
-          } catch {
-            // ignore malformed chunk
           }
         }
+
+        clearAiTaskPending(`stock-analysis:${stockCode}`)
+      } catch (e) {
+        // 표식은 유지 — 화면이 꺼져 스트림이 끊긴 경우 복귀 시 저장된 분석을 가져온다
+        console.error(e)
+      } finally {
+        setLoadingAnalysis(false)
       }
-    } catch (e) {
-      console.error(e)
-    } finally {
+    },
+    [],
+  )
+
+  /** 복귀 조회 — 서버가 백그라운드로 끝낸 분석이 저장돼 있을 때만 반환 (재분석 없음) */
+  const fetchCachedAnalysis = useCallback(async () => {
+    if (!code) return null
+    const r = await authFetch(apiUrl('/api/pro-stock-analysis'), {
+      method: 'POST',
+      body: JSON.stringify({ code, cachedOnly: true }),
+    })
+    const d = (await r.json().catch(() => null)) as {
+      analysis?: string
+      model?: string
+      generatedAt?: string | null
+      pending?: boolean
+    } | null
+    if (!r.ok || !d?.analysis) return null
+    return d
+  }, [code])
+
+  const { pending: analysisResuming } = useResumeAiResult<{
+    analysis?: string
+    model?: string
+    generatedAt?: string | null
+  }>({
+    key: analysisTaskKey,
+    // 스트리밍이 살아 있는 동안에는 복귀 조회가 화면을 덮어쓰지 않도록 비활성
+    enabled: Boolean(code) && !loadingAnalysis,
+    fetchCached: fetchCachedAnalysis,
+    onResolved: (d) => {
+      setAnalysis(d.analysis ?? '')
+      if (d.model) setAnalysisModel(d.model)
+      setAnalysisGeneratedAt(d.generatedAt ?? null)
       setLoadingAnalysis(false)
-    }
-  }, [])
+    },
+  })
 
   useEffect(() => {
     if (code) window.scrollTo(0, 0)
@@ -211,6 +263,12 @@ export default function ProStockCardPage() {
   const refetchData = useCallback(async () => {
     await reloadSnapshot({ withAnalysis: false })
   }, [reloadSnapshot])
+
+  /** 저장된 분석을 버리고 새로 생성 (같은 날·같은 시세 구간에서도 재분석) */
+  const regenerateAnalysis = useCallback(() => {
+    if (!code || !summary || loadingAnalysis) return
+    void loadAnalysis(summary, code, { force: true })
+  }, [code, summary, loadingAnalysis, loadAnalysis])
 
   useVisibilityDataRefresh(refetchData)
   useKrxDataPolling(pollQuote)
@@ -382,7 +440,14 @@ export default function ProStockCardPage() {
                 </button>
               </div>
             ) : null}
-            <ProOpusSection analysis={analysis} loading={loadingAnalysis} model={analysisModel} />
+            <ProOpusSection
+              analysis={analysis}
+              loading={loadingAnalysis}
+              model={analysisModel}
+              generatedAt={analysisGeneratedAt}
+              onRegenerate={regenerateAnalysis}
+              resuming={analysisResuming}
+            />
 
             <ProChartQuoteSection
               code={code}

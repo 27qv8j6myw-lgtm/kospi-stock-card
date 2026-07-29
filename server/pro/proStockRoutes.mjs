@@ -2,7 +2,7 @@ import { runHoldingOpusDiagnosis } from '../ai/proHoldingOpus.mjs'
 import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
 import { logActivity } from '../lib/activityLogger.mjs'
 import { summarizeProNewsHeadlines } from '../ai/proNewsSummary.mjs'
-import { runProStockAnalysisStream } from '../ai/proStockAnalysis.mjs'
+import { getLatestStockAnalysis, runProStockAnalysisStream } from '../ai/proStockAnalysis.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
 import { fetchProChartBars } from '../lib/proStockChart.mjs'
 import { resolveStockName } from '../lib/resolveStockName.mjs'
@@ -190,6 +190,19 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
       res.status(400).json({ error: 'code 필요' })
       return
     }
+
+    // 복귀 조회 — 저장된 분석만 확인하고 미스면 즉시 pending (새 분석을 시작하지 않음)
+    if (req.body?.cachedOnly === true) {
+      try {
+        const cached = await getLatestStockAnalysis(userId, code)
+        res.json(cached ? { ...cached, cached: true } : { pending: true })
+      } catch (e) {
+        console.error('[Pro Stock Analysis cache]', e)
+        res.status(500).json({ error: e instanceof Error ? e.message : String(e) })
+      }
+      return
+    }
+
     if (!summary || typeof summary !== 'object') {
       res.status(400).json({ error: 'summary 필요' })
       return
@@ -207,7 +220,13 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     }
 
     try {
-      await runProStockAnalysisStream({ summary, code, userId, send })
+      await runProStockAnalysisStream({
+        summary,
+        code,
+        userId,
+        send,
+        force: req.body?.force === true,
+      })
       res.end()
     } catch (e) {
       const message = mapAnthropicErrorForClient(e)
