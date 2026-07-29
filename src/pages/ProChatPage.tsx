@@ -9,6 +9,11 @@ import { useAuth } from '@/hooks/useAuth'
 import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { useProChatStreamBuffer } from '@/hooks/useProChatStreamBuffer'
 import { useProChatViewportHeight } from '@/hooks/useProChatViewportHeight'
+import {
+  clearAiTaskPending,
+  markAiTaskPending,
+  useResumeAiResult,
+} from '@/hooks/useResumeAiResult'
 import { classifyProChatError, type ProChatErrorType } from '@/lib/friendlyAnthropicError'
 import {
   createProConversation,
@@ -136,6 +141,29 @@ export default function ProChatPage() {
       cancelled = true
     }
   }, [conversationId])
+
+  /**
+   * 복귀 조회 — 스트림이 끊긴 사이 서버가 답변을 완료해 저장했으면 메시지를 재조회해 복구한다.
+   * 답변 저장 전에는 마지막 메시지가 사용자 질문이므로 null 을 반환해 진행중 상태를 유지한다.
+   */
+  const fetchCompletedChat = useCallback(async () => {
+    if (!conversationId) return null
+    const list = await fetchProMessages(conversationId)
+    const last = list[list.length - 1]
+    if (!last || last.role !== 'assistant' || !last.content?.trim()) return null
+    return list
+  }, [conversationId])
+
+  const { pending: chatResuming } = useResumeAiResult<ProMessage[]>({
+    key: `chat:${conversationId ?? ''}`,
+    // 스트리밍이 살아 있는 동안에는 재조회가 화면을 덮어쓰지 않도록 비활성
+    enabled: Boolean(conversationId) && !loading,
+    fetchCached: fetchCompletedChat,
+    onResolved: (list) => {
+      setMessages(list)
+      setChatError(null)
+    },
+  })
 
   const handleScroll = useCallback(() => {
     const el = messagesContainerRef.current
@@ -328,6 +356,7 @@ export default function ProChatPage() {
           ])
         }
 
+        markAiTaskPending(`chat:${cId}`)
         await streamProChatMessage(
           cId,
           text,
@@ -336,9 +365,11 @@ export default function ProChatPage() {
         )
 
         flushNow()
+        clearAiTaskPending(`chat:${cId}`)
         const list = await fetchProMessages(cId)
         setMessages(list)
       } catch (e) {
+        // 표식은 유지 — 화면이 꺼져 스트림이 끊긴 경우 복귀 시 저장된 답변을 재조회한다
         flushNow()
         const raw = e instanceof Error ? e.message : String(e)
         setChatError({
@@ -494,6 +525,12 @@ export default function ProChatPage() {
             messagesEndRef={messagesEndRef}
             showModel={isAdmin}
           />
+          {chatResuming && !loading ? (
+            <div className="mx-auto my-2 flex items-center gap-2 rounded-xl bg-gray-100 px-3 py-2 text-[12px] text-gray-600">
+              <Loader2 size={14} className="animate-spin" aria-hidden />
+              백그라운드에서 답변을 생성 중입니다. 완료되면 자동으로 표시됩니다.
+            </div>
+          ) : null}
         </div>
 
         {!autoScroll ? (

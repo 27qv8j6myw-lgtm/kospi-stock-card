@@ -64,12 +64,21 @@ export function registerProScreenerRoutes(app, { getSupabaseService, getUserIdFr
 
     const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
     const force = req.query.force === '1'
+    /** 복귀 조회 — 캐시만 확인하고 미스면 즉시 pending (긴 재계산을 트리거하지 않음) */
+    const cachedOnly = req.query.cachedOnly === '1'
 
     try {
       const bundle = await runScreening(appKey, appSecret, env, userId, {
         skipTopFiveAi: false,
         force,
+        cachedOnly,
       })
+
+      if (bundle?.pending) {
+        res.json({ pending: true })
+        return
+      }
+
       res.json({
         generatedAt: bundle.generatedAt ?? null,
         sectors: bundle.sectors ?? [],

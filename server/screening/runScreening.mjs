@@ -39,11 +39,17 @@ function sleep(ms) {
  * @param {string} appSecret
  * @param {'prod'|'vps'} env
  * @param {string | null | undefined} userId — Bearer 로 식별된 사용자 (없으면 sonnet 기준 공유 캐시 키 `anon`)
- * @param {{ skipTopFiveAi?: boolean, force?: boolean }} [opts] — AI 비활성 사용자: Anthropic TOP5 생략(룰 기반 TOP5만); force 시 캐시 무시
+ * @param {{ skipTopFiveAi?: boolean, force?: boolean, cachedOnly?: boolean }} [opts]
+ *   skipTopFiveAi: AI 비활성 사용자 — Anthropic TOP5 생략(룰 기반 TOP5만)
+ *   force: 캐시 무시하고 재계산
+ *   cachedOnly: 캐시만 조회. 미스여도 재계산하지 않고 `{ pending: true }` 반환
+ *     (모바일에서 화면이 꺼져 요청이 끊긴 뒤 복귀 조회할 때 새 계산을 트리거하지 않기 위함)
  */
 export async function runScreening(appKey, appSecret, env, userId = null, opts = {}) {
   const skipTopFiveAi = Boolean(opts.skipTopFiveAi)
-  const force = Boolean(opts.force)
+  const cachedOnly = Boolean(opts.cachedOnly)
+  /** 캐시 조회 전용 모드에서는 강제 재계산을 무시한다 */
+  const force = !cachedOnly && Boolean(opts.force)
 
   if (skipTopFiveAi) {
     const scopeKey = await screeningCacheScopeKey(userId, true)
@@ -73,6 +79,11 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
         screeningCacheKey: makeCacheKey('global', userModel),
       })
     }
+  }
+
+  // 캐시 조회 전용 — 여기까지 왔다면 캐시 미스. 재계산하지 않고 즉시 반환한다.
+  if (cachedOnly) {
+    return { pending: true, cached: false, source: 'pending' }
   }
 
   let memScopeKey = null
@@ -326,7 +337,8 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
       screeningUserModel: result.screeningUserModel,
       top15Codes: result.top15Codes,
     })
-    void setCachedScreening('global', userModel, payload, userId).catch(() => {})
+    // 응답 전에 저장을 끝낸다 — 클라이언트가 끊겨 함수가 곧 종료돼도 결과가 남아야 복귀 조회로 살릴 수 있다.
+    await setCachedScreening('global', userModel, payload, userId).catch(() => {})
   }
 
   console.log(`[Screening v2] Completed in ${elapsedSec}s`)

@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { Archive, ArrowLeft, RotateCw, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
+import { useResumeAiResult } from '@/hooks/useResumeAiResult'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { PRO_CONTENT_WRAP } from '@/lib/proStockDesign'
@@ -151,33 +152,62 @@ export default function ProScreenerPage() {
     return d
   }, [])
 
+  /** 복귀 조회 — 서버가 백그라운드로 끝낸 결과가 캐시에 있을 때만 반환 (재계산 없음) */
+  const fetchCachedScreener = useCallback(async () => {
+    const r = await authFetch(apiUrl('/api/pro-screener?cachedOnly=1'))
+    const d = (await r.json().catch(() => ({}))) as ScreenerResponse & {
+      pending?: boolean
+      error?: string
+    }
+    if (!r.ok || d.pending || !d.generatedAt) return null
+    return d
+  }, [])
+
+  const {
+    pending: resuming,
+    start: markStarted,
+    finish: markFinished,
+  } = useResumeAiResult<ScreenerResponse>({
+    key: 'screener',
+    fetchCached: fetchCachedScreener,
+    onResolved: (d) => {
+      setData(d)
+      setError(null)
+    },
+  })
+
   const handleRun = useCallback(async () => {
     if (loading) return
     setLoading(true)
     setError(null)
+    markStarted()
     try {
       const d = await fetchScreener(false)
       setData(d)
+      markFinished()
     } catch (e) {
+      // 표식은 유지 — 화면이 꺼져 끊긴 경우 복귀 시 캐시에서 결과를 살린다
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setLoading(false)
     }
-  }, [fetchScreener, loading])
+  }, [fetchScreener, loading, markFinished, markStarted])
 
   const handleRefresh = useCallback(async () => {
     if (refreshing) return
     setRefreshing(true)
+    markStarted()
     try {
       const d = await fetchScreener(true)
       setData(d)
       setError(null)
+      markFinished()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setRefreshing(false)
     }
-  }, [fetchScreener, refreshing])
+  }, [fetchScreener, markFinished, markStarted, refreshing])
 
   const sectors = data?.sectors ?? []
   const stocks = useMemo(() => data?.allStocks ?? [], [data])
@@ -250,6 +280,11 @@ export default function ProScreenerPage() {
           ) : error ? (
             <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-6 text-center">
               <div className="text-[13px] text-red-700">{error}</div>
+              {resuming ? (
+                <div className="mt-2 text-[12px] leading-relaxed text-gray-500">
+                  서버에서 분석이 계속 진행 중일 수 있습니다. 완료되면 자동으로 표시됩니다.
+                </div>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void handleRun()}
@@ -258,6 +293,19 @@ export default function ProScreenerPage() {
                 <RotateCw size={15} strokeWidth={2.2} />
                 다시 실행
               </button>
+            </div>
+          ) : !data && resuming ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50/50 px-4 py-14 text-center">
+              <RotateCw
+                size={30}
+                className="mx-auto mb-3 animate-spin text-amber-500"
+                strokeWidth={1.8}
+                aria-hidden
+              />
+              <div className="text-[14px] font-semibold text-gray-800">백그라운드에서 분석 중</div>
+              <p className="mx-auto mt-1 max-w-xs text-[12px] leading-relaxed text-gray-500">
+                화면이 꺼져도 서버에서 계속 진행됩니다. 완료되면 자동으로 표시됩니다.
+              </p>
             </div>
           ) : !data ? (
             <div className="rounded-2xl border border-gray-200 bg-white px-4 py-14 text-center">
@@ -284,6 +332,13 @@ export default function ProScreenerPage() {
             </div>
           ) : (
             <>
+              {resuming && !refreshing ? (
+                <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/60 px-3 py-2 text-[12px] text-amber-800">
+                  <RotateCw size={14} className="animate-spin" strokeWidth={2} aria-hidden />
+                  백그라운드에서 분석 중입니다. 완료되면 자동으로 갱신됩니다.
+                </div>
+              ) : null}
+
               {/* AI 추천 TOP5 */}
               {topFive.length > 0 ? (
                 <div className="mb-4">

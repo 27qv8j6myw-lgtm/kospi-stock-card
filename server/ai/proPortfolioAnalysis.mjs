@@ -5,7 +5,7 @@ import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserPr
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
 import { resolveModelAndMaxTokens } from '../lib/userModel.mjs'
-import { getCachedOrFetch, hashKey } from '../lib/cacheHelper.mjs'
+import { getCachedOrFetch, getCachedValue, hashKey } from '../lib/cacheHelper.mjs'
 import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
 import {
   archiveDiagnosis,
@@ -295,6 +295,12 @@ ${summaryLines.join('\n')}
     .sort()
     .join(',')
   const cacheKey = `portfolio-opus:${userId}:${scopeKey}:${seoulSnapshotDateKey()}:${hashKey(sig)}`
+
+  // 복귀 조회 — 캐시만 확인하고 미스면 즉시 pending (긴 재계산을 트리거하지 않음)
+  if (req.body?.cachedOnly === true) {
+    const cached = await getCachedValue(cacheKey)
+    return cached ?? { pending: true }
+  }
 
   return getCachedOrFetch(
     cacheKey,

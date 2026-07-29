@@ -6,6 +6,7 @@ import { TradeHistorySection } from '@/components/pro/TradeHistorySection'
 import { ProOpusSection } from '@/components/stock/pro/ProOpusSection'
 import { ProStickySearch } from '@/components/stock/pro/ProStickySearch'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
+import { useResumeAiResult } from '@/hooks/useResumeAiResult'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { PRO_CONTENT_WRAP, PRO_STOCK_SCROLL_OFFSET } from '@/lib/proStockDesign'
@@ -103,9 +104,38 @@ export default function ProHoldingDetailPage() {
     }
   }, [holdingId, detailRefreshKey])
 
+  /** 복귀 조회 — 서버가 백그라운드로 끝낸 진단이 캐시에 있을 때만 반환 (재계산 없음) */
+  const fetchCachedOpus = useCallback(async () => {
+    if (!holdingId) return null
+    const r = await authFetch(apiUrl('/api/pro-holding-opus'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ holdingId, cachedOnly: true }),
+    })
+    const d = (await r.json().catch(() => null)) as (OpusPayload & { pending?: boolean }) | null
+    if (!r.ok || !d?.analysis) return null
+    return d
+  }, [holdingId])
+
+  const {
+    pending: opusResuming,
+    start: markOpusStarted,
+    finish: markOpusFinished,
+  } = useResumeAiResult<OpusPayload>({
+    key: `holding-opus:${holdingId ?? ''}`,
+    enabled: Boolean(holdingId),
+    fetchCached: fetchCachedOpus,
+    onResolved: (d) => {
+      setOpus(d)
+      setNeedsGenerate(false)
+      setOpusLoading(false)
+    },
+  })
+
   // 진단 생성(온디맨드) — 사용자가 버튼을 눌렀을 때만 유료 호출
   const generateDiagnosis = useCallback(() => {
     if (!holdingId) return
+    markOpusStarted()
     setNeedsGenerate(false)
     setOpus(null)
     setOpusLoading(true)
@@ -129,8 +159,10 @@ export default function ProHoldingDetailPage() {
       })
       .then((d) => {
         setOpus(d)
+        markOpusFinished()
       })
       .catch((e) => {
+        // 표식은 유지 — 화면이 꺼져 끊긴 경우 복귀 시 캐시에서 결과를 살린다
         console.error('[ProHolding OPUS]', e)
         setNeedsGenerate(true)
       })
@@ -138,7 +170,7 @@ export default function ProHoldingDetailPage() {
         setOpusLoading(false)
         clearInterval(msgInterval)
       })
-  }, [holdingId])
+  }, [holdingId, markOpusFinished, markOpusStarted])
 
   // 진입 시: 캐시만 조회(cachedOnly) — 있으면 표시, 없으면 생성 버튼 노출(자동 비용 방지)
   useEffect(() => {
@@ -270,6 +302,14 @@ export default function ProHoldingDetailPage() {
           <div className="rounded-2xl border border-amber-200 bg-amber-50 py-10 text-center">
             <div className="mx-auto mb-3 size-6 animate-spin rounded-full border-2 border-amber-600 border-t-transparent" />
             <div className="text-[13px] font-medium text-amber-800">{loadingMsg}</div>
+          </div>
+        ) : opusResuming && !opus?.analysis ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-8 text-center">
+            <div className="mx-auto mb-3 size-6 animate-spin rounded-full border-2 border-amber-600 border-t-transparent" />
+            <div className="mb-1 text-[14px] font-bold text-amber-900">백그라운드에서 진단 중</div>
+            <p className="mx-auto max-w-xs text-[12px] leading-relaxed text-amber-700">
+              화면이 꺼져도 서버에서 계속 진행됩니다. 완료되면 자동으로 표시됩니다.
+            </p>
           </div>
         ) : needsGenerate && !opus?.analysis ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-8 text-center">

@@ -784,13 +784,16 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
 
     try {
       const payload = await runPortfolioOpusDiagnosis(req, userId)
-      const groupIds = Array.isArray(req.body?.groupIds) ? req.body.groupIds : null
-      void logActivity(
-        userId,
-        'diagnosis',
-        { type: 'portfolio', groupIds: groupIds?.length ? groupIds : null },
-        true,
-      )
+      // 복귀 조회(cachedOnly)는 새 진단이 아니므로 활동 로그를 남기지 않는다
+      if (!payload?.pending) {
+        const groupIds = Array.isArray(req.body?.groupIds) ? req.body.groupIds : null
+        void logActivity(
+          userId,
+          'diagnosis',
+          { type: 'portfolio', groupIds: groupIds?.length ? groupIds : null },
+          true,
+        )
+      }
       res.json(payload)
     } catch (e) {
       const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500
@@ -880,7 +883,10 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
 
     try {
       const payload = await runGroupOpusDiagnosis(req, userId, groupId)
-      void logActivity(userId, 'diagnosis', { type: 'group', groupId }, true)
+      // 복귀 조회(cachedOnly)는 새 진단이 아니므로 활동 로그를 남기지 않는다
+      if (!payload?.pending) {
+        void logActivity(userId, 'diagnosis', { type: 'group', groupId }, true)
+      }
       res.json(payload)
     } catch (e) {
       const status = e && typeof e === 'object' && 'status' in e ? Number(e.status) : 500

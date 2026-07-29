@@ -461,7 +461,9 @@ export function registerProTradesRoutes(app, { getSupabaseService, getUserIdFrom
     const groupIds = rawGroupIds
       ? rawGroupIds.map((g) => String(g ?? '').trim()).filter(Boolean)
       : null
-    const force = req.body?.force === true
+    /** 복귀 조회 — 캐시만 확인하고 미스면 즉시 pending (재생성하지 않음) */
+    const cachedOnly = req.body?.cachedOnly === true
+    const force = req.body?.force === true && !cachedOnly
 
     if (!start || !end || start > end) {
       res.status(400).json({ error: '기간(start/end)이 올바르지 않습니다' })
@@ -502,6 +504,11 @@ export function registerProTradesRoutes(app, { getSupabaseService, getUserIdFrom
           res.json(cached.data)
           return
         }
+      }
+
+      if (cachedOnly) {
+        res.json({ insight: null, pending: true })
+        return
       }
 
       const lines = buildInsightStatLines(stats)

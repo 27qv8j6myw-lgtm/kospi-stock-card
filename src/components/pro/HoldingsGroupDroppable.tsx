@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { Pencil, Plus, Sparkles, Trash2 } from 'lucide-react'
+import { useResumeAiResult } from '@/hooks/useResumeAiResult'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { friendlyProChatError } from '@/lib/friendlyAnthropicError'
@@ -141,11 +142,40 @@ export function HoldingsGroupDroppable({
     setEditingCapital(false)
   }
 
+  /** 복귀 조회 — 서버가 백그라운드로 끝낸 진단이 캐시에 있을 때만 반환 (재계산 없음) */
+  const fetchCachedDiagnosis = useCallback(async () => {
+    const r = await authFetch(apiUrl('/api/pro-group-opus'), {
+      method: 'POST',
+      body: JSON.stringify({ groupId: group.id, cachedOnly: true }),
+    })
+    const d = (await r.json().catch(() => null)) as {
+      analysis?: string
+      pending?: boolean
+    } | null
+    if (!r.ok || !d?.analysis) return null
+    return d.analysis
+  }, [group.id])
+
+  const {
+    pending: diagResuming,
+    start: markDiagStarted,
+    finish: markDiagFinished,
+  } = useResumeAiResult<string>({
+    key: `group-opus:${group.id}`,
+    fetchCached: fetchCachedDiagnosis,
+    onResolved: (analysis) => {
+      setDiagnosis(analysis)
+      setShowDiagnosis(true)
+      setDiagLoading(false)
+    },
+  })
+
   const runDiagnosis = async (e: React.MouseEvent) => {
     e.stopPropagation()
     setShowDiagnosis(true)
     setDiagnosis(null)
     setDiagLoading(true)
+    markDiagStarted()
     try {
       const r = await authFetch(apiUrl('/api/pro-group-opus'), {
         method: 'POST',
@@ -158,7 +188,9 @@ export function HoldingsGroupDroppable({
         const err = (await r.json().catch(() => ({}))) as { error?: string }
         setDiagnosis(friendlyProChatError(err.error || '분석에 실패했습니다'))
       }
+      markDiagFinished()
     } catch {
+      // 표식은 유지 — 화면이 꺼져 끊긴 경우 복귀 시 캐시에서 결과를 살린다
       setDiagnosis('분석 요청에 실패했습니다')
     } finally {
       setDiagLoading(false)
@@ -400,11 +432,12 @@ export function HoldingsGroupDroppable({
       {showDiagnosis ? (
         <GroupDiagnosisModal
           groupName={group.name}
-          loading={diagLoading}
+          loading={diagLoading || (diagResuming && !diagnosis)}
           analysis={diagnosis}
           onClose={() => {
             setShowDiagnosis(false)
             setDiagnosis(null)
+            markDiagFinished()
           }}
         />
       ) : null}

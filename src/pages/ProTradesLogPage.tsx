@@ -27,6 +27,7 @@ import {
   YAxis,
 } from 'recharts'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
+import { useResumeAiResult } from '@/hooks/useResumeAiResult'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { PRO_CONTENT_WRAP } from '@/lib/proStockDesign'
@@ -516,11 +517,49 @@ export default function ProTradesLogPage() {
     [allGroupsSelected, selectedGroupIds],
   )
 
+  /** 복귀 조회 — 서버가 백그라운드로 끝낸 인사이트가 캐시에 있을 때만 반환 (재생성 없음) */
+  const fetchCachedInsight = useCallback(async () => {
+    if (!scopeRange) return null
+    const r = await authFetch(apiUrl('/api/pro-trades-insight'), {
+      method: 'POST',
+      body: JSON.stringify({
+        start: scopeRange.start,
+        end: scopeRange.end,
+        groupIds: requestGroupIds,
+        cachedOnly: true,
+      }),
+    })
+    const d = (await r.json().catch(() => null)) as {
+      insight?: string | null
+      generatedAt?: string | null
+      pending?: boolean
+    } | null
+    if (!r.ok || !d?.insight) return null
+    return d
+  }, [scopeRange, requestGroupIds])
+
+  const {
+    pending: insightResuming,
+    start: markInsightStarted,
+    finish: markInsightFinished,
+  } = useResumeAiResult<{ insight?: string | null; generatedAt?: string | null }>({
+    key: 'trades-insight',
+    enabled: Boolean(scopeRange),
+    fetchCached: fetchCachedInsight,
+    onResolved: (d) => {
+      setInsight(d.insight ?? null)
+      setInsightGeneratedAt(d.generatedAt ?? null)
+      setInsightError(null)
+      setInsightLoading(false)
+    },
+  })
+
   const generateInsight = useCallback(
     async (force = false) => {
       if (!scopeRange || insightLoading) return
       setInsightLoading(true)
       setInsightError(null)
+      markInsightStarted()
       try {
         const r = await authFetch(apiUrl('/api/pro-trades-insight'), {
           method: 'POST',
@@ -546,13 +585,15 @@ export default function ProTradesLogPage() {
           setInsightGeneratedAt(null)
           setInsightError(d.message || '인사이트를 생성할 수 없습니다.')
         }
+        markInsightFinished()
       } catch (e) {
+        // 표식은 유지 — 화면이 꺼져 끊긴 경우 복귀 시 캐시에서 결과를 살린다
         setInsightError(e instanceof Error ? e.message : String(e))
       } finally {
         setInsightLoading(false)
       }
     },
-    [scopeRange, requestGroupIds, insightLoading],
+    [scopeRange, requestGroupIds, insightLoading, markInsightFinished, markInsightStarted],
   )
 
   // 기간/그룹 범위가 바뀌면 기존 인사이트를 비워 범위 불일치를 방지
@@ -981,6 +1022,10 @@ export default function ProTradesLogPage() {
 
                 {insightLoading ? (
                   <p className="py-3 text-[13px] text-gray-500">매매 인사이트를 분석하고 있습니다...</p>
+                ) : insightResuming && !insight ? (
+                  <p className="py-3 text-[13px] text-gray-500">
+                    백그라운드에서 분석 중입니다. 완료되면 자동으로 표시됩니다.
+                  </p>
                 ) : insight ? (
                   <>
                     <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-gray-700">

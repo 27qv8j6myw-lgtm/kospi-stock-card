@@ -24,6 +24,7 @@ import { GroupSnapshotsChart } from '@/components/pro/GroupSnapshotsChart'
 import { PortfolioAnalysis } from '@/components/pro/PortfolioAnalysis'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
+import { useResumeAiResult } from '@/hooks/useResumeAiResult'
 import { useVisibilityDataRefresh } from '@/hooks/useVisibilityDataRefresh'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
@@ -362,22 +363,54 @@ export default function ProHoldingsPage() {
     return '선택 그룹 진단'
   }, [groups.length, selectedGroupIds, allSelected])
 
+  const diagnosisGroupIds = useMemo(
+    () =>
+      selectedGroupIds && selectedGroupIds.size > 0 && !allSelected
+        ? Array.from(selectedGroupIds)
+        : null,
+    [selectedGroupIds, allSelected],
+  )
+
+  /** 복귀 조회 — 서버가 백그라운드로 끝낸 진단이 캐시에 있을 때만 반환 (재계산 없음) */
+  const fetchCachedPortfolioOpus = useCallback(async () => {
+    const r = await authFetch(apiUrl('/api/pro-portfolio-opus'), {
+      method: 'POST',
+      body: JSON.stringify({ groupIds: diagnosisGroupIds, cachedOnly: true }),
+    })
+    const d = (await r.json().catch(() => null)) as {
+      analysis?: string
+      pending?: boolean
+    } | null
+    if (!r.ok || !d?.analysis) return null
+    return d.analysis
+  }, [diagnosisGroupIds])
+
+  const {
+    pending: opusResuming,
+    start: markOpusStarted,
+    finish: markOpusFinished,
+  } = useResumeAiResult<string>({
+    key: 'portfolio-opus',
+    fetchCached: fetchCachedPortfolioOpus,
+    onResolved: (analysis) => {
+      setPortfolioOpus(analysis)
+      setShowPortfolioDiagnosis(true)
+      setOpusLoading(false)
+    },
+  })
+
   const runPortfolioOpus = async () => {
     if (visibleHoldings.length === 0) return
 
     setShowPortfolioDiagnosis(true)
     setOpusLoading(true)
     setPortfolioOpus(null)
-
-    const groupIds =
-      selectedGroupIds && selectedGroupIds.size > 0 && !allSelected
-        ? Array.from(selectedGroupIds)
-        : null
+    markOpusStarted()
 
     try {
       const r = await authFetch(apiUrl('/api/pro-portfolio-opus'), {
         method: 'POST',
-        body: JSON.stringify({ groupIds }),
+        body: JSON.stringify({ groupIds: diagnosisGroupIds }),
       })
       if (r.ok) {
         const d = (await r.json()) as { analysis?: string }
@@ -386,7 +419,9 @@ export default function ProHoldingsPage() {
         const err = (await r.json().catch(() => ({}))) as { error?: string }
         setPortfolioOpus(friendlyProChatError(err.error || '진단에 실패했습니다'))
       }
+      markOpusFinished()
     } catch (e) {
+      // 표식은 유지 — 화면이 꺼져 끊긴 경우 복귀 시 캐시에서 결과를 살린다
       console.error('[ProHoldings] portfolio opus', e)
       setPortfolioOpus('진단 요청에 실패했습니다')
     } finally {
@@ -801,11 +836,12 @@ export default function ProHoldingsPage() {
         <GroupDiagnosisModal
           groupName="포트폴리오"
           title={portfolioDiagnosisTitle}
-          loading={opusLoading}
+          loading={opusLoading || (opusResuming && !portfolioOpus)}
           analysis={portfolioOpus}
           onClose={() => {
             setShowPortfolioDiagnosis(false)
             setPortfolioOpus(null)
+            markOpusFinished()
           }}
         />
       ) : null}
