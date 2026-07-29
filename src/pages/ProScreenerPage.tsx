@@ -56,6 +56,8 @@ type TopFiveStock = {
   aiRisk?: string
   aiSplitPrices?: number[]
   consensusEstimate?: string | null
+  /** 심층 통찰 — 관리자(Fable) 심층 모드에서만 채워진다 */
+  aiDeepInsight?: string
 }
 
 type ScreenerResponse = {
@@ -346,6 +348,15 @@ export default function ProScreenerPage() {
                             </div>
                           ) : null}
                         </div>
+
+                        {t.aiDeepInsight ? (
+                          <div className="mt-2 rounded-lg border border-indigo-100 bg-indigo-50/60 p-2.5">
+                            <div className="mb-1 text-[10px] font-bold text-indigo-700">심층 통찰</div>
+                            <p className="whitespace-pre-line text-[11px] leading-relaxed text-gray-700">
+                              {t.aiDeepInsight}
+                            </p>
+                          </div>
+                        ) : null}
 
                         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] tabular-nums text-gray-500">
                           {t.expected1MPct > 0 ? (

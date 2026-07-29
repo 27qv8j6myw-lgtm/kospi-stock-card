@@ -255,6 +255,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
         aiRisk: ai.risk,
         aiSplitPrices: Array.isArray(ai.splitPrices) ? ai.splitPrices.slice(0, 3).map((n) => Math.round(Number(n) || 0)) : [],
         consensusEstimate: ai.consensusEstimate ?? null,
+        aiDeepInsight: typeof ai.deepInsight === 'string' ? ai.deepInsight : '',
       }
     })
     .filter(Boolean)
@@ -285,6 +286,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
           aiRisk: '',
           aiSplitPrices: [],
           consensusEstimate: null,
+          aiDeepInsight: '',
         }))
 
   const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1)

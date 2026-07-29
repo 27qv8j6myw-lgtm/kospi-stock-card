@@ -102,7 +102,7 @@ function normalizeConsensusEstimate(raw) {
  * 룰 상위 후보 15개를 AI가 재선정하여 TOP 5 + 상세 분석을 반환.
  * @param {Array<{ code: string, name: string, sector?: string, score: number, currentPrice?: number, return5D?: number, operatingMargin?: number, subScores?: object, per?: number, consensusUpside?: number, fiveYearAvgPer?: number }>} candidates
  * @param {string | null | undefined} userId — Supabase 사용자 UUID (없으면 sonnet)
- * @param {{ forcedModel?: 'opus'|'sonnet' }} [opts] — 캐시 키와 동일 모델로 강제 호출 시 사용
+ * @param {{ forcedModel?: 'opus'|'sonnet'|'fable' }} [opts] — 캐시 키와 동일 모델로 강제 호출 시 사용
  * @returns {Promise<{ items: Array<Record<string, unknown>>, modelUsed: 'opus'|'sonnet', anthropicModel: string }>}
  */
 /**
@@ -210,14 +210,17 @@ ${excludeKeywords.length > 0 ? excludeKeywords.join(', ') : '(없음)'}
 
 export async function selectTopFiveWithAnalysis(candidates, userId = null, opts = {}) {
   const forced =
-    opts.forcedModel === 'opus' || opts.forcedModel === 'sonnet' ? opts.forcedModel : null
+    opts.forcedModel === 'opus' || opts.forcedModel === 'sonnet' || opts.forcedModel === 'fable'
+      ? opts.forcedModel
+      : null
   const rows = Array.isArray(candidates) ? candidates.slice(0, 20) : []
   const userModel = forced ?? (await getUserModel(userId))
   const envOverride = process.env.SCREENING_AI_MODEL?.trim()
   const modelId = envOverride || resolveModelId(userModel)
-  // fable/opus 는 상위 티어(넉넉한 토큰). sonnet 만 하위.
-  // fable 은 thinking 블록이 토큰을 소비하므로 JSON 잘림 방지를 위해 크게 준다.
-  const maxTokens = userModel === 'sonnet' ? 2500 : userModel === 'fable' ? 8000 : 4000
+  /** 관리자(fable) — 형식 일관성보다 추론 깊이를 우선하는 심층 모드 */
+  const isDeep = userModel === 'fable'
+  // fable 은 thinking 블록 + 심층 서술로 출력이 길어 토큰을 크게 준다.
+  const maxTokens = userModel === 'sonnet' ? 2500 : isDeep ? 16000 : 4000
 
   if (rows.length === 0) {
     return { items: [], modelUsed: userModel, anthropicModel: modelId }
@@ -302,11 +305,16 @@ ${rows
     "grade": "A+|A|B+|B|C 등",
     "action": "강력 매수|매수|관심 후보|관망|주의 중 하나 (또는 관심후보|관망검토|주의)",
     "headline": "후보 선정 핵심 (15자 이내, 명사형)",
-    "summary": "선정 이유 + 진입 가이드 (자연스러운 길이, 1~3문장, 잘리지 않게 완결)",
-    "keyDriver": "핵심 매력 (1~2문장, 구체 수치 + 맥락)",
-    "risk": "주의 사항 (1~2문장, 구체 수치 + 맥락)",
+    "summary": "${isDeep ? '선정 이유 + 진입 가이드 (길이 제한 없음 · 필요한 만큼 충분히 · 완결된 문단)' : '선정 이유 + 진입 가이드 (자연스러운 길이, 1~3문장, 잘리지 않게 완결)'}",
+    "keyDriver": "${isDeep ? '핵심 매력 (길이 제한 없음 · 수치 + 인과 논증)' : '핵심 매력 (1~2문장, 구체 수치 + 맥락)'}",
+    "risk": "${isDeep ? '주의 사항 (길이 제한 없음 · 수치 + 발생 조건과 파급 경로)' : '주의 사항 (1~2문장, 구체 수치 + 맥락)'}",
     "candidateLabel": "관심후보|관망검토|주의 중 하나 (action 과 동일 계열)",
-    "consensusEstimate": "AI 추정 컨센 여력 % 부호 포함 (실제 컨센 데이터 없을 때만, 있으면 null)"
+    "consensusEstimate": "AI 추정 컨센 여력 % 부호 포함 (실제 컨센 데이터 없을 때만, 있으면 null)"${
+      isDeep
+        ? `,
+    "deepInsight": "심층 통찰 — 형식·길이 제약 없는 자유 서술 (아래 [심층 분석 모드] 참조)"`
+        : ''
+    }
   }
 ]
 
@@ -342,7 +350,28 @@ headline, summary, keyDriver, risk 등 모든 텍스트는 정중한 존댓말�
 ❌ "조정 후 진입 권장" → ✅ "조정 후 진입을 권장드립니다"
 ❌ "단기 반등 가능" → ✅ "단기 반등이 가능할 것으로 판단됩니다"
 
-[출력 형식]
+${
+  isDeep
+    ? `[심층 분석 모드 — 최우선 지침]
+이 요청은 전문 투자자를 위한 심층 분석이다. 형식의 간결함보다 추론의 깊이를 우선한다.
+
+- summary·keyDriver·risk 는 글자수를 의식하지 말고 필요한 만큼 충분히 서술한다.
+  짧게 줄이려고 근거를 생략하지 않는다.
+- deepInsight 에는 표면 요약이 아니라 "왜 그런가"를 파고드는 논증을 담는다.
+  아래 중 이 종목에 유의미한 축을 골라 깊게 다룬다 (전부 나열할 필요 없음):
+  · 섹터 사이클 상 현재 위치와 남은 국면
+  · 밸류에이션(PER vs 5Y 평균)이 정당한지, 괴리라면 그 원인
+  · 수급(외국인·기관)의 방향이 아니라 지속성에 대한 해석
+  · 실적 모멘텀의 질 — 일회성인지 구조적인지
+  · 후보군 내 상대 우위 — 왜 다른 종목이 아니라 이 종목인지
+  · 시간축 충돌 — 단기 과열과 중기 매력이 어긋날 때의 판단
+- 지표 나열 금지. 지표 사이의 인과·모순·상충을 해석한다.
+- 컨센서스와 다른 견해가 있다면 근거와 함께 분명히 제시한다.
+- 반증 조건을 반드시 포함한다: 이 판단이 틀렸다면 무엇이 먼저 관측되는가.
+
+`
+    : ''
+}[출력 형식]
 - JSON 배열만 반환. 추가 설명 텍스트 X
 - 응답 첫 글자는 [, 마지막 글자는 ]
 - markdown 코드블록 X
@@ -358,7 +387,8 @@ ${profileContext}`
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       },
-      SCREENING_AI_TIMEOUT_MS,
+      // 심층 모드는 출력이 길어 기본 타임아웃으로는 부족 (Vercel 함수 상한 300s 내)
+      isDeep ? Math.max(SCREENING_AI_TIMEOUT_MS, 180_000) : SCREENING_AI_TIMEOUT_MS,
     )
 
     const answeredModel = response.model || modelId
@@ -400,11 +430,12 @@ ${profileContext}`
           grade: clipChars(x.grade, 8),
           action: clipChars(x.action, 24) || candidateLabel,
           headline: clipChars(x.headline, 18),
-          summary: normalizeLongText(x.summary, 1200),
-          keyDriver: normalizeLongText(x.keyDriver, 600),
-          risk: normalizeLongText(x.risk, 600),
+          summary: normalizeLongText(x.summary, isDeep ? 4000 : 1200),
+          keyDriver: normalizeLongText(x.keyDriver, isDeep ? 2000 : 600),
+          risk: normalizeLongText(x.risk, isDeep ? 2000 : 600),
           candidateLabel,
           consensusEstimate: normalizeConsensusEstimate(x.consensusEstimate),
+          deepInsight: isDeep ? normalizeLongText(x.deepInsight, 6000) : '',
         }
       })
       .filter((x) => x != null)

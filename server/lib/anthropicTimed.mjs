@@ -1,7 +1,10 @@
 import { callWithRetry } from './anthropicRetry.mjs'
 
-/** Fable5 refusal 시 서버사이드 폴백 대상 (Opus 4.8) */
-const FABLE_FALLBACK_MODEL = 'claude-opus-4-8'
+/**
+ * Fable5 refusal 시 서버사이드 폴백 대상.
+ * Models API 의 `allowed_fallback_models` 는 ['claude-opus-4-8', 'claude-opus-5'] — 최신 Opus 사용.
+ */
+const FABLE_FALLBACK_MODEL = 'claude-opus-5'
 /** 서버사이드 폴백 베타 헤더 (정확한 날짜 필수) */
 const SERVER_SIDE_FALLBACK_BETA = 'server-side-fallback-2026-06-01'
 
