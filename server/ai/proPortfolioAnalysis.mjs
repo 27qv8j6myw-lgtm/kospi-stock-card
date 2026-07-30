@@ -1,3 +1,8 @@
+import {
+  ANALYSIS_COMMON_RULES,
+  deepAnalysisRules,
+  PORTFOLIO_DEEP_AXES,
+} from '../lib/analysisStyle.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { PRO_ANALYSIS_MAX_TOKENS, runOpusWithTools } from '../lib/opusEngine.mjs'
@@ -21,8 +26,8 @@ function isCacheableAnalysis(value) {
 
 const PORTFOLIO_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 포트폴리오 진단 시 각 보유 종목의 뉴스·공시·수급·섹터 동향을 반드시 제공된 도구로 직접 조회한 뒤 전체 관점에서 종합 판단합니다.
-정중한 존댓말, 이모지 금지 (투자 프로필 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외). 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용.
-변동률 부호는 +/- 그대로 표기합니다. 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록).`
+
+${ANALYSIS_COMMON_RULES}`
 
 /**
  * @param {unknown} raw
@@ -279,11 +284,17 @@ ${summaryLines.join('\n')}
   // 도구 사용(에이전트형) 루프는 항상 opus 고정.
   // sonnet 은 도구를 여러 턴에 나눠 호출해 왕복이 많아 매우 느리고,
   // 누적 입력 토큰까지 늘어 비용 이점도 사라지기 때문이다. (작업량 배수는 유지)
-  const { modelId, maxTokens } = await resolveModelAndMaxTokens(userId, {
+  const { userModel, modelId, maxTokens } = await resolveModelAndMaxTokens(userId, {
     opusBase: PRO_ANALYSIS_MAX_TOKENS,
     cap: 16000,
     forceModel: 'opus',
   })
+
+  /** 관리자(fable) — 형식보다 추론 깊이를 우선하는 심층 모드 */
+  const deepBlock =
+    userModel === 'fable'
+      ? `\n## [심층 통찰] 형식·길이 제약 없는 자유 서술\n\n${deepAnalysisRules(PORTFOLIO_DEEP_AXES)}\n`
+      : ''
 
   // 서버 캐시: 보유구성/가격(~1% 밴드)/당일 기준 동일하면 재사용
   const scopeKey = groupIds ? groupIds.slice().sort().join('+') : 'all'
@@ -316,7 +327,7 @@ ${summaryLines.join('\n')}
       )
 
       const { text, toolCalls } = await runOpusWithTools({
-        messages: [{ role: 'user', content: userMessage + archiveContext }],
+        messages: [{ role: 'user', content: userMessage + deepBlock + archiveContext }],
         system,
         userId,
         modelId,

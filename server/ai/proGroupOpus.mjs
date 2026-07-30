@@ -1,3 +1,4 @@
+import { ANALYSIS_COMMON_RULES } from '../lib/analysisStyle.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { PRO_ANALYSIS_MAX_TOKENS, runOpusWithTools } from '../lib/opusEngine.mjs'
@@ -19,9 +20,9 @@ function isCacheableAnalysis(value) {
 
 const GROUP_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 그룹 진단 시 각 종목의 뉴스·공시·수급은 반드시 제공된 도구로 직접 조회한 뒤 그룹 관점에서 종합 판단합니다.
-정중한 존댓말, 이모지 금지. 가격·기간 범위는 물결표(~) 사용.
-각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록).
-투자 권유가 아닌 참고 의견임을 전제로 합니다.`
+투자 권유가 아닌 참고 의견임을 전제로 합니다.
+
+${ANALYSIS_COMMON_RULES}`
 
 /**
  * @param {unknown} raw

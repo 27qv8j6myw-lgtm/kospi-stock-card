@@ -50,6 +50,24 @@ function changeClass(pct: number): string {
   return 'text-gray-600'
 }
 
+/** 심층 분석 사전 조사 단계에서 서버가 보내는 도구 이름 → 사용자 표시 문구 */
+const RESEARCH_TOOL_LABELS: Record<string, string> = {
+  searchNews: '최근 뉴스',
+  getDisclosures: '공시',
+  getDailyChart: '일봉 추세',
+  getInvestorTrend: '수급 동향',
+  getValuation: '밸류에이션',
+  get52Week: '52주 가격대',
+  getAnalystReports: '증권사 컨센서스',
+  getMarketIndices: '시장 지수',
+  getStockQuote: '실시간 시세',
+}
+
+function researchLabel(parsed: { tool?: string }): string {
+  const label = parsed.tool ? RESEARCH_TOOL_LABELS[parsed.tool] : null
+  return label ? `${label} 조사 중` : '데이터 조사 중'
+}
+
 export default function ProStockCardPage() {
   const { pathname, navigate } = useAppNavigation()
   const code = useMemo(() => detectCodeFromPath(pathname), [pathname])
@@ -63,6 +81,7 @@ export default function ProStockCardPage() {
   const [pastDiagnoses, setPastDiagnoses] = useState(0)
   const [loadingSummary, setLoadingSummary] = useState(true)
   const [loadingAnalysis, setLoadingAnalysis] = useState(false)
+  const [analysisProgress, setAnalysisProgress] = useState<string | null>(null)
 
   const analysisTaskKey = `stock-analysis:${code ?? ''}`
 
@@ -72,6 +91,7 @@ export default function ProStockCardPage() {
       setAnalysis('')
       setAnalysisModel(null)
       setAnalysisGeneratedAt(null)
+      setAnalysisProgress(null)
       setPastDiagnoses(0)
       markAiTaskPending(`stock-analysis:${stockCode}`)
 
@@ -116,13 +136,21 @@ export default function ProStockCardPage() {
                 model?: string
                 pastDiagnoses?: number
                 generatedAt?: string | null
+                status?: string
+                tool?: string
               }
               if (eventName === 'meta') {
                 if (parsed.model) setAnalysisModel(parsed.model)
                 if (typeof parsed.pastDiagnoses === 'number') setPastDiagnoses(parsed.pastDiagnoses)
                 setAnalysisGeneratedAt(parsed.generatedAt ?? null)
               }
+              if (eventName === 'research') {
+                setAnalysisProgress(
+                  parsed.status === 'done' ? '조사한 데이터로 분석 작성 중' : researchLabel(parsed),
+                )
+              }
               if (eventName === 'text' && parsed.delta) {
+                setAnalysisProgress(null)
                 setAnalysis((prev) => prev + parsed.delta)
               }
               if (eventName === 'error') {
@@ -447,6 +475,7 @@ export default function ProStockCardPage() {
               generatedAt={analysisGeneratedAt}
               onRegenerate={regenerateAnalysis}
               resuming={analysisResuming}
+              progress={analysisProgress}
             />
 
             <ProChartQuoteSection

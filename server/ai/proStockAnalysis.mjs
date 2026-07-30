@@ -1,7 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk'
-import { createAnthropicStream } from '../lib/anthropicTimed.mjs'
+import {
+  ANALYSIS_COMMON_RULES,
+  deepAnalysisRules,
+  STOCK_ANALYSIS_SECTIONS,
+  STOCK_DEEP_AXES,
+} from '../lib/analysisStyle.mjs'
+import { STOCK_TOOLS } from '../lib/aiTools.mjs'
+import { createAnthropicMessage, createAnthropicStream } from '../lib/anthropicTimed.mjs'
 import { getCachedValue, hashKey } from '../lib/cacheHelper.mjs'
 import { PRO_ANALYSIS_MAX_TOKENS } from '../lib/opusEngine.mjs'
+import { executeTool } from '../lib/toolExecutor.mjs'
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
@@ -20,6 +28,28 @@ const DEEP_MAX_TOKENS = 32000
 
 /** 이어쓰기 라운드를 새로 시작할지 판단하는 경과 시간 상한 (함수 상한 300s 내 여유 확보) */
 const CONTINUE_DEADLINE_MS = 210_000
+
+/**
+ * 심층 조사에 쓸 도구 — 종목 분석과 무관한 도구(최근 조회 종목·종목 검색 등)는 제외.
+ * 보유 진단이 도구로 직접 캐낸 만큼의 근거를 종목카드에서도 확보하기 위한 목록.
+ */
+const RESEARCH_TOOL_NAMES = new Set([
+  'searchNews',
+  'getDisclosures',
+  'getDailyChart',
+  'getInvestorTrend',
+  'getValuation',
+  'get52Week',
+  'getAnalystReports',
+  'getMarketIndices',
+  'getStockQuote',
+])
+
+const RESEARCH_MAX_ITERATIONS = 3
+/** 조사에 쓸 수 있는 시간 — 초과하면 모은 만큼만 갖고 작성으로 넘어간다 */
+const RESEARCH_BUDGET_MS = 100_000
+/** 조사 결과를 프롬프트에 넣을 때의 총량 상한 (입력 토큰 폭증 방지) */
+const RESEARCH_MAX_CHARS = 24000
 
 /**
  * 사용자·종목 단위 캐시 범위. 복귀 조회는 이 prefix 로 최신 항목을 찾는다.
@@ -109,6 +139,7 @@ async function saveStockAnalysis(cacheKey, payload) {
  * @param {string} [profileContext]
  * @param {string} [archiveContext]
  * @param {boolean} [isDeep] 관리자(fable) — 형식보다 추론 깊이를 우선하는 심층 모드
+ * @param {string} [researchContext] 도구로 직접 조사한 추가 데이터 (심층 모드)
  */
 function buildAnalysisPrompt(
   summary,
@@ -116,6 +147,7 @@ function buildAnalysisPrompt(
   profileContext = '',
   archiveContext = '',
   isDeep = false,
+  researchContext = '',
 ) {
   const name = summary?.name ?? code
   const quote = /** @type {Record<string, unknown> | undefined} */ (summary?.quote)
@@ -171,50 +203,116 @@ ${
     ? `평균 목표가 ${Number(analyst.targetPrice).toLocaleString('ko-KR')}원 (상승여력 ${upside}), 의견 ${analyst.opinion ?? '—'}`
     : '데이터 없음'
 }
-
+${researchContext}
 [작성 구조 — 각 섹션 ## 헤더 필수]
-## [결론] 강한 매수 / 매수 / 관망 / 매도 중 하나 + 한 줄 요약
-## [지표] 핵심 데이터 (표 권장: 현재가, PER/PBR, 수급, 52주, 컨센서스 등)
-## [이슈] 최근 뉴스·공시 요약 (${isDeep ? '호재/악재 구분, 유의미한 건은 개수 제한 없이' : '호재/악재 구분, 2~3개'})
-## [전략] 진입가·목표가·손절가 (현재가 기준 구체적 원화 가격, 범위는 물결표 ~ 사용)
-## [리스크] 주의 사항 ${isDeep ? '(발생 조건과 파급 경로까지)' : '2~3개'}${
+${STOCK_ANALYSIS_SECTIONS}${
     isDeep ? '\n## [심층 통찰] 형식·길이 제약 없는 자유 서술 (아래 [심층 분석 모드] 참조)' : ''
   }
 
-[작성 규칙]
-- 정중한 존댓말, 이모지 금지 (단, 투자 프로필이 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외)
-- 가격·금액 범위: 하이픈(-) 대신 물결표(~) 사용
-  예: "230,000~250,000원" (X "230,000-250,000원")
-- 기간 범위도 동일: "1~3개월" (X "1-3개월")
-- 변동률 부호는 +/- 그대로 (예: +5.2%, -3.1%)
-- 표는 마크다운 표 형식
+${ANALYSIS_COMMON_RULES}
+- 1~3개월 단기·스윙 매매 관점으로 작성
+${isDeep ? `\n${deepAnalysisRules(STOCK_DEEP_AXES)}\n` : ''}${archiveContext}`
+}
 
-[톤]
-- 1~3개월 단기·스윙 매매 관점
-- 데이터 없는 항목은 "데이터 없음" 명시, 추측은 "추정" 표기
-- 마크다운 (##, **, |표|, >, 리스트)
-- 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록)
-${
-  isDeep
-    ? `
-[심층 분석 모드 — 최우선 지침]
-이 요청은 전문 투자자를 위한 심층 분석이다. 형식의 간결함보다 추론의 깊이를 우선한다.
+/**
+ * 심층 모드 사전 조사 — 모델이 필요한 데이터를 도구로 직접 캐게 한다.
+ * 최종 서술은 스트리밍을 유지해야 하므로, 조사(도구 루프)와 작성(스트림)을 분리해
+ * 여기서는 데이터만 모으고 해석은 시키지 않는다.
+ *
+ * @param {{
+ *   client: Anthropic,
+ *   modelId: string,
+ *   code: string,
+ *   name: string,
+ *   userId?: string,
+ *   send: (event: string, data: unknown) => void,
+ * }} opts
+ * @returns {Promise<Array<{ name: string, input: Record<string, unknown>, result: unknown }>>}
+ */
+async function runToolResearch({ client, modelId, code, name, userId, send }) {
+  const tools = STOCK_TOOLS.filter((t) => RESEARCH_TOOL_NAMES.has(t.name))
+  const startedAt = Date.now()
 
-- 각 섹션에서 결론만 제시하지 말고 "왜 그런가"의 인과를 근거와 함께 논증한다.
-  분량을 줄이려고 근거를 생략하지 않는다.
-- [심층 통찰] 에는 표면 요약이 아니라 다른 곳에서 보기 어려운 해석을 담는다.
-  아래 중 이 종목에 유의미한 축을 골라 깊게 다룬다 (전부 나열할 필요 없음):
-  · 섹터 사이클 상 현재 위치와 남은 국면
-  · 밸류에이션(PER·PBR)이 정당한지, 괴리라면 그 원인
-  · 수급(외국인·기관)의 방향이 아니라 지속성에 대한 해석
-  · 실적 모멘텀의 질 — 일회성인지 구조적인지
-  · 시나리오 분기(강세/기본/약세)와 각 분기의 관찰 가능한 선행 신호
-  · 시장 컨센서스와 다르게 보는 지점이 있다면 그 근거
-- 데이터가 없는 축은 억지로 채우지 말고, 무엇을 더 확인해야 하는지 밝힌다.
-- 근거 없는 단정과 새로운 수치 창작은 금지 (제공된 데이터 범위를 지킨다).
-`
-    : ''
-}${archiveContext}`
+  /** @type {import('@anthropic-ai/sdk').MessageParam[]} */
+  const messages = [
+    {
+      role: 'user',
+      content: `${name}(${code}) 심층 분석에 필요한 데이터를 도구로 조사해 주세요.
+우선순위: 최근 뉴스, 60일 일봉 추세, 20일 수급 동향, 밸류에이션, 최근 공시, 시장 지수.
+조사만 하고 해석·의견은 쓰지 마세요. 충분히 모았으면 "조사 완료"라고만 답하세요.`,
+    },
+  ]
+
+  const collected = []
+
+  for (let i = 0; i < RESEARCH_MAX_ITERATIONS; i += 1) {
+    if (Date.now() - startedAt > RESEARCH_BUDGET_MS) break
+
+    const response = await createAnthropicMessage(
+      client,
+      {
+        model: modelId,
+        max_tokens: 2000,
+        system:
+          '당신은 주식 분석용 데이터 조사원입니다. 필요한 데이터를 도구로 조회하기만 하고, 해석이나 투자 의견은 작성하지 않습니다.',
+        tools,
+        messages,
+      },
+      60_000,
+    )
+
+    if (userId && response.usage) {
+      await logApiUsage(userId, 'stock-analysis-research', modelId, response.usage).catch(() => {})
+    }
+
+    const toolUses = response.content.filter((c) => c.type === 'tool_use')
+    if (toolUses.length === 0) break
+
+    messages.push({ role: 'assistant', content: response.content })
+
+    const executed = await Promise.all(
+      toolUses.map(async (toolUse) => {
+        const input =
+          toolUse.input && typeof toolUse.input === 'object' && !Array.isArray(toolUse.input)
+            ? /** @type {Record<string, unknown>} */ (toolUse.input)
+            : {}
+        send('research', { tool: toolUse.name })
+        const result = await executeTool(toolUse.name, input, userId ?? null).catch((e) => ({
+          error: e instanceof Error ? e.message : String(e),
+        }))
+        return { toolUse, input, result }
+      }),
+    )
+
+    /** @type {import('@anthropic-ai/sdk').ToolResultBlockParam[]} */
+    const toolResults = []
+    for (const { toolUse, input, result } of executed) {
+      collected.push({ name: toolUse.name, input, result })
+      toolResults.push({
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: JSON.stringify(result),
+      })
+    }
+    messages.push({ role: 'user', content: toolResults })
+  }
+
+  return collected
+}
+
+/**
+ * 조사 결과를 프롬프트에 붙일 텍스트로 직렬화 (총량 상한 적용)
+ * @param {Array<{ name: string, input: Record<string, unknown>, result: unknown }>} collected
+ */
+function buildResearchContext(collected) {
+  if (collected.length === 0) return ''
+  let out = '\n[추가 조사 데이터 — 도구로 직접 조회한 실제 값]\n'
+  for (const item of collected) {
+    const body = JSON.stringify(item.result)
+    if (out.length + body.length > RESEARCH_MAX_CHARS) break
+    out += `\n### ${item.name}(${JSON.stringify(item.input)})\n${body}\n`
+  }
+  return `${out}\n`
 }
 
 /**
@@ -288,14 +386,42 @@ export async function runProStockAnalysisStream({ summary, code, userId, send, f
     }
   }
 
-  const prompt = buildAnalysisPrompt(summary, code, profileContext, archiveContext, isDeep)
-
   send('meta', { model: stockModel, pastDiagnoses, cached: false })
+
+  // 이어쓰기 판단은 조사 시간까지 포함한 전체 경과 기준이어야 함수 상한을 넘기지 않는다.
+  const startedAt = Date.now()
+
+  // 심층 모드는 스냅샷에 없는 일봉 추세·뉴스·시장 지수까지 도구로 직접 조사한 뒤 작성한다.
+  let researchContext = ''
+  if (isDeep) {
+    send('research', { status: 'start' })
+    const collected = await runToolResearch({
+      client,
+      modelId: stockModel,
+      code,
+      name: String(summary?.name ?? code),
+      userId,
+      send,
+    }).catch((e) => {
+      console.warn('[Stock analysis research]', e instanceof Error ? e.message : String(e))
+      return []
+    })
+    researchContext = buildResearchContext(collected)
+    send('research', { status: 'done', count: collected.length })
+  }
+
+  const prompt = buildAnalysisPrompt(
+    summary,
+    code,
+    profileContext,
+    archiveContext,
+    isDeep,
+    researchContext,
+  )
 
   /** @type {import('@anthropic-ai/sdk').MessageParam[]} */
   let messages = [{ role: 'user', content: prompt }]
   let fullText = ''
-  const startedAt = Date.now()
 
   for (let round = 0; round <= maxContinuations; round += 1) {
     const stream = await createAnthropicStream(client, {

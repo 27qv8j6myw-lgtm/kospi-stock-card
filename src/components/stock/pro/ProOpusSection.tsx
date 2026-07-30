@@ -14,6 +14,8 @@ type Props = {
   onRegenerate?: () => void
   /** 백그라운드에서 분석이 진행 중 — 복귀 시 자동 표시 예정 */
   resuming?: boolean
+  /** 심층 모드 사전 조사 진행 상황 (예: "뉴스 조사 중") */
+  progress?: string | null
 }
 
 function formatGeneratedAt(iso: string): string {
@@ -33,6 +35,7 @@ export function ProOpusSection({
   generatedAt,
   onRegenerate,
   resuming,
+  progress,
 }: Props) {
   const modelLabel = formatModelLabel(model)
   return (
@@ -56,8 +59,9 @@ export function ProOpusSection({
             백그라운드에서 분석 중입니다. 화면이 꺼져도 계속 진행되며 완료되면 자동으로 표시됩니다.
           </div>
         ) : (
-          <div className="flex h-16 items-center justify-center">
+          <div className="flex h-16 flex-col items-center justify-center gap-2">
             <div className="size-5 animate-spin rounded-full border-2 border-amber-600 border-t-transparent" />
+            {progress ? <span className="text-[12px] text-amber-800">{progress}</span> : null}
           </div>
         )}
       </div>

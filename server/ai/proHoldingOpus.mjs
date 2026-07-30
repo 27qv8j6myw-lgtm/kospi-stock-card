@@ -1,3 +1,9 @@
+import {
+  ANALYSIS_COMMON_RULES,
+  deepAnalysisRules,
+  holdingAnalysisSections,
+  STOCK_DEEP_AXES,
+} from '../lib/analysisStyle.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { normalizeKisIscd } from '../lib/stockCode.mjs'
 import { PRO_ANALYSIS_MAX_TOKENS, runOpusWithTools } from '../lib/opusEngine.mjs'
@@ -24,8 +30,8 @@ function priceBucket(currentPrice, avgPrice) {
 const HOLDING_OPUS_SYSTEM = `당신은 한국 주식 단기 트레이딩(1~3개월) 전문 어시스턴트입니다.
 보유 종목 진단 시 뉴스·공시·수급·재무·차트는 반드시 제공된 도구로 직접 조회한 뒤 종합 판단합니다.
 사용자가 제시한 평단·수익률·비중·보유기간 맥락을 반드시 반영하세요.
-정중한 존댓말, 이모지 금지 (투자 프로필 있으면 맨 첫 줄 "📊 ○○형·○○ 관점 분석" 1줄만 예외). 가격·기간 범위는 하이픈(-) 대신 물결표(~) 사용 (예: 230,000~250,000원, 1~3개월).
-변동률 부호는 +/- 그대로 표기합니다. 각 섹션을 완결되게 작성 (글자수 제한 없음, 중간에 끊기지 않도록).`
+
+${ANALYSIS_COMMON_RULES}`
 
 /**
  * @param {import('express').Request} req
@@ -111,18 +117,10 @@ export async function runHoldingOpusDiagnosis(req, userId, holdingId, opts = {})
 - 보유기간: ${holdingDays}일
 - 포트폴리오 비중(평가액 기준 근사): ${weightPct.toFixed(0)}%${memoNote}
 
-이 종목의 최근 뉴스, 공시, 수급(외국인/기관), 재무, 차트를 종합적으로 조사한 뒤 다음을 진단해주세요:
+이 종목의 최근 뉴스, 공시, 수급(외국인/기관), 재무, 차트를 도구로 직접 조사한 뒤 아래 구조로 진단해주세요.
 
-1. [종합 의견] 추가매수 / 홀딩 / 일부익절 / 손절 중 하나와 한 줄 요약
-2. [${isProfit ? '수익' : '손실'} 구간 전략] ${
-    isProfit
-      ? '목표가 여력, 익절 비중, 트레일링 손절'
-      : '손절 기준, 물타기 적정성, 반등 시나리오'
-  }
-3. [시나리오별 액션] 추가매수·익절·손절 각각 구체적 가격(원화)
-4. [수급 분석] 외국인/기관 흐름 해석
-
-필요한 데이터는 도구를 사용해 직접 조회하세요.`
+[작성 구조 — 각 섹션 ## 헤더 필수]
+${holdingAnalysisSections({ isProfit, avgPrice, weightPct })}`
 
   const supabaseService = getSupabaseService()
 
@@ -170,11 +168,17 @@ export async function runHoldingOpusDiagnosis(req, userId, holdingId, opts = {})
   // 도구 사용(에이전트형) 루프는 항상 opus 고정.
   // sonnet 은 도구를 여러 턴에 나눠 호출해 왕복이 많아 매우 느리고,
   // 누적 입력 토큰까지 늘어 비용 이점도 사라지기 때문이다. (작업량 배수는 유지)
-  const { modelId, maxTokens } = await resolveModelAndMaxTokens(userId, {
+  const { userModel, modelId, maxTokens } = await resolveModelAndMaxTokens(userId, {
     opusBase: PRO_ANALYSIS_MAX_TOKENS,
     cap: 16000,
     forceModel: 'opus',
   })
+
+  /** 관리자(fable) — 형식보다 추론 깊이를 우선하는 심층 모드 */
+  const isDeep = userModel === 'fable'
+  const deepBlock = isDeep
+    ? `\n## [심층 통찰] 형식·길이 제약 없는 자유 서술\n\n${deepAnalysisRules(STOCK_DEEP_AXES)}\n`
+    : ''
 
   // 같은 종목의 과거 진단을 참고 맥락으로 주입 (연속성/입장 변화 비교)
   const archiveContext = supabaseService
@@ -189,11 +193,11 @@ export async function runHoldingOpusDiagnosis(req, userId, holdingId, opts = {})
     : ''
 
   const { text, toolCalls } = await runOpusWithTools({
-    messages: [{ role: 'user', content: userMessage + archiveContext }],
+    messages: [{ role: 'user', content: userMessage + deepBlock + archiveContext }],
     system,
     userId,
     modelId,
-    maxIterations: 8,
+    maxIterations: isDeep ? 10 : 8,
     maxTokens,
     timeoutMs: Number(process.env.PRO_HOLDING_OPUS_TIMEOUT_MS) || 120_000,
     emptyText: '분석이 길어지고 있습니다. 잠시 후 다시 시도해 주세요.',
