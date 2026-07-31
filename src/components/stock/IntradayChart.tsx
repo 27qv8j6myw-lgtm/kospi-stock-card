@@ -11,24 +11,23 @@ import {
   YAxis,
 } from 'recharts'
 import { apiUrl } from '@/lib/apiBase'
+import {
+  REGULAR_SESSION_MAX,
+  intradayXDomain,
+  intradayXTicks,
+  offsetMinutesToClock,
+} from '@/lib/intradayAxis'
 import type { IntradayChartApiResponse, IntradaySeriesPoint } from '@/types/intradayChart'
 import type { IntradayInterval } from '@/hooks/useKisChart'
 import { useAutoRefresh } from '@/hooks/useAutoRefresh'
 import { formatKrwPrice, formatPercentDiff } from '@/components/PriceChart'
 import { ChartMountShell } from '@/components/chart/ChartMountShell'
 
-const X_SESSION_MAX = 390
 const INTRADAY_IV_OPTS: IntradayInterval[] = ['1m', '5m', '15m']
 const UP_HEX = '#DC2626'
 const DOWN_HEX = '#2563EB'
 const POLL_MS = 60_000
-
-function offsetMinutesToClock(off: number): string {
-  const total = 9 * 60 + off
-  const h = Math.floor(total / 60)
-  const m = total % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-}
+const EMPTY_SERIES: IntradaySeriesPoint[] = []
 
 function exchangeSuffixFromMarket(market?: string | null): 'KS' | 'KQ' {
   const m = String(market ?? '').toUpperCase()
@@ -148,7 +147,7 @@ export function IntradayChart({
     enabled: Boolean(normalizedCode),
   })
 
-  const series = intraday?.series ?? []
+  const series = useMemo(() => intraday?.series ?? EMPTY_SERIES, [intraday])
   const openPx = intraday?.openPrice ?? 0
   const mkt = intraday?.marketStatus ?? 'pre_open'
   const animatePro = variant === 'pro'
@@ -186,9 +185,15 @@ export function IntradayChart({
     return null
   }, [displaySeries])
 
-  const xTicks = narrow ? [0, 210, X_SESSION_MAX] : [0, 120, 240, X_SESSION_MAX]
+  const xDomain = useMemo(() => intradayXDomain(intraday), [intraday])
+  const xTicks = useMemo(() => intradayXTicks(xDomain, narrow), [xDomain, narrow])
+  const hasValue = useMemo(() => series.some((p) => p.value != null), [series])
+  const sessionEndX = intraday?.extended?.sessionEndX ?? REGULAR_SESSION_MAX
+  const showSessionEnd = Boolean(intraday?.extended?.after) && xDomain[1] > sessionEndX
+
   const loading = isFetching && !intraday
-  const showPreOpen = mkt === 'pre_open' && intraday && !loading
+  // 프리마켓 체결이 있으면 차트를 보여준다
+  const showPreOpen = mkt === 'pre_open' && intraday && !loading && !hasValue
 
   const setInterval = (iv: IntradayInterval) => {
     onIntervalChange?.(iv)
@@ -233,7 +238,7 @@ export function IntradayChart({
             <XAxis
               type="number"
               dataKey="x"
-              domain={[0, X_SESSION_MAX]}
+              domain={xDomain}
               ticks={xTicks}
               tickFormatter={(v) => offsetMinutesToClock(Number(v))}
               tick={{ fill: '#9CA3AF', fontSize: 10 }}
@@ -243,6 +248,20 @@ export function IntradayChart({
               allowDecimals={false}
             />
             <YAxis orientation="right" domain={domain} hide />
+            {showSessionEnd ? (
+              <ReferenceLine
+                x={sessionEndX}
+                stroke="#D1D5DB"
+                strokeDasharray="2 3"
+                strokeWidth={1}
+                label={{
+                  value: '정규장 마감',
+                  position: 'insideTopRight',
+                  fill: '#9CA3AF',
+                  fontSize: 9,
+                }}
+              />
+            ) : null}
             {openPx > 0 ? (
               <ReferenceLine
                 y={openPx}

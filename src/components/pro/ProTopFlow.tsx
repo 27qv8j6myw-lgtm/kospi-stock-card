@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Building2, TrendingUp, User, Users } from 'lucide-react'
+import { QuoteBasisBadge } from '@/components/pro/QuoteBasisBadge'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
@@ -181,6 +182,7 @@ export function ProTopFlow({ refreshSignal = 0 }: ProTopFlowProps) {
   const [tradeType, setTradeType] = useState<TradeType>('buy')
   const [data, setData] = useState<Record<Investor, TopFlowStock[]>>(EMPTY_DATA)
   const [updatedAt, setUpdatedAt] = useState('')
+  const [basisLabel, setBasisLabel] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -190,15 +192,17 @@ export function ProTopFlow({ refreshSignal = 0 }: ProTopFlowProps) {
       const url = apiUrl(`/api/pro-top-flow?investor=${investor}&type=${tradeType}`)
       const r = await authFetch(url)
       if (!r.ok) {
-        return { stocks: [] as TopFlowStock[], updatedAt: '' }
+        return { stocks: [] as TopFlowStock[], updatedAt: '', basisLabel: null }
       }
       const d = (await r.json()) as {
         stocks?: unknown
         updatedAt?: string
+        basisLabel?: string | null
       }
       return {
         stocks: normalizeStocks(d.stocks),
         updatedAt: d.updatedAt || '',
+        basisLabel: d.basisLabel ?? null,
       }
     }
 
@@ -224,6 +228,7 @@ export function ProTopFlow({ refreshSignal = 0 }: ProTopFlowProps) {
             individual.updatedAt ||
             new Date().toISOString(),
         )
+        setBasisLabel(foreign.basisLabel || institution.basisLabel || individual.basisLabel || null)
       } catch (e) {
         console.error('[ProTopFlow]', e)
         if (loadId === loadIdRef.current) {
@@ -255,12 +260,14 @@ export function ProTopFlow({ refreshSignal = 0 }: ProTopFlowProps) {
             지금 많이 사고팔리는 종목
           </span>
 
-          <span className="hidden text-[11px] tabular-nums text-gray-400 md:inline">
+          <span className="hidden items-center gap-1.5 text-[11px] tabular-nums text-gray-400 md:inline-flex">
             {formatTime(updatedAt)} 기준
+            <QuoteBasisBadge label={basisLabel} />
           </span>
 
-          <span className="ml-auto text-[10px] tabular-nums text-gray-400 md:hidden">
+          <span className="ml-auto flex items-center gap-1 text-[10px] tabular-nums text-gray-400 md:hidden">
             {formatTime(updatedAt)}
+            <QuoteBasisBadge label={basisLabel} />
           </span>
 
           <div className="ml-auto hidden items-center gap-2 md:flex">

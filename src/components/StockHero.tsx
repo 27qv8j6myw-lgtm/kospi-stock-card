@@ -20,6 +20,12 @@ import { ChartMountShell } from './chart/ChartMountShell'
 import { Card } from './ui/Card'
 import { StatusBadge } from './ui/StatusBadge'
 import { strategyToBadgeStatus, strategyToLabelKo } from '../lib/strategyBadges'
+import {
+  REGULAR_SESSION_MAX,
+  intradayXDomain,
+  intradayXTicks,
+  offsetMinutesToClock,
+} from '../lib/intradayAxis'
 import { formatKrwPrice, formatPercentDiff } from './PriceChart'
 
 const TIMEFRAMES: Timeframe[] = ['1D', '5D', '1M', '3M', '1Y']
@@ -178,14 +184,7 @@ function logoHueFromCode(code: string): number {
   return h % 360
 }
 
-const X_SESSION_MAX = 390
-
-function offsetMinutesToClock(off: number): string {
-  const total = 9 * 60 + off
-  const h = Math.floor(total / 60)
-  const m = total % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-}
+const EMPTY_SERIES: IntradaySeriesPoint[] = []
 
 function DailyChartTooltip({
   active,
@@ -457,7 +456,7 @@ function IntradayChartBlock({
   const chartTick = usePeriodicNow(
     Boolean(intradayLastUpdated || intradayRefreshing),
   )
-  const series = intraday?.series ?? []
+  const series = useMemo(() => intraday?.series ?? EMPTY_SERIES, [intraday])
   const openPx = intraday?.openPrice ?? 0
   const mkt = intraday?.marketStatus ?? 'pre_open'
 
@@ -479,7 +478,11 @@ function IntradayChartBlock({
     return null
   }, [series])
 
-  const xTicks = narrow ? [0, 210, X_SESSION_MAX] : [0, 120, 240, X_SESSION_MAX]
+  const xDomain = useMemo(() => intradayXDomain(intraday), [intraday])
+  const xTicks = useMemo(() => intradayXTicks(xDomain, narrow), [xDomain, narrow])
+  const hasValue = useMemo(() => series.some((p) => p.value != null), [series])
+  const sessionEndX = intraday?.extended?.sessionEndX ?? REGULAR_SESSION_MAX
+  const showSessionEnd = Boolean(intraday?.extended?.after) && xDomain[1] > sessionEndX
 
   return (
     <div className="flex min-h-[280px] w-full min-w-0 flex-1 flex-col lg:max-w-[min(100%,520px)]">
@@ -534,7 +537,7 @@ function IntradayChartBlock({
         </p>
       ) : null}
 
-      {mkt === 'pre_open' && status === 'ok' ? (
+      {mkt === 'pre_open' && status === 'ok' && !hasValue ? (
         <p className="mt-3 text-sm font-medium text-primary">장 시작 대기</p>
       ) : null}
 
@@ -551,7 +554,7 @@ function IntradayChartBlock({
             <XAxis
               type="number"
               dataKey="x"
-              domain={[0, X_SESSION_MAX]}
+              domain={xDomain}
               ticks={xTicks}
               tickFormatter={(v) => offsetMinutesToClock(Number(v))}
               tick={{ fill: 'var(--color-tertiary)', fontSize: 11 }}
@@ -561,6 +564,20 @@ function IntradayChartBlock({
               allowDecimals={false}
             />
             <YAxis orientation="right" domain={domain} hide />
+            {showSessionEnd ? (
+              <ReferenceLine
+                x={sessionEndX}
+                stroke="#D1D5DB"
+                strokeDasharray="2 3"
+                strokeWidth={1}
+                label={{
+                  value: '정규장 마감',
+                  position: 'insideTopRight',
+                  fill: '#9CA3AF',
+                  fontSize: 10,
+                }}
+              />
+            ) : null}
             {openPx > 0 ? (
               <ReferenceLine
                 y={openPx}

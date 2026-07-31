@@ -409,14 +409,16 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     }
 
     try {
+      /** @type {string | null} */
+      let basisLabel = null
       const enriched = await Promise.all(
         items.map(async (item) => {
           const code = parseRouteStockCode(item.code) || String(item.code)
-          const [quoteRaw, name] = await Promise.all([
-            executeTool('getStockQuote', { code }, userId).catch(() => null),
+          const [quote, name] = await Promise.all([
+            getKisDisplayQuote(code).catch(() => null),
             resolveStockName(code).catch(() => code),
           ])
-          const quote = quoteRaw && typeof quoteRaw === 'object' && !('error' in quoteRaw) ? quoteRaw : null
+          if (quote) basisLabel = basisLabel ?? quoteBasisLabel(quote.marketDiv)
           return {
             code,
             name: name || code,
@@ -428,7 +430,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
         }),
       )
 
-      res.json({ watchlist: enriched })
+      res.json({ watchlist: enriched, basisLabel, updatedAt: new Date().toISOString() })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       console.error('[Pro Watchlist Enriched]', e)

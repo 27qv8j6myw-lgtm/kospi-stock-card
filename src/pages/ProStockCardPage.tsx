@@ -69,6 +69,13 @@ function researchLabel(parsed: { tool?: string }): string {
   return label ? `${label} 조사 중` : '데이터 조사 중'
 }
 
+/** null 필드는 기존 값을 덮어쓰지 않도록 걸러낸다 */
+function omitNulls<T extends object>(obj: T): { [K in keyof T]?: Exclude<T[K], null> } {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null)) as {
+    [K in keyof T]?: Exclude<T[K], null>
+  }
+}
+
 export default function ProStockCardPage() {
   const { pathname, navigate } = useAppNavigation()
   const code = useMemo(() => detectCodeFromPath(pathname), [pathname])
@@ -231,13 +238,15 @@ export default function ProStockCardPage() {
         }
       }
       if (!d.quote) return
+      const { basisLabel, ...fields } = d.quote
       setSummary((prev) =>
         prev
           ? {
               ...prev,
               quote: {
                 ...prev.quote,
-                ...d.quote,
+                ...omitNulls(fields),
+                basisLabel: basisLabel ?? null,
               },
             }
           : prev,

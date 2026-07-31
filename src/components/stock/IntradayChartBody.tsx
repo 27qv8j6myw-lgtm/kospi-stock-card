@@ -11,12 +11,12 @@ import {
   YAxis,
 } from 'recharts'
 import { apiUrl } from '@/lib/apiBase'
+import { REGULAR_SESSION_MAX, intradayXDomain } from '@/lib/intradayAxis'
 import type { IntradayChartApiResponse, IntradaySeriesPoint } from '@/types/intradayChart'
 import type { IntradayInterval } from '@/hooks/useKisChart'
 import { useAutoRefresh } from '@/hooks/useAutoRefresh'
 import { formatKrwPrice, formatPercentDiff } from '@/components/PriceChart'
 
-const X_SESSION_MAX = 390
 const UP_HEX = '#DC2626'
 const DOWN_HEX = '#2563EB'
 const POLL_MS = 60_000
@@ -165,8 +165,14 @@ export function IntradayChartBody({
     return null
   }, [displaySeries])
 
+  const xDomain = useMemo(() => intradayXDomain(intraday), [intraday])
+  const hasValue = useMemo(() => series.some((p) => p.value != null), [series])
+  const sessionEndX = intraday?.extended?.sessionEndX ?? REGULAR_SESSION_MAX
+  const showSessionEnd = Boolean(intraday?.extended?.after) && xDomain[1] > sessionEndX
+
   const loading = isFetching && !intraday
-  const showPreOpen = mkt === 'pre_open' && intraday && !loading && !error
+  // 프리마켓 체결이 있으면 차트를 가리지 않는다
+  const showPreOpen = mkt === 'pre_open' && intraday && !loading && !error && !hasValue
 
   useEffect(() => {
     if (!onSeriesChange) return
@@ -200,14 +206,16 @@ export function IntradayChartBody({
             </linearGradient>
           </defs>
           <CartesianGrid stroke="#F3F4F6" strokeWidth={0.5} vertical={false} />
-          <XAxis
-            type="number"
-            dataKey="x"
-            domain={[0, X_SESSION_MAX]}
-            hide
-            allowDecimals={false}
-          />
+          <XAxis type="number" dataKey="x" domain={xDomain} hide allowDecimals={false} />
           <YAxis orientation="right" domain={domain} hide />
+          {showSessionEnd ? (
+            <ReferenceLine
+              x={sessionEndX}
+              stroke="#D1D5DB"
+              strokeDasharray="2 3"
+              strokeWidth={1}
+            />
+          ) : null}
           {openPx > 0 ? (
             <ReferenceLine
               y={openPx}

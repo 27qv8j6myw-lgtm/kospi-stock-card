@@ -80,6 +80,14 @@ KIS 국내 현재가 계열 API 의 시장분류코드(`FID_COND_MRKT_DIV_CODE`)
 
 표시용 경로는 `getKisDisplayQuote()` 또는 `fetchRealtimePrices(codes, { marketDiv: MARKET_DIV_DISPLAY })` 를 쓴다. 폴백은 두 겹이다. NXT 미상장 종목은 오류 대신 0원을 돌려주므로 가격이 0 이면 KRX 단독으로 재조회하고, 모의투자처럼 NXT 자체가 막힌 환경은 실패를 10분간 기억해 재시도 비용을 줄인다.
 
+### 당일 차트의 시간외 구간
+
+당일 차트는 정규장 구간을 Yahoo 분봉으로, 시간외 구간을 KIS 통합(`UN`) 분봉으로 채워 붙인다 ([server/lib/intradayChart.mjs](server/lib/intradayChart.mjs), [server/lib/intradayExtended.mjs](server/lib/intradayExtended.mjs)). KIS 분봉 API 는 한 번에 30분치만 주므로 30분 단위로 나눠 받고, 이미 지나간 묶음은 값이 고정되므로 6시간 캐시한다.
+
+x축은 09:00 기준 경과 분이라 프리마켓이 음수(08:00 = -60), 애프터마켓이 390(15:30) 초과가 된다. 범위는 서버가 `xMin`·`xMax` 로 내려주고, 시간외 체결이 없는 종목은 구간을 만들지 않아 기존 09:00~15:30 차트와 같다. 체결 없는 분은 전일 종가가 그대로 내려오므로 거래량 0 인 봉은 버린다.
+
+`기준` 시각 옆의 `NXT 시간외` 배지는 [server/lib/quoteBasis.mjs](server/lib/quoteBasis.mjs) 의 `quoteBasisLabel()` 판정을 그대로 쓴다. 순매수 상위(`/api/pro-top-flow`)는 집계 자체가 KRX 정규장 누적이라 마감 후 굳으므로, 순위는 그대로 두고 표시 가격만 통합 시세로 덮어쓴다.
+
 ---
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

@@ -23,6 +23,14 @@ export function formatKRW(amount: number | null | undefined, options: FormatKRWO
   return `${sign}${Math.round(abs).toLocaleString()}`
 }
 
+/** ISO 시각을 HH:MM 으로 (기준 시각 표시용) */
+export function formatHm(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 /**
  * 만/억 축약 표기 (부호 없음 — 호출부에서 +/- 처리)
  * @example formatKRWCompact(26920000) → "2,692만"

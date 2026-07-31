@@ -874,6 +874,58 @@ export async function inquireChartByTimeframe(appKey, appSecret, env, code6, tf)
   return inquireDailyChart(appKey, appSecret, env, code6, tf)
 }
 
+/** 이미 지나간 분봉 묶음은 값이 바뀌지 않으므로 길게 캐시한다 (ms) */
+const KIS_CACHE_TTL_SETTLED_BARS_MS = 6 * 60 * 60_000
+
+/**
+ * 당일 1분봉 30개 — `endHhmmss` 직전 30분 구간. 요청 시각이 미래면 현재까지만 온다.
+ * `marketDiv: 'UN'` 으로 부르면 NXT 프리마켓·애프터마켓 체결도 잡힌다.
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {string} env
+ * @param {string} code6
+ * @param {{ endHhmmss?: string, marketDiv?: 'J' | 'NX' | 'UN', settled?: boolean }} [opts]
+ * @returns {Promise<Array<{ hhmmss: string, price: number, volume: number }>>}
+ */
+export async function inquireMinuteBars(appKey, appSecret, env, code6, opts = {}) {
+  const iscd = normalizeKisIscd(code6)
+  const marketDiv = DOMESTIC_MARKET_DIVS.has(opts.marketDiv) ? opts.marketDiv : 'J'
+  const end = /^\d{6}$/.test(String(opts.endHhmmss ?? ''))
+    ? String(opts.endHhmmss)
+    : seoulNowHhmm00()
+  const cacheKey = `kis:minbars:${env}:${marketDiv}:${iscd}:${end}`
+  const ttl = opts.settled ? KIS_CACHE_TTL_SETTLED_BARS_MS : KIS_CACHE_TTL_QUOTE_MS
+
+  return await withCache(cacheKey, ttl, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice',
+      params: {
+        FID_COND_MRKT_DIV_CODE: marketDiv,
+        FID_INPUT_ISCD: iscd,
+        FID_INPUT_HOUR_1: end,
+        FID_PW_DATA_INCU_YN: 'Y',
+        FID_ETC_CLS_CODE: '',
+      },
+      trId: 'FHKST03010200',
+      kind: 'KIS 당일분봉',
+    })
+
+    const rows = Array.isArray(data.output2) ? data.output2 : []
+    return rows
+      .map((r) => {
+        const hhmmss = normalizeCntgHhmmss(r.stck_cntg_hour || r.cntg_hour || '')
+        const price = num(r.stck_prpr)
+        if (!hhmmss || price == null) return null
+        return { hhmmss, price: Math.round(price), volume: Math.max(0, num(r.cntg_vol) ?? 0) }
+      })
+      .filter(Boolean)
+      .sort((a, b) => hhmmssToNum(a.hhmmss) - hhmmssToNum(b.hhmmss))
+  })
+}
+
 /** 5거래일 차트 포인트 기준 누적 수익률(%) — 첫 종가 대비 마지막 종가 */
 export function chartPointsToReturnPct(points) {
   if (!Array.isArray(points) || points.length < 2) return 0

@@ -14,7 +14,8 @@ import {
   inquireTradeValueRankTop,
   isKisRateLimitError,
 } from './kisClient.mjs'
-import { getIntradayChart, krxMarketStatus } from './yahooIntraday.mjs'
+import { getIntradayChartWithExtended } from './lib/intradayChart.mjs'
+import { isDomesticTradingWindow } from './lib/intradayExtended.mjs'
 import { completeJsonChat, getAiConfig } from './aiClient.mjs'
 import { runResearchStock } from './researchStock.mjs'
 import {
@@ -127,7 +128,8 @@ function chartTtlMs(tf) {
 }
 
 function intradayChartTtlMs() {
-  return krxMarketStatus() === 'open' ? 5 * 60_000 : 24 * 60 * 60_000
+  // NXT 시간외(08:00~09:00, 15:30~20:00)에도 값이 움직이므로 짧게 잡는다
+  return isDomesticTradingWindow() ? 60_000 : 24 * 60 * 60_000
 }
 
 function logicTtlMs() {
@@ -1108,7 +1110,7 @@ app.get('/api/intraday-chart', async (req, res) => {
   try {
     let task = intradayInflight.get(key)
     if (!task) {
-      task = getIntradayChart(code, interval, suffix)
+      task = getIntradayChartWithExtended(code, interval, suffix)
       intradayInflight.set(key, task)
     }
     const body = await task

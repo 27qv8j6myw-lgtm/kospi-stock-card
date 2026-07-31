@@ -1,8 +1,10 @@
 /**
  * Pro 대시보드 — 투자자별 순매수/순매도 상위
  */
-import { getTopFlowStocks, getTopFlowStocksByInvestor } from '../kisClient.mjs'
+import { MARKET_DIV_DISPLAY, getTopFlowStocks, getTopFlowStocksByInvestor } from '../kisClient.mjs'
 import { getCachedOrFetch } from './cacheHelper.mjs'
+import { fetchRealtimePrices } from './marketDataCollector.mjs'
+import { quoteBasisLabel } from './quoteBasis.mjs'
 import { isValidStockDisplayName, pickStockDisplayName } from './stockMasterKisLookup.mjs'
 import { screeningStockNameKr } from '../screening/sectorMaster.mjs'
 
@@ -107,6 +109,28 @@ async function enrichTopFlowNames(supabaseService, stocks) {
 }
 
 /**
+ * 순매수 집계는 KRX 정규장 누적이라 마감 후 그대로 굳는다. 표시 가격만 KRX+NXT
+ * 통합 시세로 덮어써서 시간외 움직임이 보이게 한다.
+ * @param {Array<{ code: string, currentPrice: number | null, changePct: number | null }>} stocks
+ */
+async function overlayDisplayPrices(stocks) {
+  const codes = stocks.map((s) => s.code).filter(Boolean)
+  if (codes.length === 0) return stocks
+
+  try {
+    const priceMap = await fetchRealtimePrices(codes, { marketDiv: MARKET_DIV_DISPLAY })
+    return stocks.map((s) => {
+      const q = priceMap.get(s.code)
+      if (!q || !(Number(q.currentPrice) > 0)) return s
+      return { ...s, currentPrice: q.currentPrice, changePct: q.changePct ?? s.changePct }
+    })
+  } catch (e) {
+    console.warn('[TopFlow] 통합 시세 덮어쓰기 실패:', e instanceof Error ? e.message : String(e))
+    return stocks
+  }
+}
+
+/**
  * @param {import('@supabase/supabase-js').SupabaseClient | null} supabaseService
  * @param {{ investor?: string, type?: string }} query
  */
@@ -128,11 +152,13 @@ export async function fetchProTopFlow(supabaseService, query = {}) {
   if (supabaseService && stocks.length > 0) {
     stocks = await enrichTopFlowNames(supabaseService, stocks)
   }
+  stocks = await overlayDisplayPrices(stocks)
 
   return {
     stocks,
     investor,
     type,
     updatedAt: new Date().toISOString(),
+    basisLabel: quoteBasisLabel(MARKET_DIV_DISPLAY),
   }
 }

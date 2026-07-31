@@ -135,6 +135,10 @@ function resolveLabels(
   narrow: boolean,
 ): string[] {
   if (period === '당일') {
+    // 시간외까지 확장되면 09:00~15:30 고정 라벨이 실제 구간과 어긋난다
+    const count = narrow ? 3 : 4
+    const fromData = chartData?.length ? generateLabelsFromData('당일', chartData, count) : []
+    if (fromData.length === count) return fromData
     return generateLabels('당일', narrow)
   }
 

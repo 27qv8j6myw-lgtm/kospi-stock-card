@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Search, Sparkles, Star, X } from 'lucide-react'
 import { ProSearchBarActions } from '@/components/pro/ProSearchBarActions'
+import { QuoteBasisBadge } from '@/components/pro/QuoteBasisBadge'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
+import { formatHm } from '@/lib/format'
 import { proSearchInputProps, useProStockSearchPlaceholder } from '@/lib/proSearchInputProps'
 import {
   PRO_CONTENT_WRAP,
@@ -38,6 +40,8 @@ export default function ProDashboard() {
   const [showResults, setShowResults] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [watchlist, setWatchlist] = useState<WatchlistItem[]>([])
+  const [quotesBasis, setQuotesBasis] = useState<string | null>(null)
+  const [quotesUpdatedAt, setQuotesUpdatedAt] = useState('')
   const [removingCode, setRemovingCode] = useState<string | null>(null)
   const [topFlowRefresh, setTopFlowRefresh] = useState(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -46,7 +50,7 @@ export default function ProDashboard() {
   const loadWatchlist = useCallback(() => {
     void authFetch(apiUrl('/api/pro-watchlist-enriched'))
       .then((r) => (r.ok ? r.json() : { watchlist: [] }))
-      .then(async (d: { watchlist?: WatchlistItem[] }) => {
+      .then(async (d: { watchlist?: WatchlistItem[]; basisLabel?: string | null }) => {
         const list = d.watchlist || []
         const enriched = await Promise.all(
           list.map(async (item) => {
@@ -61,15 +65,13 @@ export default function ProDashboard() {
           }),
         )
         setWatchlist(enriched)
+        setQuotesBasis(d.basisLabel ?? null)
+        setQuotesUpdatedAt(new Date().toISOString())
       })
       .catch(() => setWatchlist([]))
   }, [])
 
   useEffect(() => {
-    loadWatchlist()
-  }, [loadWatchlist])
-
-  const refetchQuotes = useCallback(() => {
     loadWatchlist()
   }, [loadWatchlist])
 
@@ -79,7 +81,8 @@ export default function ProDashboard() {
   }, [loadWatchlist])
 
   useVisibilityDataRefresh(refetchAll)
-  useKrxDataPolling(refetchQuotes)
+  // 순매수 상위 목록의 시세도 같이 갱신해야 시간외에 값이 굳지 않는다
+  useKrxDataPolling(refetchAll)
 
   const removeFromWatchlist = async (code: string) => {
     if (removingCode) return
@@ -268,6 +271,14 @@ export default function ProDashboard() {
               즐겨찾기
             </h2>
             <span className="text-[10px] text-gray-400">{watchlist.length}개</span>
+            {watchlist.length > 0 ? (
+              <span className="ml-auto flex items-center gap-1.5">
+                <span className="text-[10px] tabular-nums text-gray-400">
+                  {formatHm(quotesUpdatedAt)} 기준
+                </span>
+                <QuoteBasisBadge label={quotesBasis} />
+              </span>
+            ) : null}
           </div>
 
           {watchlist.length === 0 ? (
