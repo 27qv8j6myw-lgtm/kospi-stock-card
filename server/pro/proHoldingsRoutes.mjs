@@ -12,6 +12,7 @@ import { getCachedOrFetch } from '../lib/cacheHelper.mjs'
 import { getDisclosuresForPro } from '../lib/proResearchTools.mjs'
 import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
+import { quoteBasisLabel } from '../lib/quoteBasis.mjs'
 import { getKisDisplayQuote } from '../lib/toolExecutor.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 
@@ -679,11 +680,13 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
       let currentPrice = 0
       let changePct = 0
       let displayName = String(holding.name || '').trim() || code
+      let basisLabel = null
 
       try {
         const quote = await getKisDisplayQuote(code)
         currentPrice = Number(quote?.currentPrice) || 0
         changePct = Number(quote?.changePct) || 0
+        basisLabel = quoteBasisLabel(quote?.marketDiv)
         if (quote?.name && quote.name !== code) displayName = quote.name
       } catch {
         // 시세 없어도 보유 row 는 반환
@@ -705,6 +708,7 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
           profit,
           profitPct,
         },
+        basisLabel,
       })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)

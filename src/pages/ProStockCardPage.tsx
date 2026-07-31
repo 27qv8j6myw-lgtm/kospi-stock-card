@@ -10,6 +10,7 @@ import {
   ProStickySearch,
   ProStockShareCard,
 } from '@/components/stock/pro'
+import { QuoteBasisBadge } from '@/components/pro/QuoteBasisBadge'
 import { useAppNavigation } from '@/hooks/useAppNavigation'
 import { useKrxDataPolling } from '@/hooks/useKrxDataPolling'
 import { clearAiTaskPending, markAiTaskPending, useResumeAiResult } from '@/hooks/useResumeAiResult'
@@ -226,6 +227,7 @@ export default function ProStockCardPage() {
           dayLow?: number | null
           volume?: number | null
           tradingAmount?: number | null
+          basisLabel?: string | null
         }
       }
       if (!d.quote) return
@@ -453,6 +455,7 @@ export default function ProStockCardPage() {
                   {pct > 0 ? '+' : ''}
                   {pct.toFixed(2)}%
                 </span>
+                <QuoteBasisBadge label={summary.quote?.basisLabel} />
               </div>
             </div>
 

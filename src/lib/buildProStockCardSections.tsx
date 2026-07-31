@@ -39,6 +39,8 @@ export type ProSummaryExtended = {
     foreignHoldingQty?: number | null
     listedShares?: number | null
     foreignNetBuy?: number | null
+    /** NXT 시간외처럼 정규장 종가와 기준이 다를 때만 서버가 채운다 */
+    basisLabel?: string | null
   }
   week52?: { high52w?: number; low52w?: number; pctFromHigh?: number | null }
   investor?: {

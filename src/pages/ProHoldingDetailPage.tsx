@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Sparkles, Archive } from 'lucide-react'
+import { QuoteBasisBadge } from '@/components/pro/QuoteBasisBadge'
 import { TradeHistorySection } from '@/components/pro/TradeHistorySection'
 import { ProOpusSection } from '@/components/stock/pro/ProOpusSection'
 import { ProStickySearch } from '@/components/stock/pro/ProStickySearch'
@@ -64,6 +65,7 @@ export default function ProHoldingDetailPage() {
   const holdingId = useMemo(() => detectHoldingId(pathname), [pathname])
 
   const [holding, setHolding] = useState<HoldingDetail | null>(null)
+  const [quoteBasis, setQuoteBasis] = useState<string | null>(null)
   const [holdingError, setHoldingError] = useState<string | null>(null)
   const [opus, setOpus] = useState<OpusPayload | null>(null)
   const [opusLoading, setOpusLoading] = useState(true)
@@ -79,18 +81,23 @@ export default function ProHoldingDetailPage() {
 
     void authFetch(apiUrl(`/api/pro-holding-detail?id=${encodeURIComponent(holdingId)}`))
       .then(async (r) => {
-        const d = (await r.json()) as { holding?: HoldingDetail; error?: string }
+        const d = (await r.json()) as {
+          holding?: HoldingDetail
+          basisLabel?: string | null
+          error?: string
+        }
         if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
-        return d.holding
+        return d
       })
-      .then((row) => {
+      .then((d) => {
         if (cancelled) return
-        if (!row) {
+        if (!d.holding) {
           setHolding(null)
           setHoldingError('보유 종목을 찾을 수 없습니다')
           return
         }
-        setHolding(row)
+        setHolding(d.holding)
+        setQuoteBasis(d.basisLabel ?? null)
         setHoldingError(null)
       })
       .catch((e) => {
@@ -261,7 +268,10 @@ export default function ProHoldingDetailPage() {
                 </div>
               </div>
               <div>
-                <div className="text-[10px] text-gray-400">현재가</div>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-gray-400">현재가</span>
+                  <QuoteBasisBadge label={quoteBasis} />
+                </div>
                 <div className="text-[14px] font-bold tabular-nums text-gray-900">
                   {currentPrice != null ? `${currentPrice.toLocaleString()}원` : '—'}
                 </div>

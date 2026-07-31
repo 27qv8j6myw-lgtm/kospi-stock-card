@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertCircle, PieChart, TrendingUp, Wallet } from 'lucide-react'
+import { QuoteBasisBadge } from '@/components/pro/QuoteBasisBadge'
 import { authFetch } from '@/lib/api'
 import { apiUrl } from '@/lib/apiBase'
+import { nxtOffHoursLabel } from '@/lib/marketHours'
 
 type SectorRow = { sector: string; amount: number; weight: number }
 
@@ -219,7 +221,10 @@ export function PortfolioAnalysis({
           </div>
           <div className="space-y-2">
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-[12px] text-gray-500">종목 평가액</span>
+              <span className="flex items-center gap-1 text-[12px] text-gray-500">
+                종목 평가액
+                <QuoteBasisBadge label={nxtOffHoursLabel()} />
+              </span>
               <span className="text-[16px] font-bold tabular-nums text-gray-900">
                 {formatFullKRW(summary.totalEval)}
               </span>

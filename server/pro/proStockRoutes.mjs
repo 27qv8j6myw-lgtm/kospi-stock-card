@@ -4,6 +4,7 @@ import { logActivity } from '../lib/activityLogger.mjs'
 import { summarizeProNewsHeadlines } from '../ai/proNewsSummary.mjs'
 import { getLatestStockAnalysis, runProStockAnalysisStream } from '../ai/proStockAnalysis.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
+import { quoteBasisLabel } from '../lib/quoteBasis.mjs'
 import { fetchProChartBars } from '../lib/proStockChart.mjs'
 import { resolveStockName } from '../lib/resolveStockName.mjs'
 import {
@@ -508,6 +509,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
           dayLow: q.dayLow,
           volume: q.volume,
           tradingAmount: q.tradingAmount,
+          basisLabel: quoteBasisLabel(q.marketDiv),
         },
       })
     } catch (e) {
