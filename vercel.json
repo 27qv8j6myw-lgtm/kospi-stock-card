@@ -21,6 +21,9 @@
     },
     "api/cron-daily-brief.mjs": {
       "maxDuration": 300
+    },
+    "api/mcp.mjs": {
+      "maxDuration": 60
     }
   },
   "crons": [
