@@ -4,6 +4,7 @@ import {
   buildPortfolioAnalysis,
   runPortfolioOpusDiagnosis,
 } from '../ai/proPortfolioAnalysis.mjs'
+import { MARKET_DIV_DISPLAY } from '../kisClient.mjs'
 import { mapAnthropicErrorForClient } from '../lib/anthropicRetry.mjs'
 import { createUserSupabaseFromRequest } from '../lib/auth.mjs'
 import { logActivity } from '../lib/activityLogger.mjs'
@@ -11,7 +12,7 @@ import { getCachedOrFetch } from '../lib/cacheHelper.mjs'
 import { getDisclosuresForPro } from '../lib/proResearchTools.mjs'
 import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
 import { requireProUser } from '../lib/proAccess.mjs'
-import { getKisQuote } from '../lib/toolExecutor.mjs'
+import { getKisDisplayQuote } from '../lib/toolExecutor.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 
 /**
@@ -119,7 +120,10 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
         ),
       ]
       const skipCache = String(req.query?.fresh ?? '').trim() === '1'
-      const priceMap = await fetchRealtimePrices(codes, { skipCache })
+      const priceMap = await fetchRealtimePrices(codes, {
+        skipCache,
+        marketDiv: MARKET_DIV_DISPLAY,
+      })
 
       const enriched = holdings.map((h) => {
         const code = normalizeCode6(h.code) || String(h.code)
@@ -209,7 +213,10 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
       }
 
       const skipCache = String(req.query?.fresh ?? '').trim() === '1'
-      const priceMap = await fetchRealtimePrices(codes, { skipCache })
+      const priceMap = await fetchRealtimePrices(codes, {
+        skipCache,
+        marketDiv: MARKET_DIV_DISPLAY,
+      })
       /** @type {Record<string, { currentPrice: number | null, changePct: number | null }>} */
       const quotes = {}
       for (const [code, q] of priceMap) {
@@ -674,7 +681,7 @@ export function registerProHoldingsRoutes(app, { getSupabaseService, getUserIdFr
       let displayName = String(holding.name || '').trim() || code
 
       try {
-        const quote = await getKisQuote(code)
+        const quote = await getKisDisplayQuote(code)
         currentPrice = Number(quote?.currentPrice) || 0
         changePct = Number(quote?.changePct) || 0
         if (quote?.name && quote.name !== code) displayName = quote.name

@@ -15,6 +15,57 @@ const KIS_CACHE_TTL_QUOTE_MS = 30_000
 /** 일봉·투자자 등 분석/스크리닝용 TTL (ms) */
 const KIS_CACHE_TTL_ANALYSIS_MS = 5 * 60_000
 
+/** 국내 시장분류코드 — KRX 단독 / NXT 단독 / KRX·NXT 통합 */
+const DOMESTIC_MARKET_DIVS = new Set(['J', 'NX', 'UN'])
+
+/**
+ * 화면 표시용 현재가는 KRX·NXT 통합가를 쓴다 (NXT 프리·애프터마켓 시간대 포함).
+ * 일별 스냅샷 등 기준을 고정해야 하는 경로는 `MARKET_DIV_REGULAR` 를 쓴다.
+ */
+export const MARKET_DIV_DISPLAY = 'UN'
+/** 정규장(KRX) 단독 — 날짜 간 비교 기준을 흔들지 않아야 하는 기록용 */
+export const MARKET_DIV_REGULAR = 'J'
+
+/** NXT 계열 조회가 막힌 환경을 잠시 기억해 두는 시간 (ms) */
+const MARKET_DIV_DISABLE_MS = 10 * 60_000
+/** @type {Map<string, number>} `${env}:${div}` → 다시 시도해 볼 시각 */
+const marketDivDisabledUntil = new Map()
+
+/**
+ * @param {string} env
+ * @param {string} div
+ */
+function isMarketDivDisabled(env, div) {
+  if (div === 'J') return false
+  const until = marketDivDisabledUntil.get(`${env}:${div}`)
+  if (!until) return false
+  if (until > Date.now()) return true
+  marketDivDisabledUntil.delete(`${env}:${div}`)
+  return false
+}
+
+/** 종목 단위 미상장이 아니라 환경 자체가 막힌 신호 */
+const MARKET_DIV_UNSUPPORTED_RE = /모의|미지원|지원하지|유효하지 않은|not support|invalid/i
+
+/**
+ * @param {string} env
+ * @param {string} div
+ * @param {string} message
+ */
+function noteMarketDivFailure(env, div, message) {
+  if (!MARKET_DIV_UNSUPPORTED_RE.test(message)) return
+  marketDivDisabledUntil.set(`${env}:${div}`, Date.now() + MARKET_DIV_DISABLE_MS)
+  console.warn(`[KIS] ${env} 환경에서 ${div} 시세 미지원 판단 — 10분간 KRX 단독으로 조회`)
+}
+
+/**
+ * @param {string} env
+ * @param {string} div
+ */
+function clearMarketDivFailure(env, div) {
+  marketDivDisabledUntil.delete(`${env}:${div}`)
+}
+
 const KIS_RATE_LIMIT_RETRY_MS = [1000, 2000, 4000]
 const KIS_RATE_LIMIT_MAX_RETRIES = 3
 
@@ -403,24 +454,35 @@ async function kisGet({ appKey, appSecret, env, path, params, trId, kind }) {
 
 /**
  * 국내 주식 현재가 시세 [v1_국내주식-008]
+ *
+ * `marketDiv` 는 KIS 의 시장분류코드다. KRX 단독 `'J'`, 넥스트레이드 단독 `'NX'`,
+ * KRX·NXT 통합 `'UN'`. 통합은 양 시장 최우선 체결가 기준이라 표시용 대표가에
+ * 가깝고, NXT 프리마켓(08:00~08:50)·애프터마켓(15:30~20:00) 시간대도 값이 잡힌다.
+ * 일별 스냅샷처럼 날짜 간 비교 기준을 고정해야 하는 경로는 `'J'` 를 유지해야 한다.
+ *
  * @param {string} appKey
  * @param {string} appSecret
  * @param {string} env
  * @param {string} code6
- * @param {{ skipCache?: boolean }} [opts]
+ * @param {{ skipCache?: boolean, marketDiv?: 'J' | 'NX' | 'UN' }} [opts]
  */
 export async function inquireDomesticPrice(appKey, appSecret, env, code6, opts = {}) {
   const iscd = normalizeKisIscd(code6)
-  const cacheKey = `kis:quote:${env}:${iscd}`
+  const wantedDiv = DOMESTIC_MARKET_DIVS.has(opts.marketDiv) ? opts.marketDiv : 'J'
+  // 모의투자처럼 NXT 자체가 막힌 환경에서는 종목마다 2회씩 호출하게 되므로,
+  // 실패한 시장분류는 잠시 건너뛰고 KRX 단독으로 바로 간다.
+  const requestedDiv = isMarketDivDisabled(env, wantedDiv) ? 'J' : wantedDiv
+  const cacheKey = `kis:quote:${env}:${requestedDiv}:${iscd}`
 
-  const fetchQuote = async () => {
+  /** @param {'J' | 'NX' | 'UN'} marketDiv */
+  const fetchQuote = async (marketDiv) => {
       const data = await kisGet({
         appKey,
         appSecret,
         env,
         path: '/uapi/domestic-stock/v1/quotations/inquire-price',
         params: {
-          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_COND_MRKT_DIV_CODE: marketDiv,
           FID_INPUT_ISCD: iscd,
         },
         trId: 'FHKST01010100',
@@ -473,6 +535,7 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6, opts =
 
       return {
         code: iscd,
+        marketDiv,
         nameKr: resolveKoreanNameFromPriceOutput(o, iscd),
         market: o?.rprs_mrkt_kor_name || null,
         sector: o?.bstp_kor_isnm || null,
@@ -501,8 +564,28 @@ export async function inquireDomesticPrice(appKey, appSecret, env, code6, opts =
       }
   }
 
-  if (opts.skipCache) return await fetchQuote()
-  return await withCache(cacheKey, KIS_CACHE_TTL_QUOTE_MS, fetchQuote)
+  /**
+   * NXT 는 상장 종목이 KRX 전 종목이 아니고 모의투자 환경에서도 지원되지 않는다.
+   * 통합·NXT 조회가 실패하거나 값이 비면 KRX 단독으로 한 번 더 조회한다.
+   */
+  const fetchWithFallback = async () => {
+    if (requestedDiv === 'J') return await fetchQuote('J')
+    try {
+      const quote = await fetchQuote(requestedDiv)
+      clearMarketDivFailure(env, requestedDiv)
+      // NXT 미상장 종목은 오류 대신 0원·거래량 0 을 돌려준다.
+      if (!(Number(quote.price) > 0)) return await fetchQuote('J')
+      return quote
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      console.warn(`[KIS] ${iscd} ${requestedDiv} 시세 실패 — KRX 단독으로 폴백: ${msg}`)
+      noteMarketDivFailure(env, requestedDiv, msg)
+      return await fetchQuote('J')
+    }
+  }
+
+  if (opts.skipCache) return await fetchWithFallback()
+  return await withCache(cacheKey, KIS_CACHE_TTL_QUOTE_MS, fetchWithFallback)
 }
 
 // inquire-investor 의 *_tr_pbmn 은 원화가 아닌 축약 단위로 내려오므로 KRW로 보정

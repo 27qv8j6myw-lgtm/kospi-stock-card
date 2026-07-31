@@ -3,6 +3,7 @@
  */
 import { createClient } from '@supabase/supabase-js'
 import {
+  MARKET_DIV_DISPLAY,
   inquireDomesticPrice,
   inquireTradeValueRankTop,
 } from '../kisClient.mjs'
@@ -133,7 +134,9 @@ export async function fetchUserRecentViews(userId, appKey, appSecret, env) {
         return { ...s, currentPrice: null, changePct: null }
       }
       try {
-        const quote = await inquireDomesticPrice(appKey, appSecret, env, s.code)
+        const quote = await inquireDomesticPrice(appKey, appSecret, env, s.code, {
+          marketDiv: MARKET_DIV_DISPLAY,
+        })
         return {
           code: s.code,
           name: s.name,

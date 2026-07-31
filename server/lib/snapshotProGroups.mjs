@@ -1,6 +1,7 @@
 /**
  * Pro 그룹 일별 평가 스냅샷 (Vercel Cron · service_role)
  */
+import { MARKET_DIV_REGULAR } from '../kisClient.mjs'
 import { getKisQuote } from './toolExecutor.mjs'
 import { isValidStockCode, normalizeKisIscd } from './stockCode.mjs'
 
@@ -83,7 +84,9 @@ export async function runProGroupSnapshots(supabaseService, opts = {}) {
     if (priceCache.has(code6)) return priceCache.get(code6)
     let price = 0
     try {
-      const quote = await getKisQuote(code6)
+      // 스냅샷은 KRX 정규장 기준으로 고정한다. 통합가나 NXT 애프터마켓 가격이
+      // 섞이면 날짜별 비교 기준이 흔들린다.
+      const quote = await getKisQuote(code6, { marketDiv: MARKET_DIV_REGULAR })
       price = Number(quote?.currentPrice) || 0
     } catch {
       price = 0

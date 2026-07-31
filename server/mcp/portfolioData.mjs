@@ -7,7 +7,7 @@
 import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
-import { getKisQuote } from '../lib/toolExecutor.mjs'
+import { getKisDisplayQuote } from '../lib/toolExecutor.mjs'
 
 /** 응답 토큰 상한 — 커스텀 커넥터 응답 크기 제한을 넘기지 않도록 */
 const MAX_HOLDINGS = 50
@@ -62,7 +62,7 @@ async function fetchPrices(codes) {
     const results = await Promise.all(
       chunk.map(async (code) => {
         try {
-          const quote = await getKisQuote(code)
+          const quote = await getKisDisplayQuote(code)
           return [code, Number(quote?.currentPrice) || 0]
         } catch {
           return [code, 0]
@@ -165,6 +165,7 @@ export async function getPortfolio(userId) {
   return {
     asOf: seoulSnapshotDateKey(),
     currency: 'KRW',
+    priceBasis: 'KRX+NXT 통합 현재가 (NXT 시간외 체결 포함). 일별 스냅샷은 KRX 정규장 종가 기준',
     totals: compact({
       stockValue: won(stockValue),
       cash: won(cash),
@@ -261,6 +262,7 @@ export async function getSnapshots(userId, opts = {}) {
   return {
     currency: 'KRW',
     days,
+    priceBasis: 'KRX 정규장 종가 (날짜 간 비교 기준을 고정하려고 NXT 시간외는 제외)',
     rows,
     ...(first && last && first !== last
       ? {

@@ -6,6 +6,7 @@ Claude가 Supabase의 포트폴리오 데이터를 직접 읽을 수 있는 읽�
 
 - 엔드포인트: `POST https://signal15.vercel.app/api/mcp` (stateless Streamable HTTP)
 - 도구: `get_portfolio`(보유·현금·평가손익), `get_snapshots`(일별 자산 추이), `get_trades`(최근 매매), `get_quote`(종목 현재가 — 코드·종목명 모두 가능), `get_watchlist`(관심종목 + 시세)
+- 시세 기준: 현재가는 KRX+NXT 통합(`UN`)이라 NXT 프리마켓 08:00~08:50·애프터마켓 15:30~20:00 체결가도 잡힌다. `get_quote` 는 `market: "krx" | "nxt"` 로 기준을 바꿀 수 있고, `get_snapshots` 는 KRX 정규장 종가 기준으로 고정된다 (아래 [시세 기준 이중 트랙](#시세-기준-이중-트랙) 참고)
 - 구현: [api/mcp.mjs](api/mcp.mjs) 인증·트랜스포트, [server/mcp/mcpServer.mjs](server/mcp/mcpServer.mjs) 도구 정의, [server/mcp/portfolioData.mjs](server/mcp/portfolioData.mjs) 포트폴리오 집계, [server/mcp/quoteData.mjs](server/mcp/quoteData.mjs) 시세·관심종목
 
 ### 필요한 Vercel 환경변수
@@ -66,6 +67,18 @@ claude.ai 커스텀 커넥터는 정적 헤더 입력란이 없고 OAuth 만 받
 2. claude.ai → 설정 → 커넥터 → 커스텀 커넥터 추가 → URL 에 `https://signal15.vercel.app/api/mcp` 입력. 클라이언트 ID·시크릿은 비워둔다 (동적 등록으로 처리된다)
 
 연결을 누르면 승인 창이 뜨고, 로그인하면 세 도구가 붙는다. 토큰 수명은 액세스 1시간, 리프레시 30일이다.
+
+## 시세 기준 이중 트랙
+
+KIS 국내 현재가 계열 API 의 시장분류코드(`FID_COND_MRKT_DIV_CODE`)를 용도에 따라 나눠 쓴다. 상수는 [server/kisClient.mjs](server/kisClient.mjs) 의 `MARKET_DIV_DISPLAY`(`UN`)·`MARKET_DIV_REGULAR`(`J`).
+
+| 용도 | 기준 | 이유 |
+| --- | --- | --- |
+| 화면·MCP 표시용 현재가 | `UN` (KRX+NXT 통합) | NXT 프리마켓 08:00~08:50, 애프터마켓 15:30~20:00 체결가까지 반영돼 하루 12시간 시세가 된다. 밤사이 뉴스에 대한 반응을 다음 날 개장 전이나 당일 저녁에 먼저 읽을 수 있다 |
+| 일별 스냅샷 기록 | `J` (KRX 정규장) | 스냅샷 cron 은 15:40(KST)에 도는데 그때 NXT 애프터마켓이 열려 있다. 통합가를 쓰면 날짜별 비교 기준이 흔들린다 |
+| 스크리닝·지표 계산 | `J` | 일봉·투자자 동향 등 다른 지표가 모두 KRX 기준이라 섞으면 안 된다 |
+
+표시용 경로는 `getKisDisplayQuote()` 또는 `fetchRealtimePrices(codes, { marketDiv: MARKET_DIV_DISPLAY })` 를 쓴다. 폴백은 두 겹이다. NXT 미상장 종목은 오류 대신 0원을 돌려주므로 가격이 0 이면 KRX 단독으로 재조회하고, 모의투자처럼 NXT 자체가 막힌 환경은 실패를 10분간 기억해 재시도 비용을 줄인다.
 
 ---
 

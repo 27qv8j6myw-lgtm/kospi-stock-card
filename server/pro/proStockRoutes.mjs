@@ -12,7 +12,7 @@ import {
   registerStockMaster,
 } from '../lib/stockMasterKisLookup.mjs'
 import { calculateBollinger, calculateMACD, calculateRSI } from '../lib/technicalIndicators.mjs'
-import { executeTool, getKisQuote } from '../lib/toolExecutor.mjs'
+import { executeTool, getKisDisplayQuote } from '../lib/toolExecutor.mjs'
 import { getProStockSummaryExtras } from '../lib/proStockSummaryExtras.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 
@@ -497,7 +497,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     }
 
     try {
-      const q = await getKisQuote(code)
+      const q = await getKisDisplayQuote(code)
       res.json({
         quote: {
           currentPrice: q.currentPrice,

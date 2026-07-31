@@ -4,10 +4,17 @@
  * 대화에서 "삼성전자 지금 얼마야" 처럼 이름으로 물어보는 경우가 많으므로
  * 6자리 코드와 종목명을 모두 받아 코드로 해석한 뒤 조회한다.
  */
+import { MARKET_DIV_DISPLAY } from '../kisClient.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { searchStocksMaster } from '../lib/stocksMasterSearch.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { getKisQuote } from '../lib/toolExecutor.mjs'
+
+/** 도구 입력의 시장 선택값 → KIS 시장분류코드 */
+const MARKET_DIV_BY_NAME = { unified: 'UN', krx: 'J', nxt: 'NX' }
+
+/** 응답에 어떤 기준의 가격인지 남긴다 — 통합가와 정규장 종가를 혼동하지 않도록 */
+const BASIS_LABEL = { UN: 'KRX+NXT 통합', J: 'KRX 정규장', NX: 'NXT' }
 
 /** 한 번에 조회할 종목 상한 — 응답 크기와 KIS 레이트 리밋을 함께 고려 */
 const MAX_SYMBOLS = 20
@@ -110,12 +117,17 @@ async function fetchNames(codes) {
   return names
 }
 
-/** @param {string} code */
-async function quoteOne(code) {
-  const q = await getKisQuote(code)
+/**
+ * @param {string} code
+ * @param {'J' | 'NX' | 'UN'} marketDiv
+ */
+async function quoteOne(code, marketDiv) {
+  const q = await getKisQuote(code, { marketDiv })
+  const used = /** @type {'J' | 'NX' | 'UN'} */ (q.marketDiv ?? 'J')
   return compact({
     code: q.code,
     name: q.name,
+    basis: BASIS_LABEL[used] ?? used,
     market: q.market,
     sector: q.sector,
     price: won(q.currentPrice),
@@ -139,9 +151,10 @@ async function quoteOne(code) {
 /**
  * 코드 목록의 현재가를 소량씩 병렬 조회. 실패한 종목은 null 로 남긴다.
  * @param {string[]} codes
+ * @param {'J' | 'NX' | 'UN'} [marketDiv]
  * @returns {Promise<Map<string, Record<string, unknown> | null>>}
  */
-async function quoteMany(codes) {
+async function quoteMany(codes, marketDiv = MARKET_DIV_DISPLAY) {
   const unique = [...new Set(codes)]
   /** @type {Map<string, Record<string, unknown> | null>} */
   const out = new Map()
@@ -151,7 +164,7 @@ async function quoteMany(codes) {
     const results = await Promise.all(
       chunk.map(async (code) => {
         try {
-          return /** @type {const} */ ([code, await quoteOne(code)])
+          return /** @type {const} */ ([code, await quoteOne(code, marketDiv)])
         } catch (e) {
           console.warn('[mcp/quote]', code, e instanceof Error ? e.message : String(e))
           return /** @type {const} */ ([code, null])
@@ -167,8 +180,10 @@ async function quoteMany(codes) {
 /**
  * 종목 현재가. 코드와 종목명을 섞어 넣을 수 있다.
  * @param {string[]} symbols
+ * @param {{ market?: 'unified' | 'krx' | 'nxt' }} [opts]
  */
-export async function getQuotes(symbols) {
+export async function getQuotes(symbols, opts = {}) {
+  const marketDiv = MARKET_DIV_BY_NAME[opts.market ?? ''] ?? MARKET_DIV_DISPLAY
   const list = (Array.isArray(symbols) ? symbols : [symbols])
     .map((s) => String(s ?? '').trim())
     .filter(Boolean)
@@ -188,7 +203,7 @@ export async function getQuotes(symbols) {
   })
 
   const codes = targets.map((t) => t.code)
-  const [quotes, names] = await Promise.all([quoteMany(codes), fetchNames(codes)])
+  const [quotes, names] = await Promise.all([quoteMany(codes, marketDiv), fetchNames(codes)])
 
   const items = targets.map((t) => {
     const quote = quotes.get(t.code)
@@ -201,7 +216,10 @@ export async function getQuotes(symbols) {
     asOf: seoulNow(),
     timezone: 'Asia/Seoul',
     currency: 'KRW',
-    note: '장중에는 실시간에 가까운 값, 장 마감 후에는 종가입니다',
+    note:
+      marketDiv === 'J'
+        ? 'KRX 정규장 기준입니다 (09:00~15:30, 이후는 종가)'
+        : 'KRX+NXT 통합 기준입니다. NXT 프리마켓 08:00~08:50, 애프터마켓 15:30~20:00 체결가도 반영되고, NXT 미상장 종목은 KRX 값으로 폴백합니다 (종목별 basis 확인)',
     quotes: items,
     unresolved: unresolved.length > 0 ? unresolved : null,
   })
@@ -250,6 +268,7 @@ export async function getWatchlist(userId, opts = {}) {
       name: names.get(r.code) || quote?.name || r.code,
       note: r.note,
       addedAt: r.addedAt,
+      basis: quote?.basis ?? null,
       price: quote?.price ?? null,
       changePct: quote?.changePct ?? null,
       dayHigh: quote?.dayHigh ?? null,
@@ -266,6 +285,9 @@ export async function getWatchlist(userId, opts = {}) {
     timezone: 'Asia/Seoul',
     currency: 'KRW',
     count: items.length,
+    note: includeQuotes
+      ? 'KRX+NXT 통합 기준이라 NXT 프리마켓 08:00~08:50, 애프터마켓 15:30~20:00 체결가도 반영됩니다'
+      : null,
     truncated: (data ?? []).length >= MAX_WATCHLIST ? true : null,
     items,
   })

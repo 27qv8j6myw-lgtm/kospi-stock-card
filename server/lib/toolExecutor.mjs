@@ -1,4 +1,5 @@
 import {
+  MARKET_DIV_DISPLAY,
   inquireDomesticPrice,
   inquireDailyBars,
   inquireInvestorByStock,
@@ -65,11 +66,15 @@ async function resolveDisplayName(code6, ...candidates) {
 
 /**
  * @param {string} code6
+ * @param {{ marketDiv?: 'J' | 'NX' | 'UN' }} [opts] 기본값은 KRX 단독(`'J'`).
+ *   표시용 통합가가 필요하면 `getKisDisplayQuote` 를 쓴다.
  */
-export async function getKisQuote(code6) {
+export async function getKisQuote(code6, opts = {}) {
   const code = normalizeCode(code6)
   const { appKey, appSecret, env } = getKisEnv()
-  const quote = await inquireDomesticPrice(appKey, appSecret, env, code)
+  const quote = await inquireDomesticPrice(appKey, appSecret, env, code, {
+    marketDiv: opts.marketDiv,
+  })
   const raw = quote.raw
   if (process.env.KIS_DEBUG_QUOTE === '1' && raw && typeof raw === 'object') {
     logKisFrgnFields(code, raw)
@@ -88,6 +93,7 @@ export async function getKisQuote(code6) {
   return {
     code,
     name: nameKr || code,
+    marketDiv: quote.marketDiv ?? 'J',
     market: quote.market ? String(quote.market).trim() : null,
     sector: quote.sector ? String(quote.sector).trim() : null,
     currentPrice: quote.price,
@@ -110,6 +116,16 @@ export async function getKisQuote(code6) {
     foreignHoldingQty: quote.foreignHoldingQty ?? null,
     foreignNetBuy: quote.foreignNetBuy ?? null,
   }
+}
+
+/**
+ * 표시용 현재가 — KRX·NXT 통합가. NXT 프리마켓(08:00~08:50)과
+ * 애프터마켓(15:30~20:00) 시간대에도 값이 잡힌다. NXT 미지원 종목·환경은
+ * KIS 클라이언트가 KRX 단독으로 폴백한다.
+ * @param {string} code6
+ */
+export async function getKisDisplayQuote(code6) {
+  return await getKisQuote(code6, { marketDiv: MARKET_DIV_DISPLAY })
 }
 
 /**

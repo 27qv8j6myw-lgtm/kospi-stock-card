@@ -50,7 +50,7 @@ export function createSignal15McpServer(userId) {
     {
       title: '현재 포트폴리오',
       description:
-        '보유 종목(수량·평단·현재가·평가액·비중·수익률), 그룹별 현금과 초기자본, 전체 합계(평가액·매입액·평가손익·실현손익)를 반환합니다. 금액 단위는 원(KRW). "지금 포트폴리오 기준으로" 같은 요청에 사용하세요.',
+        '보유 종목(수량·평단·현재가·평가액·비중·수익률), 그룹별 현금과 초기자본, 전체 합계(평가액·매입액·평가손익·실현손익)를 반환합니다. 금액 단위는 원(KRW). 현재가는 KRX+NXT 통합 기준이라 NXT 시간외 체결도 반영됩니다. "지금 포트폴리오 기준으로" 같은 요청에 사용하세요.',
       annotations: READ_ONLY,
     },
     async () => {
@@ -67,7 +67,7 @@ export function createSignal15McpServer(userId) {
     {
       title: '일별 자산 추이',
       description:
-        '일별 평가 스냅샷(날짜, 총자산, 주식 평가액, 현금, 초기자본 대비 수익률)을 오래된 날짜부터 반환합니다. 성과 추이나 특정 기간 변화를 볼 때 사용하세요. 장 마감 후 하루 1회 기록됩니다.',
+        '일별 평가 스냅샷(날짜, 총자산, 주식 평가액, 현금, 초기자본 대비 수익률)을 오래된 날짜부터 반환합니다. 성과 추이나 특정 기간 변화를 볼 때 사용하세요. KRX 정규장 종가 기준으로 하루 1회(15:40) 기록되므로 get_portfolio 의 통합 현재가와는 기준이 다릅니다.',
       inputSchema: z.object({
         days: z
           .number()
@@ -121,19 +121,25 @@ export function createSignal15McpServer(userId) {
     {
       title: '종목 현재가',
       description:
-        '국내 종목의 현재가와 시세 지표(전일대비·등락률·시가·고가·저가·거래량·거래대금·시가총액·PER·PBR·EPS·BPS·배당수익률·외국인 지분율)를 반환합니다. 6자리 종목코드와 종목명을 섞어 넣을 수 있습니다(예: ["005930", "SK하이닉스"]). 보유하지 않은 종목도 조회됩니다. 장중에는 실시간에 가까운 값, 장 마감 후에는 종가입니다.',
+        '국내 종목의 현재가와 시세 지표(전일대비·등락률·시가·고가·저가·거래량·거래대금·시가총액·PER·PBR·EPS·BPS·배당수익률·외국인 지분율)를 반환합니다. 6자리 종목코드와 종목명을 섞어 넣을 수 있습니다(예: ["005930", "SK하이닉스"]). 보유하지 않은 종목도 조회됩니다. 기본은 KRX+NXT 통합가라 NXT 프리마켓(08:00~08:50)·애프터마켓(15:30~20:00) 체결가도 잡힙니다. 응답의 basis 필드가 실제 적용된 기준입니다.',
       inputSchema: z.object({
         symbols: z
           .array(z.string())
           .min(1)
           .max(20)
           .describe('6자리 종목코드 또는 종목명 목록 (최대 20개)'),
+        market: z
+          .enum(['unified', 'krx', 'nxt'])
+          .optional()
+          .describe(
+            '시세 기준 (기본 unified = KRX+NXT 통합). 정규장 종가 기준만 보려면 krx, 시간외 NXT 체결만 보려면 nxt',
+          ),
       }),
       annotations: READ_ONLY,
     },
-    async ({ symbols }) => {
+    async ({ symbols, market }) => {
       try {
-        return jsonResult(await getQuotes(symbols))
+        return jsonResult(await getQuotes(symbols, { market }))
       } catch (e) {
         return errorResult(e)
       }

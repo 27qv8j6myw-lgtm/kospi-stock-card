@@ -226,11 +226,13 @@ function toNum(v) {
 /**
  * 종목 코드 리스트로 실시간 시세 일괄 조회 (KIS 캐시 + 병렬).
  * @param {string[]} codes
- * @param {{ skipCache?: boolean }} [opts]
+ * @param {{ skipCache?: boolean, marketDiv?: 'J' | 'NX' | 'UN' }} [opts]
+ *   `marketDiv` 기본값은 KRX 단독. 화면 표시용은 `MARKET_DIV_DISPLAY` 를 넘긴다.
  * @returns {Promise<Map<string, { code: string, currentPrice: number | null, changePct: number | null, changeAmount: number | null, prevClose: number | null, volume: number | null }>>}
  */
 export async function fetchRealtimePrices(codes, opts = {}) {
   const skipCache = Boolean(opts.skipCache)
+  const marketDiv = opts.marketDiv
   const creds = getKisCredentials()
   const priceMap = new Map()
   if (!creds) return priceMap
@@ -259,7 +261,7 @@ export async function fetchRealtimePrices(codes, opts = {}) {
             creds.appSecret,
             creds.env,
             code,
-            { skipCache },
+            { skipCache, marketDiv },
           )
           const currentPrice = toNum(q.price)
           const changePct = toNum(q.changePercent)

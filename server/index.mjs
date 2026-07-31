@@ -6,6 +6,7 @@ import dotenv from 'dotenv'
 import express from 'express'
 import { createClient } from '@supabase/supabase-js'
 import {
+  MARKET_DIV_DISPLAY,
   inquireChartByTimeframe,
   inquireDailyBars,
   inquireDomesticPrice,
@@ -1440,7 +1441,9 @@ app.get('/api/quote', async (req, res) => {
   }
 
   try {
-    const q = await inquireDomesticPrice(appKey, appSecret, env, code)
+    const q = await inquireDomesticPrice(appKey, appSecret, env, code, {
+      marketDiv: MARKET_DIV_DISPLAY,
+    })
     if (!Number.isFinite(Number(q?.price)) || Number(q?.price) <= 0) {
       if (await tryYahooQuoteFallback()) return
     }
@@ -1687,7 +1690,9 @@ const handleUserRecentViews = async (req, res) => {
           return { ...s, currentPrice: null, changePct: null }
         }
         try {
-          const quote = await inquireDomesticPrice(appKey, appSecret, env, s.code)
+          const quote = await inquireDomesticPrice(appKey, appSecret, env, s.code, {
+            marketDiv: MARKET_DIV_DISPLAY,
+          })
           return {
             ...s,
             currentPrice: quote.price,
