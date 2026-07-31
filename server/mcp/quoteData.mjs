@@ -79,6 +79,37 @@ async function resolveSymbol(symbol) {
   return { code, matchedName: String(picked?.name ?? '').trim() }
 }
 
+/**
+ * KIS 현재가 응답에는 한글 종목명이 없을 때가 많아 마스터에서 채운다.
+ * 카탈로그를 새로 쓰지 않도록 조회만 한다 (도구는 읽기 전용).
+ * @param {string[]} codes
+ * @returns {Promise<Map<string, string>>}
+ */
+async function fetchNames(codes) {
+  /** @type {Map<string, string>} */
+  const names = new Map()
+  const unique = [...new Set(codes)]
+  if (unique.length === 0) return names
+
+  const supabase = getSupabaseService()
+  if (!supabase) return names
+
+  const { data, error } = await supabase
+    .from('stocks_master')
+    .select('code, name')
+    .in('code', unique)
+  if (error) {
+    console.warn('[mcp/quote] 종목명 조회 실패:', error.message)
+    return names
+  }
+  for (const row of data ?? []) {
+    const code = normalizeKisIscd(row.code)
+    const name = String(row.name ?? '').trim()
+    if (code && name && name !== code) names.set(code, name)
+  }
+  return names
+}
+
 /** @param {string} code */
 async function quoteOne(code) {
   const q = await getKisQuote(code)
@@ -149,19 +180,21 @@ export async function getQuotes(symbols) {
 
   /** @type {{ input: string, reason: string }[]} */
   const unresolved = []
-  /** @type {{ input: string, code: string }[]} */
+  /** @type {{ input: string, code: string, matchedName: string }[]} */
   const targets = []
   resolved.forEach((r, i) => {
     if ('error' in r) unresolved.push({ input: list[i], reason: r.error })
-    else targets.push({ input: list[i], code: r.code })
+    else targets.push({ input: list[i], code: r.code, matchedName: r.matchedName ?? '' })
   })
 
-  const quotes = await quoteMany(targets.map((t) => t.code))
+  const codes = targets.map((t) => t.code)
+  const [quotes, names] = await Promise.all([quoteMany(codes), fetchNames(codes)])
 
   const items = targets.map((t) => {
     const quote = quotes.get(t.code)
-    if (quote) return quote
-    return { code: t.code, error: '시세 조회 실패' }
+    if (!quote) return { code: t.code, error: '시세 조회 실패' }
+    const better = names.get(t.code) || t.matchedName
+    return better ? { ...quote, name: better } : quote
   })
 
   return compact({
@@ -203,27 +236,18 @@ export async function getWatchlist(userId, opts = {}) {
     return { asOf: seoulNow(), count: 0, items: [] }
   }
 
-  // 시세를 생략하는 경우에도 이름은 보여줘야 하므로 마스터에서 한 번에 가져온다.
-  const { data: master } = await supabase
-    .from('stocks_master')
-    .select('code, name')
-    .in(
-      'code',
-      rows.map((r) => r.code),
-    )
-  /** @type {Map<string, string>} */
-  const nameByCode = new Map()
-  for (const m of master ?? []) {
-    nameByCode.set(normalizeKisIscd(m.code), String(m.name ?? '').trim())
-  }
-
-  const quotes = includeQuotes ? await quoteMany(rows.map((r) => r.code)) : new Map()
+  const codes = rows.map((r) => r.code)
+  // 시세를 생략해도 이름은 보여줘야 하므로 이름은 항상 가져온다.
+  const [quotes, names] = await Promise.all([
+    includeQuotes ? quoteMany(codes) : Promise.resolve(new Map()),
+    fetchNames(codes),
+  ])
 
   const items = rows.map((r) => {
     const quote = quotes.get(r.code)
     return compact({
       code: r.code,
-      name: quote?.name || nameByCode.get(r.code) || r.code,
+      name: names.get(r.code) || quote?.name || r.code,
       note: r.note,
       addedAt: r.addedAt,
       price: quote?.price ?? null,
