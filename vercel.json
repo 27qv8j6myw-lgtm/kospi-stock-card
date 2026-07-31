@@ -24,6 +24,9 @@
     },
     "api/mcp.mjs": {
       "maxDuration": 60
+    },
+    "api/oauth/*.mjs": {
+      "maxDuration": 10
     }
   },
   "crons": [
@@ -37,6 +40,22 @@
     }
   ],
   "rewrites": [
+    {
+      "source": "/.well-known/oauth-authorization-server",
+      "destination": "/api/oauth/metadata?doc=as"
+    },
+    {
+      "source": "/.well-known/oauth-authorization-server/api/mcp",
+      "destination": "/api/oauth/metadata?doc=as"
+    },
+    {
+      "source": "/.well-known/oauth-protected-resource",
+      "destination": "/api/oauth/metadata?doc=prm"
+    },
+    {
+      "source": "/.well-known/oauth-protected-resource/api/mcp",
+      "destination": "/api/oauth/metadata?doc=prm"
+    },
     {
       "source": "/((?!api/).*)",
       "destination": "/index.html"

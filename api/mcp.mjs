@@ -4,12 +4,20 @@
  * stateless Streamable HTTP: 요청마다 서버·트랜스포트를 새로 만든다.
  * 서버리스에서는 인스턴스가 요청 간에 살아있다고 가정할 수 없다.
  *
- * 인증은 `Authorization: Bearer <MCP_TOKEN>` 헤더만 허용한다. MCP 인증 스펙이
- * 토큰을 URL 쿼리에 넣는 것을 금지하므로 쿼리 파라미터는 받지 않는다.
+ * 인증은 두 가지를 받는다. 둘 다 `Authorization: Bearer` 헤더로만 받으며, MCP 인증
+ * 스펙이 토큰을 URL 쿼리에 넣는 것을 금지하므로 쿼리 파라미터는 지원하지 않는다.
+ *   1. OAuth 액세스 토큰 — claude.ai 웹·모바일이 쓰는 정식 경로
+ *   2. 고정 `MCP_TOKEN` — 데스크톱 mcp-remote·Claude Code 용
  */
 import { timingSafeEqual } from 'node:crypto'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import { createSignal15McpServer } from '../server/mcp/mcpServer.mjs'
+import {
+  SCOPE_READ,
+  resolveResourceMetadataUrl,
+  resolveResourceUrl,
+} from '../server/mcp/oauthConfig.mjs'
+import { verifyAccessToken } from '../server/mcp/oauthTokens.mjs'
 
 /** @param {string | undefined} raw */
 function cleanEnv(raw) {
@@ -33,16 +41,49 @@ function safeEqual(got, expected) {
 }
 
 /** @param {import('http').IncomingMessage} req */
-function isAuthorized(req) {
-  const expected = cleanEnv(process.env.MCP_TOKEN)
-  if (!expected) return false
+function bearerToken(req) {
   const raw = req.headers?.authorization
   const header = Array.isArray(raw) ? raw[0] : raw
-  const token = String(header ?? '')
+  return String(header ?? '')
     .replace(/^Bearer\s+/i, '')
     .trim()
-  if (!token) return false
-  return safeEqual(token, expected)
+}
+
+/**
+ * 정적 토큰이면 즉시 통과, 아니면 OAuth 액세스 토큰으로 검증한다.
+ * 어느 쪽이든 조회 대상은 `MCP_USER_ID` 로만 결정된다.
+ * @param {import('http').IncomingMessage} req
+ * @returns {{ ok: true } | { ok: false, tokenGiven: boolean }}
+ */
+function authorize(req) {
+  const token = bearerToken(req)
+  if (!token) return { ok: false, tokenGiven: false }
+
+  const staticToken = cleanEnv(process.env.MCP_TOKEN)
+  if (staticToken && safeEqual(token, staticToken)) return { ok: true }
+
+  const owner = cleanEnv(process.env.MCP_USER_ID)
+  const claims = verifyAccessToken(token, { audience: resolveResourceUrl(req) })
+  if (claims && owner && claims.sub === owner) return { ok: true }
+
+  return { ok: false, tokenGiven: true }
+}
+
+/**
+ * 401 에는 반드시 resource_metadata 포인터를 넣는다. 이게 없으면 Claude 가
+ * 인증 서버를 못 찾고 "서버에 연결할 수 없습니다" 로 끝난다.
+ * @param {import('http').IncomingMessage} req
+ * @param {import('http').ServerResponse} res
+ * @param {boolean} tokenGiven
+ */
+function sendUnauthorized(req, res, tokenGiven) {
+  const parts = [`resource_metadata="${resolveResourceMetadataUrl(req)}"`, `scope="${SCOPE_READ}"`]
+  if (tokenGiven) parts.unshift('error="invalid_token"')
+  res.statusCode = 401
+  res.setHeader('WWW-Authenticate', `Bearer ${parts.join(', ')}`)
+  res.setHeader('Content-Type', 'application/json; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.end(JSON.stringify({ error: tokenGiven ? 'invalid_token' : 'unauthorized' }))
 }
 
 /**
@@ -50,11 +91,9 @@ function isAuthorized(req) {
  * @param {import('http').ServerResponse} res
  */
 export default async function handler(req, res) {
-  if (!isAuthorized(req)) {
-    res.statusCode = 401
-    res.setHeader('WWW-Authenticate', 'Bearer realm="signal15-mcp"')
-    res.setHeader('Content-Type', 'application/json; charset=utf-8')
-    res.end(JSON.stringify({ error: 'unauthorized' }))
+  const auth = authorize(req)
+  if (!auth.ok) {
+    sendUnauthorized(req, res, auth.tokenGiven)
     return
   }
 
