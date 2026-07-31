@@ -97,6 +97,24 @@ export default async function handler(req, res) {
     return
   }
 
+  // 서버가 먼저 말을 거는 일이 없으므로 SSE 스트림(GET)과 세션 종료(DELETE)는 열지
+  // 않는다. 스펙이 허용하는 405 로 즉시 끊어야 한다. 열어두면 서버리스 함수가
+  // 타임아웃까지 매달려 있고 클라이언트는 연결 실패로 판정한다.
+  if (req.method === 'GET' || req.method === 'DELETE') {
+    res.statusCode = 405
+    res.setHeader('Allow', 'POST')
+    res.setHeader('Content-Type', 'application/json; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-store')
+    res.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Method not allowed: 이 엔드포인트는 POST 만 받습니다' },
+        id: null,
+      }),
+    )
+    return
+  }
+
   // 조회 대상 사용자는 환경변수로만 결정한다 (요청 본문으로 바꿀 수 없음).
   const userId = cleanEnv(process.env.MCP_USER_ID)
   if (!userId) {
