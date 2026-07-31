@@ -211,6 +211,17 @@ export default async function handler(req, res) {
   const raw = isPost ? await readBody(req) : Object.fromEntries(queryOf(req).entries())
   const params = collect(/** @type {Record<string, string>} */ (raw))
   params.scope = normalizeScope(params.scope)
+  console.log(
+    `[oauth/authorize] ${req.method}`,
+    JSON.stringify({
+      client_id: params.client_id,
+      redirect_uri: params.redirect_uri,
+      scope: params.scope,
+      resource: params.resource,
+      has_challenge: Boolean(params.code_challenge),
+      method: params.code_challenge_method,
+    }),
+  )
 
   let checked
   try {
