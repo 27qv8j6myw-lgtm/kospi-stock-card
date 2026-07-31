@@ -88,6 +88,16 @@ x축은 09:00 기준 경과 분이라 프리마켓이 음수(08:00 = -60), 애�
 
 `기준` 시각 옆의 `NXT 시간외` 배지는 [server/lib/quoteBasis.mjs](server/lib/quoteBasis.mjs) 의 `quoteBasisLabel()` 판정을 그대로 쓴다. 순매수 상위(`/api/pro-top-flow`)는 집계 자체가 KRX 정규장 누적이라 마감 후 굳으므로, 순위는 그대로 두고 표시 가격만 통합 시세로 덮어쓴다.
 
+### 프로 종목카드 차트
+
+차트 탭은 두 종류를 쓴다. `당일` 은 선 + 거래량 ([src/components/stock/chart/IntradayChartView.tsx](src/components/stock/chart/IntradayChartView.tsx)), `1W`~`1Y` 는 일봉 캔들 + 거래량 ([src/components/stock/chart/DailyCandleChartView.tsx](src/components/stock/chart/DailyCandleChartView.tsx)) 이다. 둘 다 가격 패널과 거래량 패널을 위아래로 나눠 그리고, `syncId` 로 크로스헤어를 함께 움직인다. 두 패널의 x 위치가 어긋나지 않도록 가격 패널의 y축 폭(52px)을 거래량 패널의 우측 여백으로 그대로 준다.
+
+캔들은 recharts 의 범위 막대(`dataKey` 가 `[low, high]` 를 돌려주는 형태)에 커스텀 shape 을 씌워 그린다 ([src/components/stock/chart/CandleShape.tsx](src/components/stock/chart/CandleShape.tsx)). 막대가 저가~고가 구간을 차지하므로 그 안에서 시가·종가 위치를 비례로 계산한다. 이동평균은 서버에서 계산해 내려준다 — `fetchProChartBars(code, days, { withMa: true })` 가 20일 평균을 위해 선행 봉 25개를 더 받아 계산한 뒤 표시 구간만 잘라내므로, 1W 처럼 짧은 구간에서도 첫 봉부터 이평선이 있다.
+
+당일 차트의 기준선은 시가가 아니라 전일 종가다(등락률과 기준을 맞춘다). Yahoo `chartPreviousClose` 를 `prevClose` 로 함께 내려주고, 없으면 첫 슬롯 값을 기준으로 삼아 라벨을 `시작` 으로 바꾼다. 시간외 구간은 `ReferenceArea` 음영으로 구분한다.
+
+recharts 3 의 차트 이벤트는 payload 없이 활성 인덱스만 주므로, 크로스헤어 가격 라벨은 [src/components/stock/chart/activeRow.ts](src/components/stock/chart/activeRow.ts) 로 인덱스를 원본 배열에 대입해 구한다.
+
 ---
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

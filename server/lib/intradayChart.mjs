@@ -25,23 +25,30 @@ function offsetToClock(offset) {
 }
 
 /**
- * 체결 포인트를 슬롯 간격으로 전방 채움한다.
- * @param {Array<{ minute: number, price: number }>} points
+ * 체결 포인트를 슬롯 간격으로 전방 채움한다. 거래량은 슬롯 안에서 합산한다.
+ * @param {Array<{ minute: number, price: number, volume?: number }>} points
  * @param {{ fromOffset: number, toOffset: number, step: number, seed: number | null }} range
  */
 function fillSlots(points, { fromOffset, toOffset, step, seed }) {
   const sorted = [...points].sort((a, b) => a.minute - b.minute)
-  /** @type {Array<{ x: number, time: string, value: number | null }>} */
+  /** @type {Array<{ x: number, time: string, value: number | null, volume: number | null }>} */
   const slots = []
   let carry = seed
   let i = 0
 
   for (let off = fromOffset; off <= toOffset; off += step) {
+    let volume = 0
     while (i < sorted.length && sorted[i].minute - SESSION_START_MIN <= off) {
       carry = sorted[i].price
+      volume += Number(sorted[i].volume) || 0
       i += 1
     }
-    slots.push({ x: off, time: offsetToClock(off), value: carry })
+    slots.push({
+      x: off,
+      time: offsetToClock(off),
+      value: carry,
+      volume: carry == null ? null : volume,
+    })
   }
   return slots
 }

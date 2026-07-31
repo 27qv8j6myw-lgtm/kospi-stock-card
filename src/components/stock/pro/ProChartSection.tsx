@@ -59,7 +59,7 @@ export function ProChartSection({ code, market, week52, currentPrice }: Props) {
             ) : null}
           </div>
           <div className={`${PRO_CHART_HEIGHT} w-full shrink-0 overflow-hidden`}>
-            <IntradayChartBody code={code} market={market} currentPrice={currentPrice} />
+            <IntradayChartBody code={code} market={market} compact />
           </div>
         </div>
 

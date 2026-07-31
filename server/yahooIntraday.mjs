@@ -97,6 +97,7 @@ export async function getIntradayChartFromYahoo(code6, suffix, interval = '5m') 
   const quote = result?.indicators?.quote?.[0] || {}
   const closes = Array.isArray(quote.close) ? quote.close : []
   const opens = Array.isArray(quote.open) ? quote.open : []
+  const volumes = Array.isArray(quote.volume) ? quote.volume : []
 
   const data = []
   for (let i = 0; i < tsArr.length; i++) {
@@ -107,10 +108,12 @@ export async function getIntradayChartFromYahoo(code6, suffix, interval = '5m') 
     const kstMin = kstMinutesFromDate(new Date(ms))
     const sessionOff = kstMin - SESSION_START_MIN
     if (sessionOff < 0 || sessionOff > SESSION_END_MIN - SESSION_START_MIN) continue
+    const vol = Number(volumes[i])
     data.push({
       time: minutesToHHMM(kstMin),
       timestamp: ms,
       price: Math.round(Number(close)),
+      volume: Number.isFinite(vol) && vol > 0 ? Math.round(vol) : 0,
       sessionMinuteOffset: sessionOff, // 9:00 이후 경과 분 (5 이상)
     })
   }
@@ -130,12 +133,19 @@ export async function getIntradayChartFromYahoo(code6, suffix, interval = '5m') 
     openPrice = Math.round(Number(metaOpen))
   }
 
+  const prevCloseRaw = result?.meta?.chartPreviousClose ?? result?.meta?.previousClose
+  const prevClose =
+    prevCloseRaw != null && Number.isFinite(Number(prevCloseRaw))
+      ? Math.round(Number(prevCloseRaw))
+      : null
+
   const { iso } = kstDateParts()
   const marketStatus = krxMarketStatus()
 
   return {
     date: iso,
     openPrice: openPrice ?? 0,
+    prevClose,
     marketStatus,
     interval,
     suffix,
@@ -165,8 +175,11 @@ export function buildIntradaySlotSeries(yahooResult, marketStatusOverride, stepM
   let carry = null
   const series = []
   for (const off of offsets) {
+    // 가격은 마지막 체결을 이어가고, 거래량은 슬롯 안에서 합산한다
+    let slotVolume = 0
     while (j < sorted.length && sorted[j].sessionMinuteOffset <= off) {
       carry = sorted[j].price
+      slotVolume += Number(sorted[j].volume) || 0
       j += 1
     }
     let value = null
@@ -177,10 +190,18 @@ export function buildIntradaySlotSeries(yahooResult, marketStatusOverride, stepM
       x: off,
       time: minutesToHHMM(SESSION_START_MIN + off),
       value,
+      volume: value == null ? null : slotVolume,
     })
   }
 
-  return { series, openPrice, marketStatus, date: yahooResult.date, stepMinutes }
+  return {
+    series,
+    openPrice,
+    prevClose: yahooResult.prevClose ?? null,
+    marketStatus,
+    date: yahooResult.date,
+    stepMinutes,
+  }
 }
 
 export { SESSION_START_MIN, SESSION_END_MIN }
@@ -198,10 +219,16 @@ export async function getIntradayChart(code6, interval = '5m', preferredSuffix =
     try {
       const raw = await getIntradayChartFromYahoo(code6, suffix, interval)
       const built = buildIntradaySlotSeries(raw, null, step)
-      const data = raw.data.map(({ time, timestamp, price }) => ({ time, timestamp, price }))
+      const data = raw.data.map(({ time, timestamp, price, volume }) => ({
+        time,
+        timestamp,
+        price,
+        volume,
+      }))
       return {
         date: built.date,
         openPrice: built.openPrice,
+        prevClose: built.prevClose,
         marketStatus: built.marketStatus,
         data,
         interval,

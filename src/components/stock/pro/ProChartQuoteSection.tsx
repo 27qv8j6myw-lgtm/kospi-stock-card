@@ -1,18 +1,16 @@
-import { useCallback, useState } from 'react'
+import { useState } from 'react'
 import { TrendingUp } from 'lucide-react'
-import { ChartIndexLabels, type ChartIndexPoint } from '@/components/stock/ChartIndexLabels'
 import { IntradayChartBody } from '@/components/stock/IntradayChartBody'
 import { OpenPriceGauge } from '@/components/stock/OpenPriceGauge'
 import { PriceGauge } from '@/components/stock/PriceGauge'
 import { StockChart, type ChartPeriod } from '@/components/stock/StockChart'
 import { VolumeGauge } from '@/components/stock/VolumeGauge'
-import type { IntradaySeriesPoint } from '@/types/intradayChart'
 import { ProSectionHeader } from './ProSectionHeader'
 
 export type ProChartTab = '당일' | ChartPeriod
 
 const TABS: ProChartTab[] = ['당일', '1W', '1M', '3M', '1Y']
-const CHART_COL_HEIGHT = 'h-[220px] md:h-[280px]'
+const CHART_COL_HEIGHT = 'h-[260px] md:h-[300px]'
 
 export type ProQuoteGaugeData = {
   currentPrice?: number | null
@@ -59,7 +57,6 @@ function week52Label(
 
 export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
   const [period, setPeriod] = useState<ProChartTab>('당일')
-  const [chartData, setChartData] = useState<ChartIndexPoint[]>([])
 
   const current = n(quote.currentPrice)
   const open = n(quote.openPrice)
@@ -72,31 +69,6 @@ export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
   const tradingAmount = n(quote.tradingAmount ?? (quote as { tradingValue?: number }).tradingValue)
 
   const chartPeriod: ChartPeriod | null = period === '당일' ? null : period
-
-  const handlePeriodChange = useCallback((p: ProChartTab) => {
-    setPeriod(p)
-    setChartData([])
-  }, [])
-
-  const handleIntradaySeries = useCallback((series: IntradaySeriesPoint[]) => {
-    const next = series.map((s) => ({ time: s.time }))
-    setChartData((prev) => {
-      if (prev.length === next.length && prev.every((p, i) => p.time === next[i]?.time)) {
-        return prev
-      }
-      return next
-    })
-  }, [])
-
-  const handleStockData = useCallback((rows: { date: string }[]) => {
-    const next = rows.map((r) => ({ date: r.date }))
-    setChartData((prev) => {
-      if (prev.length === next.length && prev.every((p, i) => p.date === next[i]?.date)) {
-        return prev
-      }
-      return next
-    })
-  }, [])
 
   return (
     <section className="border-b border-gray-100 px-4 py-4 sm:px-5">
@@ -113,7 +85,7 @@ export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
                 <button
                   key={p}
                   type="button"
-                  onClick={() => handlePeriodChange(p)}
+                  onClick={() => setPeriod(p)}
                   className={`rounded px-2 py-0.5 text-[10px] font-bold transition-colors ${
                     period === p
                       ? 'bg-gray-900 text-white'
@@ -128,26 +100,14 @@ export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
 
           <div className="min-h-0 flex-1 overflow-hidden">
             {period === '당일' ? (
-              <IntradayChartBody
-                code={code}
-                market={market}
-                currentPrice={current || undefined}
-                onSeriesChange={handleIntradaySeries}
-              />
+              <IntradayChartBody code={code} market={market} />
             ) : chartPeriod ? (
-              <StockChart
-                code={code}
-                variant="pro"
-                period={chartPeriod}
-                onDataChange={handleStockData}
-              />
+              <StockChart code={code} variant="pro" period={chartPeriod} />
             ) : null}
           </div>
-
-          <ChartIndexLabels period={period} chartData={chartData} />
         </div>
 
-        <div className="flex h-auto flex-col justify-between gap-3 md:h-[280px] md:gap-0">
+        <div className="flex h-auto flex-col justify-between gap-3 md:h-[300px] md:gap-0">
           <PriceGauge
             label="1일 범위"
             current={current}

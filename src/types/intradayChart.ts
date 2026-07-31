@@ -10,6 +10,8 @@ export type IntradayMarketStatus = 'pre_open' | 'open' | 'closed'
 export type IntradayChartData = {
   date: string
   openPrice: number
+  /** 전일 종가 — 등락률 기준선 */
+  prevClose?: number | null
   data: IntradayDataPoint[]
   marketStatus: IntradayMarketStatus
 }
@@ -19,6 +21,8 @@ export type IntradaySeriesPoint = {
   x: number
   time: string
   value: number | null
+  /** 슬롯 구간 거래량 합 */
+  volume?: number | null
 }
 
 export type IntradayChartApiResponse = IntradayChartData & {

@@ -258,7 +258,7 @@ export function registerProStockRoutes(app, { getSupabaseService, getUserIdFromR
     }
 
     try {
-      const data = await fetchProChartBars(code, days)
+      const data = await fetchProChartBars(code, days, { withMa: true })
       res.json({ code, period, data })
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)

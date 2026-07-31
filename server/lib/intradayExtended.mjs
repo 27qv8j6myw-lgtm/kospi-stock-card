@@ -79,7 +79,7 @@ function chunkCursors(nowMin) {
 
 /**
  * @param {Array<{ hhmmss: string, price: number, volume: number }>} bars
- * @returns {Array<{ minute: number, price: number }>}
+ * @returns {Array<{ minute: number, price: number, volume: number }>}
  */
 function toPoints(bars) {
   return bars
@@ -89,7 +89,7 @@ function toPoints(bars) {
       if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null
       // 체결이 없는 분은 전일 종가나 0 이 그대로 내려오므로 거래량으로 걸러낸다
       if (!(b.price > 0) || !(b.volume > 0)) return null
-      return { minute: hh * 60 + mm, price: b.price }
+      return { minute: hh * 60 + mm, price: b.price, volume: b.volume }
     })
     .filter(Boolean)
 }
@@ -112,7 +112,7 @@ export async function fetchExtendedIntradayPoints(code6, now = new Date()) {
   if (cursors.length === 0) return empty
 
   const env = process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'
-  /** @type {Map<number, number>} */
+  /** @type {Map<number, { price: number, volume: number }>} */
   const byMinute = new Map()
 
   for (let i = 0; i < cursors.length; i += CONCURRENCY) {
@@ -135,12 +135,12 @@ export async function fetchExtendedIntradayPoints(code6, now = new Date()) {
       }),
     )
     for (const point of toPoints(results.flat())) {
-      byMinute.set(point.minute, point.price)
+      byMinute.set(point.minute, { price: point.price, volume: point.volume })
     }
   }
 
   const points = [...byMinute.entries()]
-    .map(([minute, price]) => ({ minute, price }))
+    .map(([minute, v]) => ({ minute, price: v.price, volume: v.volume }))
     .sort((a, b) => a.minute - b.minute)
 
   return {
