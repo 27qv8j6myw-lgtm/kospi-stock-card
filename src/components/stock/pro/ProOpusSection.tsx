@@ -10,6 +10,8 @@ type Props = {
   model?: string | null
   /** 저장된 분석을 재사용한 경우의 생성 시각 */
   generatedAt?: string | null
+  /** 있으면 저장된 분석이 없을 때 실행 버튼 노출 (진입만으로 분석하지 않기 위함) */
+  onStart?: () => void
   /** 있으면 "다시 분석" 버튼 노출 (캐시 무시 재생성) */
   onRegenerate?: () => void
   /** 백그라운드에서 분석이 진행 중 — 복귀 시 자동 표시 예정 */
@@ -33,11 +35,13 @@ export function ProOpusSection({
   loading,
   model,
   generatedAt,
+  onStart,
   onRegenerate,
   resuming,
   progress,
 }: Props) {
   const modelLabel = formatModelLabel(model)
+  const idle = !analysis && !loading && !resuming && Boolean(onStart)
   return (
     <section className="border-b border-amber-200 bg-amber-50 px-5 py-4">
       <ProSectionHeader
@@ -57,6 +61,20 @@ export function ProOpusSection({
           <div className="py-4 text-center text-[12px] leading-relaxed text-amber-800">
             <div className="mx-auto mb-2 size-5 animate-spin rounded-full border-2 border-amber-600 border-t-transparent" />
             백그라운드에서 분석 중입니다. 화면이 꺼져도 계속 진행되며 완료되면 자동으로 표시됩니다.
+          </div>
+        ) : idle ? (
+          <div className="py-3 text-center">
+            <p className="mx-auto mb-3 max-w-xs text-[12px] leading-relaxed text-amber-800">
+              뉴스·공시·수급·재무·차트를 종합한 AI 분석을 실행합니다.
+            </p>
+            <button
+              type="button"
+              onClick={onStart}
+              className="inline-flex items-center gap-1.5 rounded-full bg-amber-500 px-5 py-2 text-[13px] font-bold text-white transition-colors hover:bg-amber-600"
+            >
+              <Sparkles size={15} strokeWidth={2.2} aria-hidden />
+              AI 분석 실행
+            </button>
           </div>
         ) : (
           <div className="flex h-16 flex-col items-center justify-center gap-2">

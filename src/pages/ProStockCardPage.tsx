@@ -69,6 +69,14 @@ function researchLabel(parsed: { tool?: string }): string {
   return label ? `${label} 조사 중` : '데이터 조사 중'
 }
 
+type StoredAnalysis = {
+  analysis?: string
+  model?: string
+  generatedAt?: string | null
+  pastDiagnoses?: number
+  pending?: boolean
+}
+
 /** null 필드는 기존 값을 덮어쓰지 않도록 걸러낸다 */
 function omitNulls<T extends object>(obj: T): { [K in keyof T]?: Exclude<T[K], null> } {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null)) as {
@@ -181,39 +189,66 @@ export default function ProStockCardPage() {
     [],
   )
 
-  /** 복귀 조회 — 서버가 백그라운드로 끝낸 분석이 저장돼 있을 때만 반환 (재분석 없음) */
+  /** 저장된 분석만 조회 — 없으면 null (새 분석을 시작하지 않는다) */
   const fetchCachedAnalysis = useCallback(async () => {
     if (!code) return null
     const r = await authFetch(apiUrl('/api/pro-stock-analysis'), {
       method: 'POST',
       body: JSON.stringify({ code, cachedOnly: true }),
     })
-    const d = (await r.json().catch(() => null)) as {
-      analysis?: string
-      model?: string
-      generatedAt?: string | null
-      pending?: boolean
-    } | null
+    const d = (await r.json().catch(() => null)) as StoredAnalysis | null
     if (!r.ok || !d?.analysis) return null
     return d
   }, [code])
 
-  const { pending: analysisResuming } = useResumeAiResult<{
-    analysis?: string
-    model?: string
-    generatedAt?: string | null
-  }>({
+  const applyStoredAnalysis = useCallback((d: StoredAnalysis) => {
+    setAnalysis(d.analysis ?? '')
+    if (d.model) setAnalysisModel(d.model)
+    setAnalysisGeneratedAt(d.generatedAt ?? null)
+    if (typeof d.pastDiagnoses === 'number') setPastDiagnoses(d.pastDiagnoses)
+    setLoadingAnalysis(false)
+  }, [])
+
+  const { pending: analysisResuming } = useResumeAiResult<StoredAnalysis>({
     key: analysisTaskKey,
     // 스트리밍이 살아 있는 동안에는 복귀 조회가 화면을 덮어쓰지 않도록 비활성
     enabled: Boolean(code) && !loadingAnalysis,
     fetchCached: fetchCachedAnalysis,
-    onResolved: (d) => {
-      setAnalysis(d.analysis ?? '')
-      if (d.model) setAnalysisModel(d.model)
-      setAnalysisGeneratedAt(d.generatedAt ?? null)
-      setLoadingAnalysis(false)
-    },
+    onResolved: applyStoredAnalysis,
   })
+
+  /** 진입 시엔 저장된 분석만 살린다. 새 분석은 사용자가 버튼을 눌러야 시작한다. */
+  const storedProbedForRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (!code) return
+    if (storedProbedForRef.current === code) return
+    storedProbedForRef.current = code
+
+    let cancelled = false
+    // 다른 종목의 분석이 남아 보이지 않도록 먼저 비운다
+    setAnalysis('')
+    setAnalysisModel(null)
+    setAnalysisGeneratedAt(null)
+    setAnalysisProgress(null)
+    setPastDiagnoses(0)
+    setLoadingAnalysis(true)
+
+    void fetchCachedAnalysis()
+      .then((d) => {
+        if (cancelled || !d) return
+        applyStoredAnalysis(d)
+      })
+      .catch((e) => {
+        console.error('[Pro Stock Analysis cache]', e)
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAnalysis(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [code, fetchCachedAnalysis, applyStoredAnalysis])
 
   useEffect(() => {
     if (code) window.scrollTo(0, 0)
@@ -257,13 +292,12 @@ export default function ProStockCardPage() {
   }, [code])
 
   const reloadSnapshot = useCallback(
-    async (opts?: { withAnalysis?: boolean }) => {
+    async (opts?: { reset?: boolean }) => {
       if (!code) return
       setLoadingSummary(true)
-      if (opts?.withAnalysis) {
+      if (opts?.reset) {
         setSummary(null)
         setTechnical(null)
-        setAnalysis('')
       }
 
       try {
@@ -280,10 +314,6 @@ export default function ProStockCardPage() {
         setSummary(summaryData)
         setTechnical(techData)
 
-        if (opts?.withAnalysis && summaryData) {
-          void loadAnalysis(summaryData, code)
-        }
-
         await pollQuote()
       } catch (e) {
         console.error('Summary error:', e)
@@ -291,17 +321,23 @@ export default function ProStockCardPage() {
         setLoadingSummary(false)
       }
     },
-    [code, loadAnalysis, pollQuote],
+    [code, pollQuote],
   )
 
   useEffect(() => {
     if (!code) return
-    void reloadSnapshot({ withAnalysis: true })
+    void reloadSnapshot({ reset: true })
   }, [code, reloadSnapshot])
 
   const refetchData = useCallback(async () => {
-    await reloadSnapshot({ withAnalysis: false })
+    await reloadSnapshot()
   }, [reloadSnapshot])
+
+  /** 사용자가 버튼을 눌렀을 때만 분석 호출 (진입만으로는 과금하지 않는다) */
+  const startAnalysis = useCallback(() => {
+    if (!code || !summary || loadingAnalysis) return
+    void loadAnalysis(summary, code)
+  }, [code, summary, loadingAnalysis, loadAnalysis])
 
   /** 저장된 분석을 버리고 새로 생성 (같은 날·같은 시세 구간에서도 재분석) */
   const regenerateAnalysis = useCallback(() => {
@@ -485,6 +521,7 @@ export default function ProStockCardPage() {
               loading={loadingAnalysis}
               model={analysisModel}
               generatedAt={analysisGeneratedAt}
+              onStart={startAnalysis}
               onRegenerate={regenerateAnalysis}
               resuming={analysisResuming}
               progress={analysisProgress}
