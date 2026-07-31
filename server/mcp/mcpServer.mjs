@@ -7,6 +7,7 @@
 import { McpServer } from '@modelcontextprotocol/server'
 import * as z from 'zod'
 import { getPortfolio, getSnapshots, getTrades } from './portfolioData.mjs'
+import { getQuotes, getWatchlist } from './quoteData.mjs'
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -109,6 +110,53 @@ export function createSignal15McpServer(userId) {
     async ({ limit, code, days }) => {
       try {
         return jsonResult(await getTrades(userId, { limit, code, days }))
+      } catch (e) {
+        return errorResult(e)
+      }
+    },
+  )
+
+  server.registerTool(
+    'get_quote',
+    {
+      title: '종목 현재가',
+      description:
+        '국내 종목의 현재가와 시세 지표(전일대비·등락률·시가·고가·저가·거래량·거래대금·시가총액·PER·PBR·EPS·BPS·배당수익률·외국인 지분율)를 반환합니다. 6자리 종목코드와 종목명을 섞어 넣을 수 있습니다(예: ["005930", "SK하이닉스"]). 보유하지 않은 종목도 조회됩니다. 장중에는 실시간에 가까운 값, 장 마감 후에는 종가입니다.',
+      inputSchema: z.object({
+        symbols: z
+          .array(z.string())
+          .min(1)
+          .max(20)
+          .describe('6자리 종목코드 또는 종목명 목록 (최대 20개)'),
+      }),
+      annotations: READ_ONLY,
+    },
+    async ({ symbols }) => {
+      try {
+        return jsonResult(await getQuotes(symbols))
+      } catch (e) {
+        return errorResult(e)
+      }
+    },
+  )
+
+  server.registerTool(
+    'get_watchlist',
+    {
+      title: '관심종목 시세',
+      description:
+        '관심종목(감시 리스트)에 등록한 종목의 메모·등록일과 현재 시세를 함께 반환합니다. 후보 종목들의 가격을 한 번에 추적할 때 사용하세요.',
+      inputSchema: z.object({
+        include_quotes: z
+          .boolean()
+          .optional()
+          .describe('현재가를 함께 조회할지 (기본 true, false 면 목록만 빠르게 반환)'),
+      }),
+      annotations: READ_ONLY,
+    },
+    async ({ include_quotes }) => {
+      try {
+        return jsonResult(await getWatchlist(userId, { includeQuotes: include_quotes }))
       } catch (e) {
         return errorResult(e)
       }
