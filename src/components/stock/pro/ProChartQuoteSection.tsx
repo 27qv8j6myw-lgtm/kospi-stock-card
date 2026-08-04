@@ -10,7 +10,8 @@ import { ProSectionHeader } from './ProSectionHeader'
 export type ProChartTab = '당일' | ChartPeriod
 
 const TABS: ProChartTab[] = ['당일', '1W', '1M', '3M', '1Y']
-const CHART_COL_HEIGHT = 'h-[260px] md:h-[300px]'
+/** 탭 + 가격면 + 거래량/X축이 들어가도록 여유를 둔다 */
+const CHART_COL_HEIGHT = 'h-[280px] md:h-[320px]'
 
 export type ProQuoteGaugeData = {
   currentPrice?: number | null
@@ -107,7 +108,7 @@ export function ProChartQuoteSection({ code, market, quote, week52 }: Props) {
           </div>
         </div>
 
-        <div className="flex h-auto flex-col justify-between gap-3 md:h-[300px] md:gap-0">
+        <div className="flex h-auto flex-col justify-between gap-3 md:h-[320px] md:gap-0">
           <PriceGauge
             label="1일 범위"
             current={current}

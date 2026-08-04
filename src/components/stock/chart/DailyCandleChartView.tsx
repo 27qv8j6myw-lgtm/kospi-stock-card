@@ -33,7 +33,10 @@ import {
 const AXIS_WIDTH = 52
 /** 당일 차트와 좌우 여백을 맞춰 탭을 바꿔도 그림 틀이 흔들리지 않게 한다 */
 const LEFT_MARGIN = 16
-const VOLUME_HEIGHT = 44
+/** 거래량 봉 + X축 날짜 라벨이 잘리지 않을 높이 */
+const VOLUME_HEIGHT = 58
+/** 저가 라벨이 가격면 아래로 삐져나오지 않게 */
+const PRICE_BOTTOM_PAD = 10
 
 export type DailyBar = {
   date: string
@@ -202,7 +205,7 @@ export function DailyCandleChartView({
           <ComposedChart
             data={rows}
             syncId={syncId}
-            margin={{ top: 10, right: 0, bottom: 0, left: LEFT_MARGIN }}
+            margin={{ top: 10, right: 0, bottom: PRICE_BOTTOM_PAD, left: LEFT_MARGIN }}
             onMouseMove={onMove}
             onMouseLeave={onLeave}
             onTouchMove={onMove}
@@ -310,7 +313,7 @@ export function DailyCandleChartView({
           <ComposedChart
             data={rows}
             syncId={syncId}
-            margin={{ top: 2, right: AXIS_WIDTH, bottom: 0, left: LEFT_MARGIN }}
+            margin={{ top: 2, right: AXIS_WIDTH, bottom: 2, left: LEFT_MARGIN }}
             onMouseMove={onMove}
             onMouseLeave={onLeave}
           >
@@ -322,8 +325,8 @@ export function DailyCandleChartView({
               tick={axisTick}
               tickLine={false}
               axisLine={{ stroke: CHART_GRID }}
-              tickMargin={4}
-              height={16}
+              tickMargin={2}
+              height={18}
               interval="preserveStartEnd"
             />
             <YAxis hide domain={[0, maxVolume * 1.15]} />

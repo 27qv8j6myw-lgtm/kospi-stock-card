@@ -36,7 +36,10 @@ import type { IntradaySeriesPoint } from '@/types/intradayChart'
 const AXIS_WIDTH = 52
 /** 첫 시각 눈금이 왼쪽에서 잘리지 않을 만큼의 여백 */
 const LEFT_MARGIN = 16
-const VOLUME_HEIGHT = 44
+/** 거래량 봉 + X축 시각 라벨이 잘리지 않을 높이 */
+const VOLUME_HEIGHT = 58
+/** 저가 라벨이 가격면 아래로 삐져나오지 않게 */
+const PRICE_BOTTOM_PAD = 10
 const OFF_HOURS_FILL = '#F8FAFC'
 const OFF_HOURS_STROKE = '#E2E8F0'
 
@@ -180,7 +183,7 @@ export function IntradayChartView({
           <ComposedChart
             data={series}
             syncId={syncId}
-            margin={{ top: 6, right: 0, bottom: 0, left: LEFT_MARGIN }}
+            margin={{ top: 6, right: 0, bottom: PRICE_BOTTOM_PAD, left: LEFT_MARGIN }}
             onMouseMove={onMove}
             onMouseLeave={onLeave}
             onTouchMove={onMove}
@@ -320,7 +323,7 @@ export function IntradayChartView({
           <ComposedChart
             data={series}
             syncId={syncId}
-            margin={{ top: 2, right: AXIS_WIDTH, bottom: 0, left: LEFT_MARGIN }}
+            margin={{ top: 2, right: AXIS_WIDTH, bottom: 2, left: LEFT_MARGIN }}
             onMouseMove={onMove}
             onMouseLeave={onLeave}
           >
@@ -343,8 +346,8 @@ export function IntradayChartView({
               tick={axisTick}
               tickLine={false}
               axisLine={{ stroke: CHART_GRID }}
-              tickMargin={4}
-              height={16}
+              tickMargin={2}
+              height={18}
               allowDecimals={false}
             />
             <YAxis hide domain={[0, maxVolume * 1.15]} />
