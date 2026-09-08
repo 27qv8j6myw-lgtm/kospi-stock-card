@@ -90,6 +90,9 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // OAuth 승인·MCP·인증 메타데이터는 서버 응답을 사용해야 한다.
+        // NavigationRoute가 runtimeCaching보다 먼저 처리되므로 별도로 제외한다.
+        navigateFallbackDenylist: [/^\/api(?:\/|\?|$)/, /^\/\.well-known(?:\/|\?|$)/],
         /** Vite 메인 청크 ~3.4MB — 기본 2MB 초과 시 precache 실패 */
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
