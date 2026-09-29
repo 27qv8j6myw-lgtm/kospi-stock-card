@@ -152,11 +152,8 @@ export async function runProChatStream({
       messages: conversationMessages,
     })
 
-    /** @type {import('@anthropic-ai/sdk').ContentBlock[]} */
-    const collectedContent = []
     /** @type {import('@anthropic-ai/sdk').ToolUseBlock[]} */
     const toolUseBlocks = []
-    let currentText = ''
     /** @type {{ type: 'tool_use', id: string, name: string, input: string } | null} */
     let currentToolUse = null
 
@@ -170,12 +167,9 @@ export async function runProChatStream({
             input: '',
           }
           send('tool_start', { name: currentToolUse.name })
-        } else {
-          currentText = ''
         }
       } else if (event.type === 'content_block_delta') {
         if (event.delta.type === 'text_delta') {
-          currentText += event.delta.text
           fullText += event.delta.text
           send('text', { delta: event.delta.text })
         } else if (event.delta.type === 'input_json_delta' && currentToolUse) {
@@ -196,11 +190,7 @@ export async function runProChatStream({
             input: parsedInput,
           }
           toolUseBlocks.push(block)
-          collectedContent.push(block)
           currentToolUse = null
-        } else if (currentText) {
-          collectedContent.push({ type: 'text', text: currentText })
-          currentText = ''
         }
       }
     }
@@ -223,7 +213,8 @@ export async function runProChatStream({
       break
     }
 
-    conversationMessages.push({ role: 'assistant', content: collectedContent })
+    // Fable 5.1·Opus 5.5 preserved thinking: 이전 턴(thinking 서명 포함)을 편집 없이 그대로 재전송
+    conversationMessages.push({ role: 'assistant', content: final.content })
 
     for (const toolUse of toolUseBlocks) {
       send('tool_executing', { name: toolUse.name, input: toolUse.input })

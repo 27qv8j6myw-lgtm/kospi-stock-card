@@ -27,6 +27,7 @@ import {
 import { computeLogicIndicatorsPack } from './indicators/logicBundle.mjs'
 import { buildEarningsIntel, extractSpecialAlertsFromKisRaw } from './earningsIntel.mjs'
 import { resolveAiAccess } from './lib/userModel.mjs'
+import { getLatestModelId } from './lib/modelRegistry.mjs'
 import { getUserIdFromRequest } from './lib/auth.mjs'
 import { getCompareStockPayload } from './screening/compareStock.mjs'
 import { analyzePortfolio } from './ai/portfolioAnalysis.mjs'
@@ -1065,9 +1066,9 @@ app.get('/api/health', (_req, res) => {
     aiProvider: aiCfg ? 'anthropic' : null,
     aiBriefingPost: Boolean(aiCfg),
     kisEnv: process.env.KIS_ENV || 'vps',
-    anthropicModel: process.env.ANTHROPIC_MODEL || 'claude-opus-5',
-    anthropicResearchModel: process.env.ANTHROPIC_RESEARCH_MODEL || 'claude-sonnet-4-5',
-    anthropicSummaryModel: process.env.ANTHROPIC_SUMMARY_MODEL || 'claude-sonnet-4-5',
+    anthropicModel: process.env.ANTHROPIC_MODEL || getLatestModelId('opus'),
+    anthropicResearchModel: process.env.ANTHROPIC_RESEARCH_MODEL || getLatestModelId('sonnet'),
+    anthropicSummaryModel: process.env.ANTHROPIC_SUMMARY_MODEL || getLatestModelId('sonnet'),
     aiModel: aiCfg?.model ?? null,
     /** 비밀값은 절대 내려주지 않음 — 파일/변수만 점검용 */
     check: {

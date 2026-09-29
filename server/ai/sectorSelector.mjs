@@ -6,7 +6,7 @@ import {
   SCREENING_AI_TIMEOUT_MS,
   SCREENING_SECTOR_AI_TIMEOUT_MS,
 } from '../lib/anthropicTimed.mjs'
-import { SCREENING_CANDIDATE_AI_MODEL } from './screeningAnalysis.mjs'
+import { screeningCandidateAiModel } from './screeningAnalysis.mjs'
 
 /**
  * @param {number | null | undefined} n
@@ -122,7 +122,7 @@ export async function selectActiveSectors(marketData, opts = {}) {
 
   const client = new Anthropic({ apiKey })
   const prompt = buildSectorSelectionPrompt(marketData)
-  const model = opts.modelId?.trim() || SCREENING_CANDIDATE_AI_MODEL
+  const model = opts.modelId?.trim() || screeningCandidateAiModel()
 
   const response = await createAnthropicMessage(
     client,
@@ -193,7 +193,7 @@ ${[...excludeSet].join(', ') || '(없음)'}
 { "codes": ["종목코드", "종목코드", ...] }`
 
   const client = new Anthropic({ apiKey })
-  const model = modelId?.trim() || SCREENING_CANDIDATE_AI_MODEL
+  const model = modelId?.trim() || screeningCandidateAiModel()
 
   try {
     const response = await createAnthropicMessage(

@@ -14,6 +14,7 @@ import { fetchYahooMarketSnapshot } from '../marketIndices.mjs'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
 import { logApiUsage } from '../lib/usageLogger.mjs'
 import { resolveModelId } from '../lib/userModel.mjs'
+import { ensureModelRegistry, getLatestModelId } from '../lib/modelRegistry.mjs'
 import { getCachedOrFetch } from '../lib/cacheHelper.mjs'
 import { fetchRealtimePrices } from '../lib/marketDataCollector.mjs'
 import { seoulSnapshotDateKey } from '../lib/snapshotProGroups.mjs'
@@ -155,6 +156,7 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
   // 현재 적용 중인 실제 모델 ID (env override → /v1/models 최신 → 기본값)
   app.get('/api/admin-ai-models', async (req, res) => {
     if (!(await requireAdmin(req, res))) return
+    await ensureModelRegistry()
     res.json({
       opus: resolveModelId('opus'),
       sonnet: resolveModelId('sonnet'),
@@ -1725,10 +1727,12 @@ export function registerAdminProRoutes(app, { getSupabaseService, getUserIdFromR
       ].filter(Boolean)
 
       const anthropic = new Anthropic({ apiKey })
+      await ensureModelRegistry()
+      const briefingModel = getLatestModelId('opus')
       const resp = await createAnthropicMessage(
         anthropic,
         {
-          model: 'claude-opus-5',
+          model: briefingModel,
           max_tokens: 400,
           messages: [
             {
@@ -1754,7 +1758,7 @@ ${lines.join('\n')}
       const block = resp.content?.find((b) => b.type === 'text')
       const content = block && 'text' in block ? String(block.text).trim() : ''
       if (resp.usage) {
-        await logApiUsage(adminUserId, 'admin-ops-briefing', 'claude-opus-5', resp.usage)
+        await logApiUsage(adminUserId, 'admin-ops-briefing', resp.model || briefingModel, resp.usage)
       }
 
       const briefing = { content, stats, generatedAt: new Date().toISOString() }

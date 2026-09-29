@@ -382,11 +382,11 @@ export default function AdminPage() {
                                 <WorkloadToggle userId={id} current={aiWorkload} onUpdated={load} />
                                 <div
                                   className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600"
-                                  title={`관리자 계정은 Fable 고정 (${aiModels?.fable ?? 'claude-fable-5'})`}
+                                  title={`관리자 계정은 Fable 고정 (${aiModels?.fable ?? '최신 Fable'})`}
                                 >
                                   <Lock className="size-2.5 shrink-0" aria-hidden />
                                   <span>
-                                    {aiModels?.fable ? formatModelLabel(aiModels.fable) : 'Fable 5'}
+                                    {aiModels?.fable ? formatModelLabel(aiModels.fable) : 'Fable'}
                                   </span>
                                 </div>
                               </>

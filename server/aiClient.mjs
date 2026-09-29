@@ -1,4 +1,5 @@
 /** Anthropic Claude — JSON 채팅 완성 (서버 전용) */
+import { getLatestModelId } from './lib/modelRegistry.mjs'
 
 export function cleanEnvSecret(v) {
   if (v == null || typeof v !== 'string') return ''
@@ -15,7 +16,7 @@ export function cleanEnvSecret(v) {
 export function getAiConfig() {
   const apiKey = cleanEnvSecret(process.env.ANTHROPIC_API_KEY)
   if (!apiKey) return null
-  const model = process.env.ANTHROPIC_MODEL?.trim() || 'claude-opus-5'
+  const model = process.env.ANTHROPIC_MODEL?.trim() || getLatestModelId('opus')
   return { apiKey, model }
 }
 
@@ -109,7 +110,7 @@ export async function completeAnalyzeStockChat({
   const model =
     (modelOverride && String(modelOverride).trim()) ||
     process.env.ANTHROPIC_ANALYZE_MODEL?.trim() ||
-    'claude-opus-5'
+    getLatestModelId('opus')
 
   const { default: Anthropic } = await import('@anthropic-ai/sdk')
   const client = new Anthropic({ apiKey: cfg.apiKey })
@@ -159,7 +160,7 @@ export async function completePlainTextChat({
   const model =
     (modelOverride && String(modelOverride).trim()) ||
     process.env.ANTHROPIC_SUMMARY_MODEL?.trim() ||
-    'claude-sonnet-4-5'
+    getLatestModelId('sonnet')
 
   const { default: Anthropic } = await import('@anthropic-ai/sdk')
   const client = new Anthropic({ apiKey: cfg.apiKey })
@@ -204,7 +205,7 @@ export async function completeWriteMemoChat({
   const model =
     (modelOverride && String(modelOverride).trim()) ||
     process.env.ANTHROPIC_MEMO_MODEL?.trim() ||
-    'claude-sonnet-4-5'
+    getLatestModelId('sonnet')
 
   const { default: Anthropic } = await import('@anthropic-ai/sdk')
   const client = new Anthropic({ apiKey: cfg.apiKey })
@@ -260,7 +261,7 @@ export async function completeResearchStockChat({
   const model =
     (modelOverride && String(modelOverride).trim()) ||
     process.env.ANTHROPIC_RESEARCH_MODEL?.trim() ||
-    'claude-sonnet-4-5'
+    getLatestModelId('sonnet')
 
   const { default: Anthropic } = await import('@anthropic-ai/sdk')
   const client = new Anthropic({ apiKey: cfg.apiKey })

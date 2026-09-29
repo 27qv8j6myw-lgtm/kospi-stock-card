@@ -6,9 +6,14 @@ import { STOCK_TOOLS } from './aiTools.mjs'
 import { createAnthropicMessage } from './anthropicTimed.mjs'
 import { logChatStockViewFromTool } from './chatStockActivity.mjs'
 import { executeTool } from './toolExecutor.mjs'
+import { ensureModelRegistry, getLatestModelId } from './modelRegistry.mjs'
 import { logApiUsage, mergeUsage } from './usageLogger.mjs'
 
-export const OPUS_TOOL_MODEL = 'claude-opus-5'
+/** @returns {Promise<string>} 최신 Opus ID */
+export async function opusToolModel() {
+  await ensureModelRegistry()
+  return getLatestModelId('opus')
+}
 
 /** Pro 종목·보유·포트폴리오 AI 분석 — 응답 잘림 방지 */
 export const PRO_ANALYSIS_MAX_TOKENS = 8000
@@ -18,7 +23,7 @@ export const PRO_ANALYSIS_MAX_TOKENS = 8000
  * @property {Array<{ role: string, content: unknown }>} messages
  * @property {string} system
  * @property {string | null} [userId]
- * @property {string} [modelId] 사용자별 모델 ID (미지정 시 OPUS_TOOL_MODEL)
+ * @property {string} [modelId] 사용자별 모델 ID (미지정 시 최신 Opus)
  * @property {number} [maxIterations]
  * @property {number} [maxTokens]
  * @property {number} [timeoutMs]
@@ -41,7 +46,7 @@ export async function runOpusWithTools(opts) {
   const client = new Anthropic({ apiKey })
   const maxIterations = Math.min(12, Math.max(1, Number(opts.maxIterations) || 8))
   const maxTokens = Math.min(16000, Math.max(500, Number(opts.maxTokens) || 4000))
-  const modelId = opts.modelId?.trim() || OPUS_TOOL_MODEL
+  const modelId = opts.modelId?.trim() || (await opusToolModel())
   const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 120_000
   const tools = opts.tools ?? STOCK_TOOLS
   const userId = opts.userId ?? null

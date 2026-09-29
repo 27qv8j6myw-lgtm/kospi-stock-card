@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
-import { OPUS_TOOL_MODEL } from '../lib/opusEngine.mjs'
+import { opusToolModel } from '../lib/opusEngine.mjs'
 import { searchStocksMaster } from '../lib/stocksMasterSearch.mjs'
 
 const HOLDINGS_OCR_PROMPT = `이 이미지는 증권사 앱의 보유종목(잔고) 화면입니다.
@@ -120,7 +120,7 @@ export async function extractHoldingsFromImage(imageBase64, mediaType = 'image/j
   const response = await createAnthropicMessage(
     client,
     {
-      model: OPUS_TOOL_MODEL,
+      model: await opusToolModel(),
       max_tokens: 2000,
       messages: [
         {

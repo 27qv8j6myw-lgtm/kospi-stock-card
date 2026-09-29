@@ -3,7 +3,7 @@
  * `SUPABASE_SERVICE_ROLE_KEY` 는 클라이언트·Git 에 노출 금지.
  */
 import { createClient } from '@supabase/supabase-js'
-import { getLatestModelId } from './modelRegistry.mjs'
+import { ensureModelRegistry, getLatestModelId } from './modelRegistry.mjs'
 import { isAdminUserEmail } from './userInfo.mjs'
 
 const CACHE_TTL_MS = 5 * 60 * 1000
@@ -70,6 +70,7 @@ async function isAdminUserId(supabase, userId) {
  * @returns {Promise<'opus' | 'sonnet' | 'fable'>}
  */
 export async function getUserModel(userId) {
+  await ensureModelRegistry()
   if (!userId) return 'sonnet'
 
   const hit = cache.get(userId)

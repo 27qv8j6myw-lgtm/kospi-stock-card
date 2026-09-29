@@ -3,7 +3,7 @@ import { cleanEnvSecret } from '../aiClient.mjs'
 import { createAnthropicMessage, SCREENING_AI_TIMEOUT_MS } from '../lib/anthropicTimed.mjs'
 import { safeJsonParse } from '../lib/safeJson.mjs'
 import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
-import { normalizeCandidateLabel, SCREENING_AI_DEFAULT_MODEL } from './screeningAnalysis.mjs'
+import { normalizeCandidateLabel, screeningAiModel } from './screeningAnalysis.mjs'
 
 const BATCH_SIZE = 4
 
@@ -270,8 +270,7 @@ export async function analyzeKeyCandidates(sectors, opts = {}) {
   const modelId =
     opts.modelId?.trim() ||
     (opts.userId ? resolveModelId(userModel) : null) ||
-    process.env.SCREENING_AI_MODEL?.trim() ||
-    SCREENING_AI_DEFAULT_MODEL
+    screeningAiModel()
   const client = new Anthropic({ apiKey })
 
   const mergedAi = new Map()

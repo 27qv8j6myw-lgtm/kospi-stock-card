@@ -3,10 +3,11 @@
  *
  * 보유종목이 있는 Pro 사용자별로:
  * - 당일 vs 전일 스냅샷 변화, 지수(market-summary), 보유종목 등락 상위/하위 수집
- * - Opus 4.8 로 2~3문장 요약 생성 → pro_daily_briefings upsert
+ * - 최신 Opus 로 2~3문장 요약 생성 → pro_daily_briefings upsert
  */
 import Anthropic from '@anthropic-ai/sdk'
 import { createAnthropicMessage } from '../lib/anthropicTimed.mjs'
+import { ensureModelRegistry, getLatestModelId } from '../lib/modelRegistry.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { logApiUsage } from '../lib/usageLogger.mjs'
 import { getKisQuote } from '../lib/toolExecutor.mjs'
@@ -14,7 +15,6 @@ import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { seoulSnapshotDateKey, verifyCronSecret } from '../lib/snapshotProGroups.mjs'
 import { getMarketSummary } from '../marketSummary.mjs'
 
-const BRIEF_MODEL = 'claude-opus-5'
 const BRIEF_TIMEOUT_MS = 30_000
 const QUOTE_DELAY_MS = 120
 
@@ -118,6 +118,8 @@ export async function handleCronDailyBrief(req, res) {
 
   try {
     const briefDate = seoulSnapshotDateKey()
+    await ensureModelRegistry()
+    const briefModel = getLatestModelId('opus')
 
     // Pro 사용자 + 보유종목
     const [{ data: settings }, { data: holdings }] = await Promise.all([
@@ -207,7 +209,7 @@ export async function handleCronDailyBrief(req, res) {
         const resp = await createAnthropicMessage(
           anthropic,
           {
-            model: BRIEF_MODEL,
+            model: briefModel,
             max_tokens: 400,
             messages: [
               {
@@ -235,7 +237,7 @@ ${lines.join('\n')}
         if (!content) continue
 
         if (resp.usage) {
-          await logApiUsage(userId, 'daily-briefing', BRIEF_MODEL, resp.usage)
+          await logApiUsage(userId, 'daily-briefing', resp.model || briefModel, resp.usage)
         }
 
         const stats = {

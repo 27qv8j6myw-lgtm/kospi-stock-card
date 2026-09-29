@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL } from './pricing.mjs'
 import { getSupabaseService } from './supabaseService.mjs'
 
 export { calcCost, calcOpusCostUsd, MODEL_PRICE, OPUS_INPUT_USD_PER_M, OPUS_OUTPUT_USD_PER_M } from './pricing.mjs'
@@ -35,7 +36,7 @@ export async function logApiUsage(userId, endpoint, model, usage) {
     const { error } = await supabaseService.from('pro_api_usage').insert({
       user_id: userId,
       endpoint,
-      model: model || 'claude-opus-5',
+      model: model || DEFAULT_MODEL,
       input_tokens: input,
       output_tokens: output,
     })

@@ -2,18 +2,21 @@ import Anthropic from '@anthropic-ai/sdk'
 import { cleanEnvSecret } from '../aiClient.mjs'
 import { createAnthropicMessage, SCREENING_AI_TIMEOUT_MS } from '../lib/anthropicTimed.mjs'
 import { safeJsonParse } from '../lib/safeJson.mjs'
+import { getLatestModelId } from '../lib/modelRegistry.mjs'
 import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
 import { getStockMasterByCode } from '../lib/stocksMasterSearch.mjs'
 import { resolveScreeningStockDisplayName } from '../screening/sectorMaster.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 import { buildProfileContextPrompt, fetchProUserProfile } from '../lib/proUserProfile.mjs'
 
-/** TOP5·섹터 선정·후보 보충 — `SCREENING_AI_MODEL` / `SCREENING_CANDIDATE_AI_MODEL` 로 롤백 가능 */
-export const SCREENING_AI_DEFAULT_MODEL = 'claude-opus-5'
-
-/** 섹터 선정·추가 후보 (기본 Opus, 자동 스크리닝과 동일 깊이) */
-export const SCREENING_CANDIDATE_AI_MODEL =
-  process.env.SCREENING_CANDIDATE_AI_MODEL?.trim() || SCREENING_AI_DEFAULT_MODEL
+/**
+ * 섹터 선정·추가 후보 (기본 최신 Opus, 자동 스크리닝과 동일 깊이)
+ * — `SCREENING_CANDIDATE_AI_MODEL` 로 롤백 가능
+ * @returns {string}
+ */
+export function screeningCandidateAiModel() {
+  return process.env.SCREENING_CANDIDATE_AI_MODEL?.trim() || getLatestModelId('opus')
+}
 
 const ALLOWED_LABEL = new Set(['관심후보', '관망검토', '주의'])
 
@@ -35,9 +38,9 @@ export function dedupeStocksByCode(stocks) {
   })
 }
 
-/** @returns {string} */
+/** TOP5 선정 — `SCREENING_AI_MODEL` 로 롤백 가능 @returns {string} */
 export function screeningAiModel() {
-  return process.env.SCREENING_AI_MODEL?.trim() || SCREENING_AI_DEFAULT_MODEL
+  return process.env.SCREENING_AI_MODEL?.trim() || getLatestModelId('opus')
 }
 
 function clipChars(s, max) {
@@ -129,7 +132,7 @@ export async function getAIAdditionalCandidates(params) {
   const excludeSet = new Set(
     (excludeCodes || []).map((c) => String(c).replace(/\D/g, '').padStart(6, '0')),
   )
-  const modelId = SCREENING_CANDIDATE_AI_MODEL
+  const modelId = screeningCandidateAiModel()
 
   const prompt = `당신은 한국 주식 시장 전문가입니다.
 

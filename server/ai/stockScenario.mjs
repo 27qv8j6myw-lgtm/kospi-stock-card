@@ -1,16 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { cleanEnvSecret } from '../aiClient.mjs'
+import { getLatestModelId } from '../lib/modelRegistry.mjs'
 import { safeJsonParse } from '../lib/safeJson.mjs'
 import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
 
 const CACHE_TTL_MS = 60 * 60 * 1000
 const cache = new Map()
 
-const DEFAULT_MODEL = 'claude-opus-5'
-
 /** @returns {string} 실제 호출에 쓰는 Anthropic 모델 ID (환경 변수 기본) */
 export function scenarioAiModel() {
-  return process.env.ANTHROPIC_SCENARIO_MODEL?.trim() || DEFAULT_MODEL
+  return process.env.ANTHROPIC_SCENARIO_MODEL?.trim() || getLatestModelId('opus')
 }
 
 function formatAmount(v) {
