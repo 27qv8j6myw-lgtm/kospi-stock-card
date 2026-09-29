@@ -8,6 +8,7 @@ import { McpServer } from '@modelcontextprotocol/server'
 import * as z from 'zod'
 import { getPortfolio, getSnapshots, getTrades } from './portfolioData.mjs'
 import { getQuotes, getWatchlist } from './quoteData.mjs'
+import { getDailyBars, getMinuteBars, getInvestorFlow } from './marketHistory.mjs'
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -168,6 +169,20 @@ export function createSignal15McpServer(userId) {
       }
     },
   )
+
+  const codeSchema = z.string().regex(/^\d{6}$/).describe('6자리 종목코드 (삼성전자: 005930)')
+  for (const [name, title, description, schema, handler] of [
+    ['get_daily_bars', '과거 일봉', 'KRX 일봉 OHLCV를 오래된 순으로 조회합니다. 최대 100개, 공급자 반환량에 따라 더 적을 수 있습니다. 당일 봉은 미완성일 수 있습니다. 가격은 비수정주가입니다.',
+      z.object({ code: codeSchema, limit: z.number().int().min(1).max(100).default(60) }), getDailyBars],
+    ['get_minute_bars', '당일 분봉', '당일 1분봉 OHLCV 최대 30개를 조회합니다. end_time(HHMMSS)으로 당일 이전 구간을 조회할 수 있습니다. 과거 거래일 분봉은 지원하지 않습니다. 날짜가 없는 값은 당일로 단정하지 마세요.',
+      z.object({ code: codeSchema, end_time: z.string().regex(/^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/).optional(), market: z.enum(['krx', 'unified', 'nxt']).default('krx') }), getMinuteBars],
+    ['get_investor_flow', '외국인·기관 순매수', 'KRX 투자자별 일별 순매수 수량(주)·금액(원)과 3·5·20거래일 누계를 반환합니다. 실시간 수급이 아닙니다. 실제 데이터 날짜와 daysUsed를 확인하세요. 결측치는 null입니다.',
+      z.object({ code: codeSchema, limit: z.number().int().min(1).max(30).default(20) }), getInvestorFlow],
+  ]) {
+    server.registerTool(name, { title, description, inputSchema: schema, annotations: READ_ONLY }, async (input) => {
+      try { return jsonResult(await handler(input)) } catch (e) { return errorResult(e) }
+    })
+  }
 
   return server
 }

@@ -919,7 +919,12 @@ export async function inquireMinuteBars(appKey, appSecret, env, code6, opts = {}
         const hhmmss = normalizeCntgHhmmss(r.stck_cntg_hour || r.cntg_hour || '')
         const price = num(r.stck_prpr)
         if (!hhmmss || price == null) return null
-        return { hhmmss, price: Math.round(price), volume: Math.max(0, num(r.cntg_vol) ?? 0) }
+        return {
+          date: r.stck_bsop_date || null,
+          hhmmss, price: Math.round(price),
+          open: num(r.stck_oprc), high: num(r.stck_hgpr), low: num(r.stck_lwpr),
+          volume: Math.max(0, num(r.cntg_vol) ?? 0),
+        }
       })
       .filter(Boolean)
       .sort((a, b) => hhmmssToNum(a.hhmmss) - hhmmssToNum(b.hhmmss))
