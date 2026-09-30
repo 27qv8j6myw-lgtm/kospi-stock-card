@@ -9,7 +9,7 @@ import {
 import { scoreSingleStock, fetchIndexScreeningContext } from './scoreStock.mjs'
 import { inquireKospiReturn5D } from '../kisClient.mjs'
 import { selectTopFiveWithAnalysis } from '../ai/screeningAnalysis.mjs'
-import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
+import { getUserModel, isDeepAnalysisUser, resolveModelId } from '../lib/userModel.mjs'
 import { getCachedScreening, setCachedScreening, makeCacheKey } from '../lib/screeningCache.mjs'
 import { enrichWithConsensus } from './enrichWithConsensus.mjs'
 
@@ -66,8 +66,11 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
   }
 
   const userModel = await getUserModel(userId)
+  // 관리자가 Opus 를 고르면 심층 모드 결과가 일반 Opus 사용자 공유 캐시와 섞이지 않게 분리
+  const cacheTier =
+    userModel !== 'fable' && (await isDeepAnalysisUser(userId)) ? `${userModel}-deep` : userModel
   if (!skipTopFiveAi && !force) {
-    const hitDb = await getCachedScreening('global', userModel)
+    const hitDb = await getCachedScreening('global', cacheTier)
     if (hitDb) {
       return sanitizePowerEquipmentInBundle({
         ...hitDb,
@@ -76,7 +79,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
         source: 'cache',
         cached: true,
         cachedAt: hitDb.cachedAt ?? hitDb.generatedAt ?? null,
-        screeningCacheKey: makeCacheKey('global', userModel),
+        screeningCacheKey: makeCacheKey('global', cacheTier),
       })
     }
   }
@@ -313,7 +316,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
     aiAnalyses: [],
     analysesByCode: {},
     source: 'fresh',
-    screeningCacheKey: skipTopFiveAi ? memScopeKey : makeCacheKey('global', userModel),
+    screeningCacheKey: skipTopFiveAi ? memScopeKey : makeCacheKey('global', cacheTier),
     screeningAiModel,
     screeningUserModel,
     top15Codes: candidates.map((c) => c.code).join(','),
@@ -338,7 +341,7 @@ export async function runScreening(appKey, appSecret, env, userId = null, opts =
       top15Codes: result.top15Codes,
     })
     // 응답 전에 저장을 끝낸다 — 클라이언트가 끊겨 함수가 곧 종료돼도 결과가 남아야 복귀 조회로 살릴 수 있다.
-    await setCachedScreening('global', userModel, payload, userId).catch(() => {})
+    await setCachedScreening('global', cacheTier, payload, userId).catch(() => {})
   }
 
   console.log(`[Screening v2] Completed in ${elapsedSec}s`)

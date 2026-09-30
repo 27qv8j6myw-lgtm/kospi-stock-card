@@ -7,7 +7,9 @@ import { ensureModelRegistry, getLatestModelId } from './modelRegistry.mjs'
 import { isAdminUserEmail } from './userInfo.mjs'
 
 const CACHE_TTL_MS = 5 * 60 * 1000
-/** @type {Map<string, { model: string, expires: number }>} */
+/** 모델 티어는 관리자 화면에서 바꾸면 곧바로 반영되도록 짧게 캐시 */
+const MODEL_CACHE_TTL_MS = 30 * 1000
+/** @type {Map<string, { model: string, admin: boolean, expires: number }>} */
 const cache = new Map()
 
 /** @type {Map<string, { ok: boolean, expires: number }>} */
@@ -64,47 +66,82 @@ async function isAdminUserId(supabase, userId) {
 }
 
 /**
- * 사용자 AI 티어. 관리자는 서버에서 항상 fable 로 확정(하드코딩 DB 함수 의존 제거).
- * 비관리자는 기존 get_user_model RPC(opus/sonnet) 유지.
- * @param {string | null | undefined} userId
- * @returns {Promise<'opus' | 'sonnet' | 'fable'>}
+ * 관리자가 고른 모델 — user_settings.ai_model 이 'opus' 면 opus, 그 외(미설정 포함)는 fable.
+ * (get_user_model RPC 는 관리자에게 항상 fable 을 돌려주므로 테이블을 직접 읽는다)
+ * @param {import('@supabase/supabase-js').SupabaseClient} supabase
+ * @param {string} userId
+ * @returns {Promise<'opus' | 'fable'>}
  */
-export async function getUserModel(userId) {
+async function getAdminChosenModel(supabase, userId) {
+  const { data, error } = await supabase
+    .from('user_settings')
+    .select('ai_model')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) console.warn('[userModel] admin ai_model:', error.message)
+  const raw = typeof data?.ai_model === 'string' ? data.ai_model.trim().toLowerCase() : ''
+  return raw === 'opus' ? 'opus' : 'fable'
+}
+
+/**
+ * 사용자 티어 + 관리자 여부. 관리자는 fable/opus 중 선택(기본 fable),
+ * 비관리자는 기존 get_user_model RPC(opus/sonnet).
+ * @param {string | null | undefined} userId
+ * @returns {Promise<{ model: 'opus' | 'sonnet' | 'fable', admin: boolean }>}
+ */
+async function getUserTier(userId) {
   await ensureModelRegistry()
-  if (!userId) return 'sonnet'
+  if (!userId) return { model: 'sonnet', admin: false }
 
   const hit = cache.get(userId)
   if (hit && hit.expires > Date.now()) {
-    return normalizeTier(hit.model)
+    return { model: normalizeTier(hit.model), admin: hit.admin }
   }
 
   const supabase = getServiceSupabase()
   if (!supabase) {
     console.warn('[userModel] SUPABASE_SERVICE_ROLE_KEY 또는 URL 없음 — sonnet')
-    return 'sonnet'
+    return { model: 'sonnet', admin: false }
   }
 
   try {
-    // 1) 관리자 → 항상 fable (서버 판별, 배포만으로 반영. DB 마이그레이션 불필요)
     if (await isAdminUserId(supabase, userId)) {
-      cache.set(userId, { model: 'fable', expires: Date.now() + CACHE_TTL_MS })
-      return 'fable'
+      const model = await getAdminChosenModel(supabase, userId)
+      cache.set(userId, { model, admin: true, expires: Date.now() + MODEL_CACHE_TTL_MS })
+      return { model, admin: true }
     }
 
-    // 2) 비관리자 → 기존 RPC (opus/sonnet)
     const { data, error } = await supabase.rpc('get_user_model', { target_user_id: userId })
     if (error) {
       console.error('[userModel] rpc:', error.message)
-      return 'sonnet'
+      return { model: 'sonnet', admin: false }
     }
     const raw = typeof data === 'string' ? data.trim().toLowerCase() : ''
     const model = normalizeTier(raw)
-    cache.set(userId, { model, expires: Date.now() + CACHE_TTL_MS })
-    return model
+    cache.set(userId, { model, admin: false, expires: Date.now() + MODEL_CACHE_TTL_MS })
+    return { model, admin: false }
   } catch (e) {
     console.error('[userModel]', e instanceof Error ? e.message : e)
-    return 'sonnet'
+    return { model: 'sonnet', admin: false }
   }
+}
+
+/**
+ * 사용자 AI 티어.
+ * @param {string | null | undefined} userId
+ * @returns {Promise<'opus' | 'sonnet' | 'fable'>}
+ */
+export async function getUserModel(userId) {
+  return (await getUserTier(userId)).model
+}
+
+/**
+ * 관리자 전용 심층 분석 모드 여부 — 관리자가 고른 모델(fable/opus)과 무관하게 유지.
+ * @param {string | null | undefined} userId
+ * @returns {Promise<boolean>}
+ */
+export async function isDeepAnalysisUser(userId) {
+  return (await getUserTier(userId)).admin
 }
 
 /**
@@ -122,7 +159,7 @@ export function resolveModelId(model) {
 }
 
 /**
- * 에이전트형(도구 루프) 경로용 모델 — 일반 사용자는 opus 강제, 관리자(fable 티어)는 fable.
+ * 에이전트형(도구 루프) 경로용 모델 — fable 티어(관리자가 Fable 선택)는 fable, 그 외는 opus.
  * @param {string | null | undefined} userId
  * @returns {Promise<string>} 모델 ID
  */
@@ -202,12 +239,15 @@ export async function resolveUserMaxTokens(userId, baseTokens, cap) {
  * @param {string | null | undefined} userId
  * @param {{ opusBase: number, sonnetBase?: number, cap?: number, forceModel?: 'opus' | 'sonnet' }} opts
  *   forceModel 지정 시 사용자 설정과 무관하게 해당 모델 사용(도구 루프는 opus 고정 권장).
- *   단, 관리자(fable 티어)는 forceModel 과 무관하게 항상 fable 로 승격.
- * @returns {Promise<{ userModel: 'opus' | 'sonnet' | 'fable', modelId: string, maxTokens: number }>}
+ *   단, fable 티어(관리자가 Fable 선택)는 forceModel 과 무관하게 fable 유지.
+ * @returns {Promise<{ userModel: 'opus' | 'sonnet' | 'fable', modelId: string, maxTokens: number, deep: boolean }>}
+ *   deep: 관리자 전용 심층 분석 모드 (관리자가 Opus 를 골라도 유지)
  */
 export async function resolveModelAndMaxTokens(userId, { opusBase, sonnetBase, cap, forceModel }) {
-  const [tier, workload] = await Promise.all([getUserModel(userId), getUserWorkload(userId)])
-  // 관리자(fable)는 forceModel 을 무시하고 항상 최상위 모델 사용.
+  const [{ model: tier, admin }, workload] = await Promise.all([
+    getUserTier(userId),
+    getUserWorkload(userId),
+  ])
   const userModel = tier === 'fable' ? 'fable' : (forceModel ?? tier)
   const base = userModel === 'sonnet' ? (sonnetBase ?? opusBase) : opusBase
   const mult = WORKLOAD_MULTIPLIER[workload] ?? 1
@@ -216,6 +256,7 @@ export async function resolveModelAndMaxTokens(userId, { opusBase, sonnetBase, c
     userModel,
     modelId: resolveModelId(userModel),
     maxTokens: cap ? Math.min(tokens, cap) : tokens,
+    deep: admin,
   }
 }
 

@@ -284,15 +284,15 @@ ${summaryLines.join('\n')}
   // 도구 사용(에이전트형) 루프는 항상 opus 고정.
   // sonnet 은 도구를 여러 턴에 나눠 호출해 왕복이 많아 매우 느리고,
   // 누적 입력 토큰까지 늘어 비용 이점도 사라지기 때문이다. (작업량 배수는 유지)
-  const { userModel, modelId, maxTokens } = await resolveModelAndMaxTokens(userId, {
+  const { userModel, modelId, maxTokens, deep } = await resolveModelAndMaxTokens(userId, {
     opusBase: PRO_ANALYSIS_MAX_TOKENS,
     cap: 16000,
     forceModel: 'opus',
   })
 
-  /** 관리자(fable) — 형식보다 추론 깊이를 우선하는 심층 모드 */
+  /** 관리자 — 형식보다 추론 깊이를 우선하는 심층 모드 */
   const deepBlock =
-    userModel === 'fable'
+    deep
       ? `\n## [심층 통찰] 형식·길이 제약 없는 자유 서술\n\n${deepAnalysisRules(PORTFOLIO_DEEP_AXES)}\n`
       : ''
 

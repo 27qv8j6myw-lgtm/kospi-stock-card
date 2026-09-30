@@ -7,7 +7,6 @@ import {
   DollarSign,
   Lightbulb,
   Loader2,
-  Lock,
   SlidersHorizontal,
   Sparkles,
   Users,
@@ -380,15 +379,11 @@ export default function AdminPage() {
                             {lockAiUi ? (
                               <>
                                 <WorkloadToggle userId={id} current={aiWorkload} onUpdated={load} />
-                                <div
-                                  className="inline-flex items-center gap-1 rounded-md bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600"
-                                  title={`관리자 계정은 Fable 고정 (${aiModels?.fable ?? '최신 Fable'})`}
-                                >
-                                  <Lock className="size-2.5 shrink-0" aria-hidden />
-                                  <span>
-                                    {aiModels?.fable ? formatModelLabel(aiModels.fable) : 'Fable'}
-                                  </span>
-                                </div>
+                                <AdminModelToggle
+                                  userId={id}
+                                  fableLabel={formatModelLabel(aiModels?.fable) || 'Fable'}
+                                  opusLabel={formatModelLabel(aiModels?.opus) || 'Opus'}
+                                />
                               </>
                             ) : (
                               <>
@@ -718,6 +713,90 @@ function ScreenerEnableToggle({
     >
       <SlidersHorizontal size={13} strokeWidth={2.2} aria-hidden />
     </button>
+  )
+}
+
+type AdminAiTier = 'fable' | 'opus'
+
+/**
+ * 관리자 본인 모델(Fable/Opus). user_summary 뷰는 관리자에게 항상 fable 을 돌려주므로
+ * 저장값은 user_settings 에서 직접 읽는다. 'opus' 외 값(미설정 포함)은 Fable.
+ */
+function AdminModelToggle({
+  userId,
+  fableLabel,
+  opusLabel,
+}: {
+  userId: string
+  fableLabel: string
+  opusLabel: string
+}) {
+  const { user: actor } = useAuth()
+  const [current, setCurrent] = useState<AdminAiTier | null>(null)
+  const [updating, setUpdating] = useState(false)
+
+  useEffect(() => {
+    if (!userId) return
+    let cancelled = false
+    void supabase
+      .from('user_settings')
+      .select('ai_model')
+      .eq('user_id', userId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setCurrent(data?.ai_model === 'opus' ? 'opus' : 'fable')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [userId])
+
+  const handleChange = async (next: AdminAiTier) => {
+    if (next === current || updating) return
+    setUpdating(true)
+    try {
+      const { error } = await supabase.from('user_settings').upsert(
+        {
+          user_id: userId,
+          ai_model: next,
+          set_by: actor?.id ?? null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'user_id' },
+      )
+      if (error) throw error
+      setCurrent(next)
+    } catch (e: unknown) {
+      alert('변경 실패: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setUpdating(false)
+    }
+  }
+
+  const options: { value: AdminAiTier; label: string }[] = [
+    { value: 'fable', label: fableLabel },
+    { value: 'opus', label: opusLabel },
+  ]
+
+  return (
+    <div
+      className="inline-flex shrink-0 rounded-md border border-default bg-neutral-bg p-px"
+      title="관리자 AI 모델 (심층 분석 모드는 어느 쪽이든 유지)"
+    >
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          disabled={updating || current == null}
+          onClick={() => void handleChange(opt.value)}
+          className={`rounded px-2 py-0.5 text-[10px] transition-all ${
+            current === opt.value ? 'bg-card font-medium text-primary shadow-sm' : 'text-secondary'
+          }`}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   )
 }
 

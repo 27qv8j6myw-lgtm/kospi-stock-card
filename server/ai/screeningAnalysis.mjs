@@ -3,7 +3,7 @@ import { cleanEnvSecret } from '../aiClient.mjs'
 import { createAnthropicMessage, SCREENING_AI_TIMEOUT_MS } from '../lib/anthropicTimed.mjs'
 import { safeJsonParse } from '../lib/safeJson.mjs'
 import { getLatestModelId } from '../lib/modelRegistry.mjs'
-import { getUserModel, resolveModelId } from '../lib/userModel.mjs'
+import { getUserModel, isDeepAnalysisUser, resolveModelId } from '../lib/userModel.mjs'
 import { getStockMasterByCode } from '../lib/stocksMasterSearch.mjs'
 import { resolveScreeningStockDisplayName } from '../screening/sectorMaster.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
@@ -220,8 +220,8 @@ export async function selectTopFiveWithAnalysis(candidates, userId = null, opts 
   const userModel = forced ?? (await getUserModel(userId))
   const envOverride = process.env.SCREENING_AI_MODEL?.trim()
   const modelId = envOverride || resolveModelId(userModel)
-  /** 관리자(fable) — 형식 일관성보다 추론 깊이를 우선하는 심층 모드 */
-  const isDeep = userModel === 'fable'
+  /** 관리자 — 형식 일관성보다 추론 깊이를 우선하는 심층 모드 (강제 모델 지정 시엔 fable 일 때만) */
+  const isDeep = forced ? forced === 'fable' : await isDeepAnalysisUser(userId)
   // fable 은 thinking 블록 + 심층 서술로 출력이 길어 토큰을 크게 준다.
   const maxTokens = userModel === 'sonnet' ? 2500 : isDeep ? 16000 : 4000
 

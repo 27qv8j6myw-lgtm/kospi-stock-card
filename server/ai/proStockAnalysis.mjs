@@ -335,14 +335,13 @@ export async function runProStockAnalysisStream({ summary, code, userId, send, f
     userModel,
     modelId: stockModel,
     maxTokens: baseMaxTokens,
+    deep: isDeep,
   } = await resolveModelAndMaxTokens(userId, {
     opusBase: PRO_ANALYSIS_MAX_TOKENS,
     sonnetBase: 12000,
     cap: 16000,
   })
 
-  /** 관리자(fable) — 형식보다 추론 깊이를 우선하는 심층 모드 */
-  const isDeep = userModel === 'fable'
   // 심층 모드는 thinking 블록 + 장문 논증으로 출력이 길어 상한과 이어쓰기 라운드를 늘린다.
   const maxTokens = isDeep ? Math.max(baseMaxTokens, DEEP_MAX_TOKENS) : baseMaxTokens
   const maxContinuations = isDeep ? 3 : 2
