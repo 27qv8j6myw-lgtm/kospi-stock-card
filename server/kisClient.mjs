@@ -788,7 +788,8 @@ export async function inquireDailyBarsRange(appKey, appSecret, env, code6, opts 
         byDate.set(r.ts, r)
       }
       const oldest = rows[0].ts
-      if (added === 0 || oldest <= start || byDate.size >= maxBars) break
+      // 100건 미만이면 그 구간에 더 이상 봉이 없다 (KIS 는 구간 내 최근 100건까지 돌려준다)
+      if (added === 0 || rows.length < 100 || oldest <= start || byDate.size >= maxBars) break
       const prev = ymdToDate(oldest)
       prev.setDate(prev.getDate() - 1)
       pageEnd = ymd(prev)
