@@ -182,7 +182,7 @@ export function createSignal15McpServer(userId) {
       }), getDailyBars],
     ['get_minute_bars', '당일 분봉', '당일 1분봉 OHLCV 최대 30개를 조회합니다. end_time(HHMMSS)으로 당일 이전 구간을 조회할 수 있습니다. 과거 거래일 분봉은 지원하지 않습니다. 날짜가 없는 값은 당일로 단정하지 마세요.',
       z.object({ code: codeSchema, end_time: z.string().regex(/^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/).optional(), market: z.enum(['krx', 'unified', 'nxt']).default('krx') }), getMinuteBars],
-    ['get_investor_flow', '외국인·기관 순매수', 'KRX 투자자별 일별 순매수 수량(주)·금액(원)과 3·5·20거래일 누계를 최신순으로 반환합니다. 기본은 KIS 최근 20일(최대 30일)입니다. start_date/end_date(YYYYMMDD)를 주거나 limit을 30 넘게 주면 매일 쌓는 누적 테이블과 합쳐 최대 1000일까지 돌려줍니다. 누적을 시작한 날 이전 과거는 없습니다. 실시간 수급이 아니며 최신일은 잠정치일 수 있습니다. 결측치는 null입니다.',
+    ['get_investor_flow', '외국인·기관 순매수', 'KRX 투자자별 일별 순매수 수량(주)·금액(원)과 3·5·20거래일 누계를 최신순으로 반환합니다. 기본은 KIS 최근 20일(최대 30일)입니다. start_date/end_date(YYYYMMDD)를 주거나 limit을 30 넘게 주면 30일보다 오래된 구간을 KIS 종목별 투자자매매동향(일별)로 받아 최대 1000일까지 돌려줍니다(history 필드에 호출 수·대조 결과). 과거 조회가 안 되면 매일 쌓는 누적 테이블로 대체합니다. 누계는 값이 전부 빈 날(pendingDates, 장중 당일 등)을 빼고 값이 있는 최근 N거래일을 합산합니다. 실시간 수급이 아니며 결측치는 null입니다.',
       z.object({
         code: codeSchema,
         limit: z.number().int().min(1).max(1000).optional().describe('최대 일수 (기본 20, start_date 지정 시 기본 1000)'),

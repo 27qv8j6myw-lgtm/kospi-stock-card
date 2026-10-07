@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-vi.mock('../kisClient.mjs', () => ({ inquireInvestorByStock: vi.fn(), inquireDailyBars: vi.fn(), inquireDailyBarsRange: vi.fn(), inquireMinuteBars: vi.fn() }))
+vi.mock('../kisClient.mjs', () => ({ inquireInvestorByStock: vi.fn(), inquireInvestorTradeDailyRange: vi.fn(), inquireDailyBars: vi.fn(), inquireDailyBarsRange: vi.fn(), inquireMinuteBars: vi.fn() }))
 vi.mock('../lib/supabaseService.mjs', () => ({ getSupabaseService: vi.fn(() => null) }))
 import { inquireInvestorByStock } from '../kisClient.mjs'
 import { runInvestorFlowCollect, resolveTrackedCodes, toDbRows, DEFAULT_TRACKED_CODES } from './investorFlow.mjs'
