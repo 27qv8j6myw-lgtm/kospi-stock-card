@@ -679,6 +679,96 @@ export async function inquireInvestorByStock(appKey, appSecret, env, code6) {
     })
 }
 
+/** 종목별 투자자매매동향(일별) 기간 조회 한 번에 돌려줄 최대 거래일 수 (약 4년) */
+const KIS_INVESTOR_RANGE_MAX_DAYS = 1000
+/** 한 페이지 크기를 가정하지 않으므로 페이지 수에도 상한을 둔다 (30건씩 와도 1000일을 채운다) */
+const KIS_INVESTOR_RANGE_MAX_PAGES = 40
+
+/**
+ * [국내주식] 종목별 투자자매매동향(일별) — FHPTJ04160001 기간 조회
+ *
+ * 현재가 투자자(FHKST01010900)는 최근 30거래일만 주고 날짜 지정이 없다. 이 TR 은 기준일
+ * (FID_INPUT_DATE_1)부터 과거 방향으로 여러 거래일을 돌려주므로, 받은 행 중 가장 오래된
+ * 날짜의 전날을 새 기준일로 놓고 `start` 에 닿거나 `maxDays` 를 채울 때까지 반복한다.
+ * 행의 필드명(frgn/orgn/prsn `_ntby_qty`, `_ntby_tr_pbmn`)과 대금 단위(백만원)는
+ * FHKST01010900 과 같아 같은 정규화 함수를 쓸 수 있다.
+ *
+ * 실전 전용 TR(모의투자 미지원)이라 vps 환경에서는 호출하지 않고 `supported: false` 를 돌려준다.
+ * 첫 페이지가 실패하면 예외를 던지고, 중간 페이지가 실패하면 그때까지 받은 행과 `error` 를 돌려준다.
+ *
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {string} env
+ * @param {string} code6
+ * @param {{ start: string, end?: string, maxDays?: number }} opts  start/end 는 YYYYMMDD (end 기본 오늘)
+ * @returns {Promise<{ rows: Array<Record<string, unknown>>, pages: number, supported: boolean, error: string | null }>}
+ *   rows 는 KIS 원본 행, 최신순
+ */
+export async function inquireInvestorTradeDailyRange(appKey, appSecret, env, code6, opts = {}) {
+  const iscd = normalizeKisIscd(code6)
+  const start = String(opts.start ?? '')
+  const end = /^\d{8}$/.test(String(opts.end ?? '')) ? String(opts.end) : ymd(new Date())
+  if (!/^\d{8}$/.test(start)) throw new Error('start 는 YYYYMMDD 형식이어야 합니다')
+  const maxDays = Math.max(1, Math.min(Number(opts.maxDays) || KIS_INVESTOR_RANGE_MAX_DAYS, KIS_INVESTOR_RANGE_MAX_DAYS))
+  if (env !== 'prod') return { rows: [], pages: 0, supported: false, error: null }
+  if (start > end) return { rows: [], pages: 0, supported: true, error: null }
+  const cacheKey = `kis:investorRange:${env}:${iscd}:${start}:${end}:${maxDays}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    /** @type {Map<string, Record<string, unknown>>} */
+    const byDate = new Map()
+    let pageEnd = end
+    let pages = 0
+    let error = null
+    while (pages < KIS_INVESTOR_RANGE_MAX_PAGES) {
+      if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
+      let data
+      try {
+        data = await kisGet({
+          appKey,
+          appSecret,
+          env,
+          path: '/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily',
+          params: {
+            FID_COND_MRKT_DIV_CODE: 'J',
+            FID_INPUT_ISCD: iscd,
+            FID_INPUT_DATE_1: pageEnd,
+            FID_ORG_ADJ_PRC: '',
+            FID_ETC_CLS_CODE: '',
+          },
+          trId: 'FHPTJ04160001',
+          kind: 'KIS 투자자 일별동향',
+        })
+      } catch (e) {
+        if (pages === 0) throw e
+        error = e instanceof Error ? e.message : String(e)
+        break
+      }
+      pages += 1
+      const rows = normalizeKisOutputRows(data.output2).filter((r) => /^\d{8}$/.test(String(r?.stck_bsop_date ?? '')))
+      if (!rows.length) break
+      let added = 0
+      let oldest = String(rows[0].stck_bsop_date)
+      for (const r of rows) {
+        const d = String(r.stck_bsop_date)
+        if (d < oldest) oldest = d
+        if (d < start || d > end) continue
+        if (!byDate.has(d)) added += 1
+        byDate.set(d, r)
+      }
+      // 새로 얻은 날이 없거나(기준일을 무시하는 응답 포함) 시작일·상한에 닿으면 멈춘다
+      if (added === 0 || oldest <= start || byDate.size >= maxDays) break
+      const prev = ymdToDate(oldest)
+      prev.setDate(prev.getDate() - 1)
+      pageEnd = ymd(prev)
+      if (pageEnd < start) break
+    }
+    const rows = [...byDate.values()]
+      .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)))
+      .slice(0, maxDays)
+    return { rows, pages, supported: true, error }
+  })
+}
+
 async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
   const bars = await inquireDailyBars(appKey, appSecret, env, code6, Math.max(toTfCount(tf), 5))
   return bars.slice(-toTfCount(tf))
