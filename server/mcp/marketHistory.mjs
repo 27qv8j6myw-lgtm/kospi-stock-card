@@ -1,4 +1,4 @@
-import { inquireDailyBars, inquireMinuteBars, inquireInvestorByStock } from '../kisClient.mjs'
+import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireInvestorByStock } from '../kisClient.mjs'
 
 function credentials(code) {
   if (!/^\d{6}$/.test(code)) throw new Error('6자리 종목코드가 필요합니다')
@@ -19,13 +19,44 @@ function count(value, fallback, max) {
   return n
 }
 
-/** @param {{code: string, limit?: number}} input */
-export async function getDailyBars({ code, limit }) {
-  const requested = count(limit, 60, 100)
-  const rows = await inquireDailyBars(...credentials(code), requested)
-  const bars = rows.slice(-requested).map(({ ts, price, open, high, low, volume }) => ({ date: ts, open, high, low, close: price, volume }))
-  return { ...metadata(code), adjusted: false, requested, count: bars.length, latestDataDate: bars.at(-1)?.date ?? null,
-    note: '조회 시각은 데이터 확정 시각이 아닙니다. 최신 봉은 미완성일 수 있으며 공급자 반환량만 제공합니다.', bars }
+const YMD = /^\d{8}$/
+/** 기간 조회(페이지 반복)로 받을 수 있는 최대 봉 수 — kisClient 의 KIS_DAILY_RANGE_MAX_BARS 와 같게 유지 */
+const DAILY_RANGE_MAX = 1500
+/** 기간 지정이 없을 때 "먼 과거"로 쓰는 시작일 — limit 만큼 채우면 거기서 멈춘다 */
+const DAILY_RANGE_FLOOR = '19900101'
+
+const toBar = ({ ts, price, open, high, low, volume }) => ({ date: ts, open, high, low, close: price, volume })
+const DAILY_NOTE = '조회 시각은 데이터 확정 시각이 아닙니다. 최신 봉은 미완성일 수 있으며 공급자 반환량만 제공합니다.'
+
+/**
+ * 일봉 조회.
+ * - 기본(limit ≤ 100, 날짜 없음, 원주가): 기존처럼 한 번 호출.
+ * - start_date/end_date 지정, limit > 100, 또는 adjusted=true: KIS 가 한 번에 100건만 주므로
+ *   100건씩 거슬러 올라가며 이어 붙인다 (최대 1500봉).
+ * @param {{code: string, limit?: number, start_date?: string, end_date?: string, adjusted?: boolean}} input
+ */
+export async function getDailyBars({ code, limit, start_date, end_date, adjusted }) {
+  const creds = credentials(code)
+  if (start_date != null && !YMD.test(start_date)) throw new Error('start_date는 YYYYMMDD 형식이어야 합니다')
+  if (end_date != null && !YMD.test(end_date)) throw new Error('end_date는 YYYYMMDD 형식이어야 합니다')
+  if (start_date != null && end_date != null && start_date > end_date) throw new Error('start_date가 end_date보다 늦습니다')
+  const adj = adjusted === true
+  const hasRange = start_date != null || end_date != null
+
+  if (!hasRange && !adj && (limit ?? 60) <= 100) {
+    const requested = count(limit, 60, 100)
+    const rows = await inquireDailyBars(...creds, requested)
+    const bars = rows.slice(-requested).map(toBar)
+    return { ...metadata(code), adjusted: false, requested, count: bars.length, latestDataDate: bars.at(-1)?.date ?? null, note: DAILY_NOTE, bars }
+  }
+
+  const requested = count(limit, start_date != null ? DAILY_RANGE_MAX : 60, DAILY_RANGE_MAX)
+  const { bars: rows, pages } = await inquireDailyBarsRange(...creds, {
+    start: start_date ?? DAILY_RANGE_FLOOR, end: end_date, adjusted: adj, maxBars: requested })
+  const bars = rows.map(toBar)
+  return { ...metadata(code), adjusted: adj, requested, count: bars.length, pages,
+    fromDate: bars[0]?.date ?? null, latestDataDate: bars.at(-1)?.date ?? null,
+    note: `${DAILY_NOTE} 100건 단위로 ${pages}번 나눠 받아 이어 붙인 결과입니다.${adj ? ' 수정주가(액면분할·무상증자 반영)라 당시 실제 호가와 다를 수 있습니다.' : ''}`, bars }
 }
 
 /** @param {{code: string, end_time?: string, market?: string}} input */

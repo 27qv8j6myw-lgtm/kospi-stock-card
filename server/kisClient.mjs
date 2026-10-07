@@ -685,6 +685,124 @@ async function inquireDailyChart(appKey, appSecret, env, code6, tf) {
 }
 
 /**
+ * 기간별시세 페이지 사이 대기 (ms) — KIS 유량 한도(EGW00201) 회피용.
+ * 실전은 초당 20건, 모의(vps)는 초당 2건이라 모의는 더 길게 쉰다.
+ * @param {string} env
+ */
+function dailyPageDelayMs(env) {
+  return env === 'prod' ? 350 : 600
+}
+/** 기간 조회 한 번에 돌려줄 최대 일봉 수 (약 6년) */
+const KIS_DAILY_RANGE_MAX_BARS = 1500
+
+/**
+ * FHKST03010100 output2 → 일봉 배열 (오름차순 ts).
+ * @param {unknown} output2
+ */
+function parseDailyChartRows(output2) {
+  const rows = Array.isArray(output2) ? output2 : []
+  const parsed = rows
+    .map((r) => {
+      const date = r.stck_bsop_date || r.biz_day || r.bstp_nmix_prpr || ''
+      const close = num(r.stck_clpr) ?? num(r.stck_prpr) ?? num(r.clpr)
+      if (!date || close === null) return null
+      const open = num(r.stck_oprc) ?? close
+      const high = num(r.stck_hgpr) ?? close
+      const low = num(r.stck_lwpr) ?? close
+      const volume = num(r.acml_vol) ?? num(r.ft_vol) ?? 0
+      return {
+        label: mdLabel(date),
+        price: Math.round(close),
+        open: Math.round(open),
+        high: Math.round(high),
+        low: Math.round(low),
+        volume: Math.max(0, Math.round(volume)),
+        ts: date,
+      }
+    })
+    .filter(Boolean)
+  parsed.sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+  return parsed
+}
+
+/** @param {string} yyyymmdd */
+function ymdToDate(yyyymmdd) {
+  const s = String(yyyymmdd)
+  return new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)))
+}
+
+/**
+ * 일봉 기간 조회 — 페이지를 거슬러 올라가며 이어 붙인다.
+ *
+ * KIS 기간별시세(FHKST03010100)는 한 번에 최대 100건만 돌려준다. 받은 봉 중 가장
+ * 오래된 날짜의 전날을 새 종료일로 놓고 `start` 에 닿거나 `maxBars` 를 채울 때까지
+ * 반복한다. 페이지 사이에 잠시 쉬어 유량 한도를 피한다.
+ *
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {string} env
+ * @param {string} code6
+ * @param {{ start: string, end?: string, adjusted?: boolean, maxBars?: number }} opts
+ *   start/end 는 YYYYMMDD. adjusted=true 면 수정주가(FID_ORG_ADJ_PRC '0'), 기본은 원주가('1').
+ * @returns {Promise<{ bars: Array<{label:string, price:number, ts:string, open:number, high:number, low:number, volume:number}>, pages: number }>}
+ */
+export async function inquireDailyBarsRange(appKey, appSecret, env, code6, opts = {}) {
+  const iscd = normalizeKisIscd(code6)
+  const start = String(opts.start ?? '')
+  const end = /^\d{8}$/.test(String(opts.end ?? '')) ? String(opts.end) : ymd(new Date())
+  if (!/^\d{8}$/.test(start)) throw new Error('start 는 YYYYMMDD 형식이어야 합니다')
+  if (start > end) throw new Error('start 가 end 보다 늦습니다')
+  const adjusted = opts.adjusted === true
+  const maxBars = Math.max(1, Math.min(Number(opts.maxBars) || KIS_DAILY_RANGE_MAX_BARS, KIS_DAILY_RANGE_MAX_BARS))
+  const maxPages = Math.ceil(maxBars / 100) + 1
+  const cacheKey = `kis:dailyRange:${env}:${iscd}:${start}:${end}:${adjusted ? 'adj' : 'raw'}:${maxBars}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    /** @type {Map<string, any>} */
+    const byDate = new Map()
+    let pageEnd = end
+    let pages = 0
+    while (pages < maxPages) {
+      if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice',
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_INPUT_ISCD: iscd,
+          FID_INPUT_DATE_1: start,
+          FID_INPUT_DATE_2: pageEnd,
+          FID_PERIOD_DIV_CODE: 'D',
+          FID_ORG_ADJ_PRC: adjusted ? '0' : '1',
+        },
+        trId: 'FHKST03010100',
+        kind: 'KIS 기간차트',
+      })
+      pages += 1
+      const rows = parseDailyChartRows(data.output2)
+      if (!rows.length) break
+      let added = 0
+      for (const r of rows) {
+        if (!byDate.has(r.ts)) added += 1
+        byDate.set(r.ts, r)
+      }
+      const oldest = rows[0].ts
+      if (added === 0 || oldest <= start || byDate.size >= maxBars) break
+      const prev = ymdToDate(oldest)
+      prev.setDate(prev.getDate() - 1)
+      pageEnd = ymd(prev)
+      if (pageEnd < start) break
+    }
+    const bars = [...byDate.values()]
+      .filter((r) => r.ts >= start && r.ts <= end)
+      .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+      .slice(-maxBars)
+    return { bars, pages }
+  })
+}
+
+/**
  * 일봉 종가 시계열 (최근 maxBars개, 오름차순 ts).
  * [국내주식] 기간별시세(일) — FHKST03010100
  */
@@ -714,29 +832,7 @@ export async function inquireDailyBars(appKey, appSecret, env, code6, maxBars = 
         kind: 'KIS 기간차트',
       })
 
-      const rows = Array.isArray(data.output2) ? data.output2 : []
-      const parsed = rows
-        .map((r) => {
-          const date = r.stck_bsop_date || r.biz_day || r.bstp_nmix_prpr || ''
-          const close = num(r.stck_clpr) ?? num(r.stck_prpr) ?? num(r.clpr)
-          if (!date || close === null) return null
-          const open = num(r.stck_oprc) ?? close
-          const high = num(r.stck_hgpr) ?? close
-          const low = num(r.stck_lwpr) ?? close
-          const volume = num(r.acml_vol) ?? num(r.ft_vol) ?? 0
-          return {
-            label: mdLabel(date),
-            price: Math.round(close),
-            open: Math.round(open),
-            high: Math.round(high),
-            low: Math.round(low),
-            volume: Math.max(0, Math.round(volume)),
-            ts: date,
-          }
-        })
-        .filter(Boolean)
-
-      parsed.sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
+      const parsed = parseDailyChartRows(data.output2)
 
       const n = Math.max(5, Math.min(Number(maxBars) || 60, parsed.length))
       return parsed.slice(-n).map(({ label, price, ts, open, high, low, volume }) => ({
