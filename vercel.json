@@ -22,6 +22,9 @@
     "api/cron-daily-brief.mjs": {
       "maxDuration": 300
     },
+    "api/cron-investor-flow.mjs": {
+      "maxDuration": 300
+    },
     "api/mcp.mjs": {
       "maxDuration": 60
     },
@@ -37,6 +40,10 @@
     {
       "path": "/api/cron-daily-brief",
       "schedule": "50 6 * * 1-5"
+    },
+    {
+      "path": "/api/cron-investor-flow",
+      "schedule": "20 9 * * 1-5"
     }
   ],
   "rewrites": [

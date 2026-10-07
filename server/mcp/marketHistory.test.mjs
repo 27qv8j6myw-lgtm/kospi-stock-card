@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('../kisClient.mjs', () => ({ inquireDailyBars: vi.fn(), inquireDailyBarsRange: vi.fn(), inquireMinuteBars: vi.fn(), inquireInvestorByStock: vi.fn() }))
 import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireInvestorByStock } from '../kisClient.mjs'
-import { getDailyBars, getMinuteBars, getInvestorFlow } from './marketHistory.mjs'
+vi.mock('../lib/supabaseService.mjs', () => ({ getSupabaseService: vi.fn(() => null) }))
+import { getDailyBars, getMinuteBars, getInvestorFlow, mergeFlowRows, dbRowsToFlow } from './marketHistory.mjs'
 beforeEach(() => { vi.clearAllMocks(); process.env.KIS_APP_KEY = 'test'; process.env.KIS_APP_SECRET = 'test' })
 describe('MCP market history', () => {
   it('keeps actual dates and requested daily count', async () => {
@@ -48,6 +49,28 @@ describe('MCP market history', () => {
     expect(out.cumulative3d.foreign).toEqual({ netShares: 7, netAmountKrw: 1000000 })
     expect(out.cumulative3d.institution.netShares).toBeNull()
     expect(out.rows[0].institution.netShares).toBe(0)
+  })
+  it('merges stored history under live rows for ranges, live wins on same date', async () => {
+    inquireInvestorByStock.mockResolvedValue({ rows: [
+      { stck_bsop_date: '20260928', frgn_ntby_qty: '5', frgn_ntby_tr_pbmn: '1', orgn_ntby_qty: '0', orgn_ntby_tr_pbmn: '0', prsn_ntby_qty: '0', prsn_ntby_tr_pbmn: '0' },
+    ] })
+    const readStored = vi.fn(async () => ({ available: true, rows: dbRowsToFlow([
+      { trade_date: '2026-09-28', foreign_net_qty: 99, foreign_net_amt: 99, institution_net_qty: 0, institution_net_amt: 0, individual_net_qty: 0, individual_net_amt: 0 },
+      { trade_date: '2026-08-01', foreign_net_qty: 1, foreign_net_amt: 2000000, institution_net_qty: 3, institution_net_amt: 4, individual_net_qty: 5, individual_net_amt: 6 },
+      { trade_date: '2026-07-01', foreign_net_qty: 7, foreign_net_amt: 8, institution_net_qty: 9, institution_net_amt: 10, individual_net_qty: 11, individual_net_amt: 12 },
+    ]) }))
+    const out = await getInvestorFlow({ code: '005930', start_date: '20260715', end_date: '20260930' }, { readStored })
+    expect(readStored.mock.calls[0]).toEqual(['005930', { start: '20260715', end: '20260930', limit: 1030 }])
+    expect(out.source).toBe('KIS+DB'); expect(out.rows.map((r) => r.date)).toEqual(['20260928', '20260801'])
+    expect(out.rows[0].foreign.netShares).toBe(5); expect(out.rows[1].foreign.netAmountKrw).toBe(2000000)
+    expect(out.latestDataDate).toBe('20260928'); expect(out.fromDate).toBe('20260801'); expect(out.cumulative3d.daysUsed).toBe(2)
+    expect(mergeFlowRows([], []).length).toBe(0)
+  })
+  it('falls back to live rows when the stored table is unavailable', async () => {
+    inquireInvestorByStock.mockResolvedValue({ rows: [{ stck_bsop_date: '20260928', frgn_ntby_qty: '5', frgn_ntby_tr_pbmn: '1' }] })
+    const out = await getInvestorFlow({ code: '005930', limit: 100 })
+    expect(out.source).toBe('KIS'); expect(out.rows).toHaveLength(1); expect(out.note).toContain('KIS 최근 30일만')
+    await expect(getInvestorFlow({ code: '005930', start_date: '2026-07-15' })).rejects.toThrow()
   })
   it('returns empty history as missing rather than zero buying', async () => {
     inquireInvestorByStock.mockResolvedValue({ rows: [] })

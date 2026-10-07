@@ -1,4 +1,5 @@
 import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireInvestorByStock } from '../kisClient.mjs'
+import { getSupabaseService } from '../lib/supabaseService.mjs'
 
 function credentials(code) {
   if (!/^\d{6}$/.test(code)) throw new Error('6자리 종목코드가 필요합니다')
@@ -97,13 +98,95 @@ export function summarizeFlow(rows, requestedDays) {
     }))])) }
 }
 
-/** @param {{code: string, limit?: number}} input */
-export async function getInvestorFlow({ code, limit }) {
-  const requested = count(limit, 20, 30)
-  const data = await inquireInvestorByStock(...credentials(code))
-  const rows = normalizeInvestorRows(data.rows ?? [])
-  return { ...metadata(code), latestDataDate: rows[0]?.date ?? null, realtime: false,
-    units: { netShares: '주', netAmountKrw: '원' }, requested, count: Math.min(rows.length, requested),
-    note: '일별 수급이며 실시간 순매수가 아닙니다. 최신일 확정 여부는 보장하지 않습니다. null은 결측, 0은 순매수 0입니다. 누계는 반환된 전체 이력 기준이며 daysUsed를 확인하세요.',
-    cumulative3d: summarizeFlow(rows, 3), cumulative5d: summarizeFlow(rows, 5), cumulative20d: summarizeFlow(rows, 20), rows: rows.slice(0, requested) }
+/** KIS 투자자 API 가 한 번에 주는 최대 일수 */
+const FLOW_LIVE_MAX = 30
+/** 누적 테이블까지 합쳐 돌려줄 최대 일수 (약 4년) */
+const FLOW_RANGE_MAX = 1000
+const FLOW_TABLE = 'investor_flow_daily'
+const FLOW_NOTE = '일별 수급이며 실시간 순매수가 아닙니다. 최신일 확정 여부는 보장하지 않습니다. null은 결측, 0은 순매수 0입니다. 누계는 반환된 전체 이력 기준이며 daysUsed를 확인하세요.'
+
+/** 'YYYYMMDD' ↔ 'YYYY-MM-DD' */
+const toIso = (ymd) => `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`
+const fromIso = (iso) => String(iso).replace(/-/g, '').slice(0, 8)
+
+/**
+ * investor_flow_daily 행 → normalizeInvestorRows 와 같은 모양
+ * @param {Array<Record<string, unknown>>} rows
+ */
+export function dbRowsToFlow(rows) {
+  const n = (v) => (v == null ? null : Number(v))
+  return rows.map((r) => ({
+    date: fromIso(r.trade_date),
+    foreign: { netShares: n(r.foreign_net_qty), netAmountKrw: n(r.foreign_net_amt) },
+    institution: { netShares: n(r.institution_net_qty), netAmountKrw: n(r.institution_net_amt) },
+    individual: { netShares: n(r.individual_net_qty), netAmountKrw: n(r.individual_net_amt) },
+  }))
+}
+
+/**
+ * KIS 라이브 행이 같은 날짜의 저장 행을 덮는다 (라이브가 더 최신 확정치). 최신순.
+ * @param {ReturnType<typeof normalizeInvestorRows>} liveRows
+ * @param {ReturnType<typeof normalizeInvestorRows>} dbRows
+ */
+export function mergeFlowRows(liveRows, dbRows) {
+  const byDate = new Map()
+  for (const r of dbRows) byDate.set(r.date, r)
+  for (const r of liveRows) byDate.set(r.date, r)
+  return [...byDate.values()].sort((a, b) => b.date.localeCompare(a.date))
+}
+
+/**
+ * 누적 테이블에서 읽는다. 테이블·서비스 키가 없으면 available=false.
+ * @param {string} code
+ * @param {{ start?: string, end?: string, limit: number }} opts  start/end = YYYYMMDD
+ */
+async function readStoredFlow(code, { start, end, limit }) {
+  const supabase = getSupabaseService()
+  if (!supabase) return { rows: [], available: false }
+  let q = supabase.from(FLOW_TABLE)
+    .select('trade_date,foreign_net_qty,foreign_net_amt,institution_net_qty,institution_net_amt,individual_net_qty,individual_net_amt')
+    .eq('code', code).order('trade_date', { ascending: false }).limit(limit)
+  if (start) q = q.gte('trade_date', toIso(start))
+  if (end) q = q.lte('trade_date', toIso(end))
+  const { data, error } = await q
+  if (error) throw new Error(`수급 누적 테이블 조회 실패: ${error.message}`)
+  return { rows: dbRowsToFlow(data ?? []), available: true }
+}
+
+/**
+ * 투자자별 일별 순매수.
+ * - 기본(limit ≤ 30, 날짜 없음): KIS 라이브 30일치만.
+ * - start_date/end_date 지정 또는 limit > 30: 매일 cron 이 쌓는 investor_flow_daily 와 합쳐
+ *   최대 1000일. 과거는 누적을 시작한 날부터만 있다 (KIS 는 과거 조회를 지원하지 않는다).
+ * @param {{code: string, limit?: number, start_date?: string, end_date?: string}} input
+ * @param {{ readStored?: typeof readStoredFlow }} [deps]
+ */
+export async function getInvestorFlow({ code, limit, start_date, end_date }, deps = {}) {
+  const creds = credentials(code)
+  if (start_date != null && !YMD.test(start_date)) throw new Error('start_date는 YYYYMMDD 형식이어야 합니다')
+  if (end_date != null && !YMD.test(end_date)) throw new Error('end_date는 YYYYMMDD 형식이어야 합니다')
+  if (start_date != null && end_date != null && start_date > end_date) throw new Error('start_date가 end_date보다 늦습니다')
+  const hasRange = start_date != null || end_date != null
+  const data = await inquireInvestorByStock(...creds)
+  const live = normalizeInvestorRows(data.rows ?? [])
+  const base = { ...metadata(code), realtime: false, units: { netShares: '주', netAmountKrw: '원' } }
+
+  if (!hasRange && (limit ?? 20) <= FLOW_LIVE_MAX) {
+    const requested = count(limit, 20, FLOW_LIVE_MAX)
+    return { ...base, latestDataDate: live[0]?.date ?? null, requested, count: Math.min(live.length, requested), note: FLOW_NOTE,
+      cumulative3d: summarizeFlow(live, 3), cumulative5d: summarizeFlow(live, 5), cumulative20d: summarizeFlow(live, 20), rows: live.slice(0, requested) }
+  }
+
+  const requested = count(limit, start_date != null ? FLOW_RANGE_MAX : 20, FLOW_RANGE_MAX)
+  const readStored = deps.readStored ?? readStoredFlow
+  const stored = await readStored(code, { start: start_date, end: end_date, limit: requested + FLOW_LIVE_MAX })
+  const inRange = (r) => (start_date == null || r.date >= start_date) && (end_date == null || r.date <= end_date)
+  const merged = mergeFlowRows(live.filter(inRange), stored.rows).filter(inRange)
+  const rows = merged.slice(0, requested)
+  const note = `${FLOW_NOTE} ${stored.available
+    ? `KIS 최근 30일과 매일 쌓는 누적 테이블(${FLOW_TABLE})을 합친 결과입니다. 누적을 시작한 날 이전 과거는 없습니다.`
+    : '누적 테이블(Supabase)을 읽을 수 없어 KIS 최근 30일만 반환했습니다.'}`
+  return { ...base, source: stored.available ? 'KIS+DB' : 'KIS', latestDataDate: rows[0]?.date ?? null, fromDate: rows.at(-1)?.date ?? null,
+    requested, count: rows.length, storedCount: stored.rows.length, note,
+    cumulative3d: summarizeFlow(merged, 3), cumulative5d: summarizeFlow(merged, 5), cumulative20d: summarizeFlow(merged, 20), rows }
 }
