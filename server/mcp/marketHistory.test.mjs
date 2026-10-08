@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-vi.mock('../kisClient.mjs', () => ({ inquireDailyBars: vi.fn(), inquireDailyBarsRange: vi.fn(), inquireMinuteBars: vi.fn(), inquireInvestorByStock: vi.fn(), inquireInvestorTradeDailyRange: vi.fn() }))
-import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireInvestorByStock, inquireInvestorTradeDailyRange } from '../kisClient.mjs'
+vi.mock('../kisClient.mjs', () => ({ inquireDailyBars: vi.fn(), inquireDailyBarsRange: vi.fn(), inquireMinuteBars: vi.fn(), inquireDailyMinuteBars: vi.fn(), inquireInvestorByStock: vi.fn(), inquireInvestorTradeDailyRange: vi.fn() }))
+import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireDailyMinuteBars, inquireInvestorByStock, inquireInvestorTradeDailyRange } from '../kisClient.mjs'
 vi.mock('../lib/supabaseService.mjs', () => ({ getSupabaseService: vi.fn(() => null) }))
-import { getDailyBars, getMinuteBars, getInvestorFlow, mergeFlowRows, dbRowsToFlow, summarizeFlow, normalizeInvestorRows, compareFlowOverlap } from './marketHistory.mjs'
+import { getDailyBars, getMinuteBars, getInvestorFlow, mergeFlowRows, dbRowsToFlow, summarizeFlow, normalizeInvestorRows, compareFlowOverlap, aggregateMinuteBars } from './marketHistory.mjs'
 beforeEach(() => {
   vi.clearAllMocks(); process.env.KIS_APP_KEY = 'test'; process.env.KIS_APP_SECRET = 'test'; process.env.KIS_ENV = 'prod'
   inquireInvestorTradeDailyRange.mockResolvedValue({ rows: [], pages: 1, supported: true, error: null })
@@ -35,6 +35,28 @@ describe('MCP market history', () => {
     const out = await getMinuteBars({ code: '005930', end_time: '102500', market: 'unified' })
     expect(out.latestDataDate).toBeNull(); expect(out.bars[0].high).toBe(115)
     expect(inquireMinuteBars.mock.calls[0][4]).toEqual({ endHhmmss: '102500', marketDiv: 'UN' })
+  })
+  it('reads a past trading day through the daily-minute TR and groups bars into N minutes', async () => {
+    const bar = (hhmmss, o, h, l, c, v) => ({ date: '20260713', hhmmss, price: c, open: o, high: h, low: l, volume: v })
+    inquireDailyMinuteBars.mockResolvedValue({ pages: 4, bars: [
+      bar('090000', 1564000, 1564000, 1550000, 1552000, 100), bar('090100', 1552000, 1555000, 1540000, 1541000, 50), bar('090400', 1541000, 1543000, 1530000, 1531000, 30),
+      bar('090500', 1531000, 1532000, 1500000, 1501000, 70), bar('090700', 1501000, 1510000, 1499000, 1509000, 20)] })
+    const out = await getMinuteBars({ code: '009150', date: '20260713', interval: 5, limit: 100 })
+    expect(inquireMinuteBars).not.toHaveBeenCalled()
+    expect(inquireDailyMinuteBars.mock.calls[0][4]).toEqual({ date: '20260713', endHhmmss: undefined, marketDiv: 'J', maxBars: 500 })
+    expect(out).toMatchObject({ intervalMinutes: 5, date: '20260713', count: 2, pages: 4, firstTime: '090000', latestDataDate: '20260713', latestDataTime: '090500' })
+    expect(out.bars[0]).toEqual({ date: '20260713', time: '090000', open: 1564000, high: 1564000, low: 1530000, close: 1531000, volume: 180 })
+    expect(out.bars[1]).toEqual({ date: '20260713', time: '090500', open: 1531000, high: 1532000, low: 1499000, close: 1509000, volume: 90 })
+    await getMinuteBars({ code: '009150', date: '20260713', end_time: '100000', market: 'unified' })
+    expect(inquireDailyMinuteBars.mock.calls[1][4]).toEqual({ date: '20260713', endHhmmss: '100000', marketDiv: 'UN', maxBars: 400 })
+    await getMinuteBars({ code: '009150', limit: 60 })
+    expect(inquireDailyMinuteBars.mock.calls[2][4].date).toMatch(/^\d{8}$/); expect(inquireDailyMinuteBars.mock.calls[2][4].maxBars).toBe(60)
+    await getMinuteBars({ code: '009150', date: '20260713', interval: 60, limit: 800 })
+    expect(inquireDailyMinuteBars.mock.calls[3][4].maxBars).toBe(800)
+    expect(aggregateMinuteBars([{ date: null, time: '101500', open: null, high: null, low: null, close: 10, volume: 1 }], 10)).toEqual([{ date: null, time: '101000', open: 10, high: 10, low: 10, close: 10, volume: 1 }])
+    await expect(getMinuteBars({ code: '009150', interval: 7 })).rejects.toThrow('interval')
+    await expect(getMinuteBars({ code: '009150', date: '2026-07-13' })).rejects.toThrow('date')
+    await expect(getMinuteBars({ code: '009150', date: '20260713', limit: 801 })).rejects.toThrow('limit')
   })
   it('rejects invalid input before making requests', async () => {
     await expect(getMinuteBars({ code: '005930', end_time: '256100' })).rejects.toThrow()

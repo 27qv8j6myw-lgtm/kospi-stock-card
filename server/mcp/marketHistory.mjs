@@ -1,4 +1,4 @@
-import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireInvestorByStock, inquireInvestorTradeDailyRange } from '../kisClient.mjs'
+import { inquireDailyBars, inquireDailyBarsRange, inquireMinuteBars, inquireDailyMinuteBars, inquireInvestorByStock, inquireInvestorTradeDailyRange } from '../kisClient.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
 
 function credentials(code) {
@@ -60,16 +60,78 @@ export async function getDailyBars({ code, limit, start_date, end_date, adjusted
     note: `${DAILY_NOTE} 100건 단위로 ${pages}번 나눠 받아 이어 붙인 결과입니다.${adj ? ' 수정주가(액면분할·무상증자 반영)라 당시 실제 호가와 다를 수 있습니다.' : ''}`, bars }
 }
 
-/** @param {{code: string, end_time?: string, market?: string}} input */
-export async function getMinuteBars({ code, end_time, market = 'krx' }) {
+/** 과거 날짜·긴 구간 분봉 조회의 기본·최대 봉 수 (KRX 하루 1분봉은 391개) */
+const MINUTE_RANGE_DEFAULT = 400
+const MINUTE_RANGE_MAX = 800
+const MINUTE_INTERVALS = [1, 3, 5, 10, 15, 30, 60]
+
+/** 서울 기준 오늘 YYYYMMDD — 서버가 UTC 여도 장 날짜가 어긋나지 않게 */
+function seoulToday() {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(new Date()).replace(/-/g, '')
+}
+
+/**
+ * 1분봉을 N분봉으로 묶는다. 구간은 시계 기준(09:00, 09:05 …)이고 time 은 구간 시작 시각.
+ * @param {Array<{date: string | null, time: string, open: number | null, high: number | null, low: number | null, close: number, volume: number}>} bars 시각 오름차순
+ * @param {number} step 분
+ */
+export function aggregateMinuteBars(bars, step) {
+  if (step <= 1) return bars
+  /** @type {Map<number, any>} */
+  const buckets = new Map()
+  for (const b of bars) {
+    const minutes = Number(b.time.slice(0, 2)) * 60 + Number(b.time.slice(2, 4))
+    const start = Math.floor(minutes / step) * step
+    const hi = b.high ?? b.close
+    const lo = b.low ?? b.close
+    const cur = buckets.get(start)
+    if (!cur) {
+      const time = `${String(Math.floor(start / 60)).padStart(2, '0')}${String(start % 60).padStart(2, '0')}00`
+      buckets.set(start, { date: b.date, time, open: b.open ?? b.close, high: hi, low: lo, close: b.close, volume: b.volume })
+    } else {
+      cur.high = Math.max(cur.high, hi)
+      cur.low = Math.min(cur.low, lo)
+      cur.close = b.close
+      cur.volume += b.volume
+    }
+  }
+  return [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v)
+}
+
+/**
+ * 분봉 조회.
+ * - 기본(date 없음, limit ≤ 30, 1분봉): 당일분봉 TR 로 최근 30개 — 모의 환경에서도 된다.
+ * - date 지정, limit > 30, 또는 interval > 1: 주식일별분봉조회(실전 전용, 최대 1년 보관)로
+ *   그 날짜의 1분봉을 여러 번 나눠 받아 필요하면 N분봉으로 묶는다.
+ * @param {{code: string, end_time?: string, market?: string, date?: string, limit?: number, interval?: number}} input
+ */
+export async function getMinuteBars({ code, end_time, market = 'krx', date, limit, interval }) {
   const markets = { krx: 'J', unified: 'UN', nxt: 'NX' }
+  const basis = { krx: 'KRX', unified: 'KRX+NXT', nxt: 'NXT' }
   if (!Object.hasOwn(markets, market)) throw new Error('지원하지 않는 시장입니다')
   if (end_time != null && !/^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/.test(end_time)) throw new Error('end_time은 HHMMSS 형식이어야 합니다')
-  const rows = await inquireMinuteBars(...credentials(code), { endHhmmss: end_time, marketDiv: markets[market] })
-  const bars = rows.slice(-30).map(({ date, hhmmss, price, open, high, low, volume }) => ({ date: date ?? null, time: hhmmss, open: open ?? null, high: high ?? null, low: low ?? null, close: price, volume }))
-  return { ...metadata(code, { krx: 'KRX', unified: 'KRX+NXT', nxt: 'NXT' }[market]), intervalMinutes: 1,
-    count: bars.length, latestDataDate: bars.at(-1)?.date ?? null, latestDataTime: bars.at(-1)?.time ?? null,
-    note: '당일 조회 API입니다. 과거 거래일 지정은 지원하지 않습니다. 날짜 null은 공급자 미제공이며 당일 데이터로 단정할 수 없습니다. 마지막 봉은 미완성일 수 있습니다.', bars }
+  if (date != null && !YMD.test(date)) throw new Error('date는 YYYYMMDD 형식이어야 합니다')
+  const step = interval ?? 1
+  if (!MINUTE_INTERVALS.includes(step)) throw new Error(`interval은 ${MINUTE_INTERVALS.join('·')} 중 하나여야 합니다`)
+  const toBarRow = ({ date: d, hhmmss, price, open, high, low, volume }) => ({ date: d ?? null, time: hhmmss, open: open ?? null, high: high ?? null, low: low ?? null, close: price, volume })
+
+  if (date == null && step === 1 && (limit ?? 30) <= 30) {
+    const requested = count(limit, 30, 30)
+    const rows = await inquireMinuteBars(...credentials(code), { endHhmmss: end_time, marketDiv: markets[market] })
+    const bars = rows.slice(-requested).map(toBarRow)
+    return { ...metadata(code, basis[market]), intervalMinutes: 1,
+      count: bars.length, latestDataDate: bars.at(-1)?.date ?? null, latestDataTime: bars.at(-1)?.time ?? null,
+      note: '당일 최근 분봉입니다(최대 30개). 과거 날짜·더 긴 구간·N분봉은 date/limit/interval 을 주세요(실전 계정 전용). 날짜 null은 공급자 미제공이며 당일 데이터로 단정할 수 없습니다. 마지막 봉은 미완성일 수 있습니다.', bars }
+  }
+
+  const day = date ?? seoulToday()
+  const requested = count(limit, MINUTE_RANGE_DEFAULT, MINUTE_RANGE_MAX)
+  const { bars: rows, pages } = await inquireDailyMinuteBars(...credentials(code), {
+    date: day, endHhmmss: end_time, marketDiv: markets[market], maxBars: Math.min(MINUTE_RANGE_MAX, requested * step) })
+  const bars = aggregateMinuteBars(rows.map(toBarRow), step).slice(-requested)
+  return { ...metadata(code, basis[market]), intervalMinutes: step, date: day, requested, count: bars.length, pages,
+    firstTime: bars[0]?.time ?? null, latestDataDate: bars.length ? day : null, latestDataTime: bars.at(-1)?.time ?? null,
+    note: `${day} 분봉입니다. KIS 가 1분봉을 120개씩 주므로 ${pages}번 나눠 받았고${step > 1 ? ` ${step}분 단위로 묶었습니다(time 은 구간 시작 시각)` : ' 묶지 않았습니다'}. 분봉 보관은 최대 1년이라 그보다 오래된 날짜는 비어 있습니다. 당일이면 마지막 봉은 미완성일 수 있습니다.`, bars }
 }
 
 function numeric(value, multiplier = 1) {

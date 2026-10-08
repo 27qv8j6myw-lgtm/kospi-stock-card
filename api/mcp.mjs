@@ -18,6 +18,10 @@ import {
   resolveResourceUrl,
 } from '../server/mcp/oauthConfig.mjs'
 import { verifyAccessToken } from '../server/mcp/oauthTokens.mjs'
+import { loadProjectEnv } from '../server/lib/kisEnv.mjs'
+
+// 웹앱(server/index.mjs)과 같은 KIS 환경·키를 쓴다 — 번들에 .env 가 있으면 그 값이 우선한다.
+loadProjectEnv()
 
 /** @param {string | undefined} raw */
 function cleanEnv(raw) {

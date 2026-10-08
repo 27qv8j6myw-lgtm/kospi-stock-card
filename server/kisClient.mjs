@@ -707,7 +707,7 @@ const KIS_INVESTOR_RANGE_MAX_PAGES = 40
 export async function inquireInvestorTradeDailyRange(appKey, appSecret, env, code6, opts = {}) {
   const iscd = normalizeKisIscd(code6)
   const start = String(opts.start ?? '')
-  const end = /^\d{8}$/.test(String(opts.end ?? '')) ? String(opts.end) : ymd(new Date())
+  const end = /^\d{8}$/.test(String(opts.end ?? '')) ? String(opts.end) : seoulYmd()
   if (!/^\d{8}$/.test(start)) throw new Error('start 는 YYYYMMDD 형식이어야 합니다')
   const maxDays = Math.max(1, Math.min(Number(opts.maxDays) || KIS_INVESTOR_RANGE_MAX_DAYS, KIS_INVESTOR_RANGE_MAX_DAYS))
   if (env !== 'prod') return { rows: [], pages: 0, supported: false, error: null }
@@ -719,6 +719,7 @@ export async function inquireInvestorTradeDailyRange(appKey, appSecret, env, cod
     let pageEnd = end
     let pages = 0
     let error = null
+    let reached = false
     while (pages < KIS_INVESTOR_RANGE_MAX_PAGES) {
       if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
       let data
@@ -745,7 +746,7 @@ export async function inquireInvestorTradeDailyRange(appKey, appSecret, env, cod
       }
       pages += 1
       const rows = normalizeKisOutputRows(data.output2).filter((r) => /^\d{8}$/.test(String(r?.stck_bsop_date ?? '')))
-      if (!rows.length) break
+      if (!rows.length) { reached = true; break }
       let added = 0
       let oldest = String(rows[0].stck_bsop_date)
       for (const r of rows) {
@@ -756,16 +757,607 @@ export async function inquireInvestorTradeDailyRange(appKey, appSecret, env, cod
         byDate.set(d, r)
       }
       // 새로 얻은 날이 없거나(기준일을 무시하는 응답 포함) 시작일·상한에 닿으면 멈춘다
-      if (added === 0 || oldest <= start || byDate.size >= maxDays) break
+      if (added === 0 || oldest <= start || byDate.size >= maxDays) { reached = true; break }
+      const prev = ymdToDate(oldest)
+      prev.setDate(prev.getDate() - 1)
+      pageEnd = ymd(prev)
+      if (pageEnd < start) { reached = true; break }
+    }
+    // 페이지 상한에서 끊겼으면 조용히 잘린 결과로 보이지 않게 알린다
+    if (!reached && !error) error = `페이지 상한(${KIS_INVESTOR_RANGE_MAX_PAGES}번)에 닿아 ${pageEnd} 이전은 받지 못했습니다`
+    const rows = [...byDate.values()]
+      .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)))
+      .slice(0, maxDays)
+    return { rows, pages, supported: true, error }
+  })
+}
+
+/**
+ * 모의투자 미지원 TR 을 vps 환경에서 부르면 KIS 가 뜻 모를 오류를 주므로 호출 전에 막는다.
+ * @param {string} env
+ * @param {string} label 사용자에게 보일 API 이름
+ */
+function assertProdOnly(env, label) {
+  if (env === 'prod') return
+  const err = new Error(`${label}: KIS 실전 계정 전용 API입니다 (서버의 KIS_ENV 가 prod 가 아니라 모의투자 서버로 연결돼 있습니다)`)
+  err.code = 'PROD_ONLY'
+  throw err
+}
+
+/** 서울 기준 오늘 YYYYMMDD — 서버가 UTC 면 00:00~08:59 KST 에 `ymd(new Date())` 가 하루 늦다 */
+function seoulYmd(d = new Date()) {
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Seoul' }).format(d).replace(/-/g, '')
+}
+
+/** 전일 대비 부호 코드 — 4(하한)·5(하락)인데 값이 양수로 오면 음수로 바꾼다 */
+function signedBySignCode(value, signCode) {
+  if (value == null) return null
+  const sign = String(signCode ?? '').trim()
+  return (sign === '4' || sign === '5') && value > 0 ? -value : value
+}
+
+/** 종목별 외인기관 추정가집계의 입력구분(bsop_hour_gb) → 입력 시각 */
+const INVESTOR_ESTIMATE_SLOT_HHMM = { 1: '0930', 2: '1000', 3: '1120', 4: '1320', 5: '1430' }
+
+/**
+ * [국내주식] 종목별 외인기관 추정가집계 — HHPTJ04160200 (실전 전용)
+ *
+ * 증권사 직원이 장중에 집계·입력한 외국인·기관 순매수 추정치의 누계(주). 입력 시각은
+ * 외국인 09:30·11:20·13:20·14:30, 기관 10:00·11:20·13:20·14:30 이고 응답에 날짜는 없다.
+ * 확정치는 장 마감 후 `inquireInvestorByStock` / `inquireInvestorTradeDailyRange` 로 본다.
+ *
+ * @returns {Promise<Array<{ slot: string, hhmm: string | null, foreignNetShares: number | null, institutionNetShares: number | null, sumNetShares: number | null }>>} 입력 시각 오름차순
+ */
+export async function inquireInvestorTrendEstimate(appKey, appSecret, env, code6) {
+  assertProdOnly(env, '종목별 외인기관 추정가집계')
+  const iscd = normalizeKisIscd(code6)
+  return await withCache(`kis:investorEstimate:${env}:${iscd}`, KIS_CACHE_TTL_QUOTE_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/investor-trend-estimate',
+      params: { MKSC_SHRN_ISCD: iscd },
+      trId: 'HHPTJ04160200',
+      kind: 'KIS 외인기관 추정가집계',
+    })
+    return normalizeKisOutputRows(data.output2)
+      .map((r) => {
+        const slot = String(r?.bsop_hour_gb ?? '').trim()
+        return {
+          slot,
+          hhmm: INVESTOR_ESTIMATE_SLOT_HHMM[slot] ?? null,
+          foreignNetShares: num(r?.frgn_fake_ntby_qty),
+          institutionNetShares: num(r?.orgn_fake_ntby_qty),
+          sumNetShares: num(r?.sum_fake_ntby_qty),
+        }
+      })
+      .filter((r) => r.slot)
+      .sort((a, b) => Number(a.slot) - Number(b.slot))
+  })
+}
+
+/** 호가는 빨리 변하므로 현재가보다 짧게 캐시한다 (ms) */
+const KIS_CACHE_TTL_ORDERBOOK_MS = 5_000
+
+/**
+ * [국내주식] 주식현재가 호가/예상체결 — FHKST01010200
+ *
+ * 10단계 호가·잔량과 예상체결가를 돌려준다. 예상체결가는 동시호가(08:30~09:00, 15:20~15:30)와
+ * 장 종료 후에 의미가 있다 — 15:20 이후에는 그날 종가의 예상값으로 쓸 수 있다.
+ *
+ * @param {{ marketDiv?: 'J' | 'NX' | 'UN' }} [opts]
+ */
+export async function inquireAskingPriceExpCcn(appKey, appSecret, env, code6, opts = {}) {
+  const iscd = normalizeKisIscd(code6)
+  const marketDiv = DOMESTIC_MARKET_DIVS.has(opts.marketDiv) ? opts.marketDiv : 'J'
+  return await withCache(`kis:orderbook:${env}:${marketDiv}:${iscd}`, KIS_CACHE_TTL_ORDERBOOK_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn',
+      params: { FID_COND_MRKT_DIV_CODE: marketDiv, FID_INPUT_ISCD: iscd },
+      trId: 'FHKST01010200',
+      kind: 'KIS 호가/예상체결',
+    })
+    const book = normalizeKisOutputRows(data.output1)[0] ?? {}
+    const exp = normalizeKisOutputRows(data.output2)[0] ?? {}
+    const levels = (side) =>
+      Array.from({ length: 10 }, (_, i) => ({ price: num(book[`${side}${i + 1}`]), qty: num(book[`${side}_rsqn${i + 1}`]) }))
+        .filter((l) => l.price != null && l.price > 0)
+    const expectedPrice = num(exp.antc_cnpr)
+    return {
+      marketDiv,
+      acceptedAt: normalizeCntgHhmmss(book.aspr_acpt_hour) || null,
+      sessionCode: String(book.new_mkop_cls_code ?? '').trim() || null,
+      expectedSessionCode: String(exp.antc_mkop_cls_code ?? '').trim() || null,
+      asks: levels('askp'),
+      bids: levels('bidp'),
+      totalAskQty: num(book.total_askp_rsqn),
+      totalBidQty: num(book.total_bidp_rsqn),
+      price: num(exp.stck_prpr),
+      open: num(exp.stck_oprc),
+      high: num(exp.stck_hgpr),
+      low: num(exp.stck_lwpr),
+      basePrice: num(exp.stck_sdpr),
+      expected: {
+        price: expectedPrice != null && expectedPrice > 0 ? expectedPrice : null,
+        change: signedBySignCode(num(exp.antc_cntg_vrss), exp.antc_cntg_vrss_sign),
+        changePct: signedBySignCode(num(exp.antc_cntg_prdy_ctrt), exp.antc_cntg_vrss_sign),
+        volume: num(exp.antc_vol),
+      },
+      viCode: String(exp.vi_cls_code ?? '').trim() || null,
+    }
+  })
+}
+
+/** 주식일별분봉조회로 한 번에 돌려줄 최대 봉 수 — 통합(UN) 08:00~20:00 하루치(720분)를 덮는다 */
+const KIS_DAILY_MINUTE_MAX_BARS = 800
+
+/**
+ * [국내주식] 주식일별분봉조회 — FHKST03010230 (실전 전용, 최대 1년 보관)
+ *
+ * 지정한 날짜의 1분봉을 `endHhmmss` 부터 과거 방향으로 받는다. 한 번에 최대 120건이라
+ * 받은 봉 중 가장 이른 시각의 1분 전을 새 기준 시각으로 놓고 그날 첫 봉에 닿거나
+ * `maxBars` 를 채울 때까지 반복한다. 다른 날짜의 봉이 섞여 오면 버리고 멈춘다.
+ *
+ * @param {{ date: string, endHhmmss?: string, marketDiv?: 'J' | 'NX' | 'UN', maxBars?: number }} opts  date 는 YYYYMMDD
+ * @returns {Promise<{ bars: Array<{ date: string, hhmmss: string, price: number, open: number | null, high: number | null, low: number | null, volume: number }>, pages: number }>}
+ *   bars 는 시각 오름차순, endHhmmss 이전의 최근 maxBars 개
+ */
+export async function inquireDailyMinuteBars(appKey, appSecret, env, code6, opts = {}) {
+  assertProdOnly(env, '주식일별분봉조회')
+  const iscd = normalizeKisIscd(code6)
+  const date = String(opts.date ?? '')
+  if (!/^\d{8}$/.test(date)) throw new Error('date 는 YYYYMMDD 형식이어야 합니다')
+  const marketDiv = DOMESTIC_MARKET_DIVS.has(opts.marketDiv) ? opts.marketDiv : 'J'
+  let end = /^\d{6}$/.test(String(opts.endHhmmss ?? '')) ? String(opts.endHhmmss) : marketDiv === 'J' ? '153000' : '200000'
+  const maxBars = Math.max(1, Math.min(Number(opts.maxBars) || 400, KIS_DAILY_MINUTE_MAX_BARS))
+  const maxPages = Math.ceil(maxBars / 100) + 2
+  // 당일은 아직 오지 않은 시각을 물으면 현재가로 채운 가짜 봉이 올 수 있고 봉이 계속 늘어난다 —
+  // 현재 시각까지만 묻고 시세처럼 짧게 캐시한다. 미래 날짜는 부르지 않는다.
+  const today = seoulYmd()
+  if (date > today) return { bars: [], pages: 0 }
+  const live = date === today
+  if (live) {
+    const now = seoulNowHhmm00()
+    if (hhmmssToNum(end) > hhmmssToNum(now)) end = now
+  }
+  const cacheKey = `kis:dailyMinute:${env}:${marketDiv}:${iscd}:${date}:${end}:${maxBars}`
+  return await withCache(cacheKey, live ? KIS_CACHE_TTL_QUOTE_MS : KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    /** @type {Map<string, any>} */
+    const byTime = new Map()
+    let pageEnd = end
+    let pages = 0
+    while (pages < maxPages) {
+      if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice',
+        params: {
+          FID_COND_MRKT_DIV_CODE: marketDiv,
+          FID_INPUT_ISCD: iscd,
+          FID_INPUT_HOUR_1: pageEnd,
+          FID_INPUT_DATE_1: date,
+          FID_PW_DATA_INCU_YN: 'Y',
+          FID_FAKE_TICK_INCU_YN: '',
+        },
+        trId: 'FHKST03010230',
+        kind: 'KIS 일별분봉',
+      })
+      pages += 1
+      const rows = normalizeKisOutputRows(data.output2)
+      if (!rows.length) break
+      let added = 0
+      let otherDate = false
+      let oldest = null
+      for (const r of rows) {
+        const hhmmss = normalizeCntgHhmmss(r?.stck_cntg_hour || '')
+        const price = num(r?.stck_prpr)
+        if (!hhmmss || price == null) continue
+        if (String(r.stck_bsop_date ?? '') !== date) {
+          otherDate = true
+          continue
+        }
+        if (hhmmssToNum(hhmmss) > hhmmssToNum(end)) continue
+        if (oldest == null || hhmmssToNum(hhmmss) < hhmmssToNum(oldest)) oldest = hhmmss
+        if (!byTime.has(hhmmss)) added += 1
+        byTime.set(hhmmss, {
+          date,
+          hhmmss,
+          price: Math.round(price),
+          open: num(r.stck_oprc),
+          high: num(r.stck_hgpr),
+          low: num(r.stck_lwpr),
+          volume: Math.max(0, num(r.cntg_vol) ?? 0),
+        })
+      }
+      // 그날 봉을 새로 못 얻었거나 전날 봉이 섞여 왔으면(그날 첫 봉을 지났다) 멈춘다
+      if (added === 0 || otherDate || oldest == null || byTime.size >= maxBars) break
+      const prev = prevMinuteHhmmss(oldest)
+      if (prev === oldest || prev === '000000') break
+      pageEnd = prev
+    }
+    const bars = [...byTime.values()].sort((a, b) => hhmmssToNum(a.hhmmss) - hhmmssToNum(b.hhmmss)).slice(-maxBars)
+    return { bars, pages }
+  })
+}
+
+/**
+ * [국내주식] 국내휴장일조회 — CTCA0903R (실전 전용)
+ *
+ * 기준일부터 앞으로 약 3~4주의 개장일·영업일·결제일 여부를 돌려준다. KIS 원장과 연결된
+ * 서비스라 "가급적 1일 1회" 호출이 권고된다 — 이 함수는 캐시하지 않으므로 호출하는 쪽에서
+ * 반드시 하루 단위로 캐시한다.
+ *
+ * @param {string} baseDate YYYYMMDD
+ * @returns {Promise<Array<{ date: string, weekdayCode: string, businessDay: boolean, tradingDay: boolean, marketOpen: boolean, settlementDay: boolean }>>} 날짜 오름차순
+ */
+export async function inquireMarketHolidays(appKey, appSecret, env, baseDate) {
+  assertProdOnly(env, '국내휴장일조회')
+  const base = String(baseDate ?? '')
+  if (!/^\d{8}$/.test(base)) throw new Error('baseDate 는 YYYYMMDD 형식이어야 합니다')
+  const data = await kisGet({
+    appKey,
+    appSecret,
+    env,
+    path: '/uapi/domestic-stock/v1/quotations/chk-holiday',
+    params: { BASS_DT: base, CTX_AREA_NK: '', CTX_AREA_FK: '' },
+    trId: 'CTCA0903R',
+    kind: 'KIS 휴장일',
+  })
+  return normalizeKisOutputRows(data.output)
+    .map((r) => ({
+      date: String(r?.bass_dt ?? '').trim(),
+      weekdayCode: String(r?.wday_dvsn_cd ?? '').trim(),
+      businessDay: r?.bzdy_yn === 'Y',
+      tradingDay: r?.tr_day_yn === 'Y',
+      marketOpen: r?.opnd_yn === 'Y',
+      settlementDay: r?.sttl_day_yn === 'Y',
+    }))
+    .filter((r) => /^\d{8}$/.test(r.date))
+    .sort((a, b) => a.date.localeCompare(b.date))
+}
+
+/** 업종 지수 기간 조회로 돌려줄 최대 일봉 수 (약 6년) */
+const KIS_INDEX_RANGE_MAX_BARS = 1500
+
+/**
+ * [국내주식] 국내주식업종기간별시세(일) — FHKUP03500100 기간 조회
+ *
+ * 한 번에 최대 50건이라 받은 봉 중 가장 오래된 날짜의 전날을 새 종료일로 놓고 `start` 에
+ * 닿거나 `maxBars` 를 채울 때까지 반복한다. 지수 거래량은 천주, 거래대금은 백만원 단위로
+ * 오므로 주·원으로 환산해 돌려준다.
+ *
+ * @param {string} indexCode 업종코드 4자리 (0001 코스피, 1001 코스닥, 2001 코스피200)
+ * @param {{ start: string, end?: string, maxBars?: number }} opts  start/end 는 YYYYMMDD
+ * @returns {Promise<{ name: string | null, bars: Array<{ date: string, open: number | null, high: number | null, low: number | null, close: number, volume: number | null, tradingValueKrw: number | null }>, pages: number }>} bars 는 날짜 오름차순
+ */
+export async function inquireIndexDailyBarsRange(appKey, appSecret, env, indexCode, opts = {}) {
+  const code = String(indexCode ?? '').trim()
+  if (!/^\d{4}$/.test(code)) throw new Error('업종코드는 4자리 숫자여야 합니다')
+  const start = String(opts.start ?? '')
+  const end = /^\d{8}$/.test(String(opts.end ?? '')) ? String(opts.end) : seoulYmd()
+  if (!/^\d{8}$/.test(start)) throw new Error('start 는 YYYYMMDD 형식이어야 합니다')
+  if (start > end) throw new Error('start 가 end 보다 늦습니다')
+  const maxBars = Math.max(1, Math.min(Number(opts.maxBars) || KIS_INDEX_RANGE_MAX_BARS, KIS_INDEX_RANGE_MAX_BARS))
+  const maxPages = Math.ceil(maxBars / 50) + 2
+  const cacheKey = `kis:indexRange:${env}:${code}:${start}:${end}:${maxBars}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    /** @type {Map<string, any>} */
+    const byDate = new Map()
+    let name = null
+    let pageEnd = end
+    let pages = 0
+    while (pages < maxPages) {
+      if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice',
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'U',
+          FID_INPUT_ISCD: code,
+          FID_INPUT_DATE_1: start,
+          FID_INPUT_DATE_2: pageEnd,
+          FID_PERIOD_DIV_CODE: 'D',
+        },
+        trId: 'FHKUP03500100',
+        kind: 'KIS 업종 기간차트',
+      })
+      pages += 1
+      name = name ?? (String(normalizeKisOutputRows(data.output1)[0]?.hts_kor_isnm ?? '').trim() || null)
+      let added = 0
+      let oldest = null
+      for (const r of normalizeKisOutputRows(data.output2)) {
+        const d = String(r?.stck_bsop_date ?? '')
+        const close = num(r?.bstp_nmix_prpr)
+        if (!/^\d{8}$/.test(d) || close == null) continue
+        if (oldest == null || d < oldest) oldest = d
+        if (d < start || d > end) continue
+        if (!byDate.has(d)) added += 1
+        const vol = num(r.acml_vol)
+        const amt = num(r.acml_tr_pbmn)
+        byDate.set(d, {
+          date: d,
+          open: num(r.bstp_nmix_oprc),
+          high: num(r.bstp_nmix_hgpr),
+          low: num(r.bstp_nmix_lwpr),
+          close,
+          volume: vol == null ? null : vol * 1000,
+          tradingValueKrw: amt == null ? null : amt * 1_000_000,
+        })
+      }
+      if (added === 0 || oldest == null || oldest <= start || byDate.size >= maxBars) break
       const prev = ymdToDate(oldest)
       prev.setDate(prev.getDate() - 1)
       pageEnd = ymd(prev)
       if (pageEnd < start) break
     }
-    const rows = [...byDate.values()]
-      .sort((a, b) => String(b.stck_bsop_date).localeCompare(String(a.stck_bsop_date)))
-      .slice(0, maxDays)
-    return { rows, pages, supported: true, error }
+    const bars = [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date)).slice(-maxBars)
+    return { name, bars, pages }
+  })
+}
+
+/** 종목투자의견 기간 조회로 돌려줄 최대 건수 */
+const KIS_INVEST_OPINION_MAX_ROWS = 300
+
+/**
+ * [국내주식] 국내주식 종목투자의견 — FHKST663300C0 (실전 전용)
+ *
+ * 증권사별 투자의견·목표가 이력. 한 번에 최대 100건(최신순)이라 받은 행 중 가장 오래된
+ * 날짜의 전날을 새 종료일로 놓고 반복한다.
+ *
+ * @param {{ start: string, end?: string, maxRows?: number }} opts  start/end 는 YYYYMMDD
+ * @returns {Promise<{ rows: Array<{ date: string, broker: string, opinion: string | null, prevOpinion: string | null, targetPrice: number | null, prevClose: number | null }>, pages: number }>} rows 는 최신순
+ */
+export async function inquireInvestOpinions(appKey, appSecret, env, code6, opts = {}) {
+  assertProdOnly(env, '종목투자의견')
+  const iscd = normalizeKisIscd(code6)
+  const start = String(opts.start ?? '')
+  const end = /^\d{8}$/.test(String(opts.end ?? '')) ? String(opts.end) : seoulYmd()
+  if (!/^\d{8}$/.test(start)) throw new Error('start 는 YYYYMMDD 형식이어야 합니다')
+  if (start > end) throw new Error('start 가 end 보다 늦습니다')
+  const maxRows = Math.max(1, Math.min(Number(opts.maxRows) || 100, KIS_INVEST_OPINION_MAX_ROWS))
+  const maxPages = Math.ceil(maxRows / 100) + 2
+  const cacheKey = `kis:investOpinion:${env}:${iscd}:${start}:${end}:${maxRows}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    /** @type {Map<string, any>} */
+    const seen = new Map()
+    let pageEnd = end
+    let pages = 0
+    while (pages < maxPages) {
+      if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
+      const data = await kisGet({
+        appKey,
+        appSecret,
+        env,
+        path: '/uapi/domestic-stock/v1/quotations/invest-opinion',
+        params: {
+          FID_COND_MRKT_DIV_CODE: 'J',
+          FID_COND_SCR_DIV_CODE: '16633',
+          FID_INPUT_ISCD: iscd,
+          FID_INPUT_DATE_1: start,
+          FID_INPUT_DATE_2: pageEnd,
+        },
+        trId: 'FHKST663300C0',
+        kind: 'KIS 종목투자의견',
+      })
+      pages += 1
+      const rows = normalizeKisOutputRows(data.output)
+      let added = 0
+      let oldest = null
+      let newest = null
+      for (const r of rows) {
+        const d = String(r?.stck_bsop_date ?? '')
+        if (!/^\d{8}$/.test(d)) continue
+        if (oldest == null || d < oldest) oldest = d
+        if (newest == null || d > newest) newest = d
+        if (d < start || d > end) continue
+        const broker = String(r.mbcr_name ?? '').trim()
+        const target = num(r.hts_goal_prc)
+        const key = `${d}|${broker}|${target ?? ''}|${String(r.invt_opnn ?? '').trim()}`
+        if (seen.has(key)) continue
+        added += 1
+        seen.set(key, {
+          date: d,
+          broker,
+          opinion: String(r.invt_opnn ?? '').trim() || null,
+          prevOpinion: String(r.rgbf_invt_opnn ?? '').trim() || null,
+          targetPrice: target != null && target > 0 ? target : null,
+          prevClose: num(r.stck_prdy_clpr),
+        })
+      }
+      if (added === 0 || rows.length < 100 || oldest == null || oldest <= start || seen.size >= maxRows) break
+      // 같은 날 여러 증권사 보고서가 페이지 경계에 걸리면 잘린다 — 가장 오래된 날짜를 다시 받고 중복은 버린다.
+      // 한 페이지가 통째로 같은 날이면 그 날짜를 다시 물어도 같은 100건이라 하루 물러난다.
+      if (oldest === newest) {
+        const prev = ymdToDate(oldest)
+        prev.setDate(prev.getDate() - 1)
+        pageEnd = ymd(prev)
+      } else {
+        pageEnd = oldest
+      }
+      if (pageEnd < start) break
+    }
+    const rows = [...seen.values()].sort((a, b) => b.date.localeCompare(a.date)).slice(0, maxRows)
+    return { rows, pages }
+  })
+}
+
+/**
+ * [국내주식] 국내주식 종목추정실적 — HHKST668300C0 (실전 전용)
+ *
+ * 한국투자증권 리서치가 매월 내는 약 160개 기업의 추정 손익·투자지표 (시장 컨센서스가 아니다).
+ * 응답은 표 모양 그대로다: output4 가 결산연월(열), output2 가 손익 6행, output3 가 지표 8행.
+ * 해석은 호출하는 쪽에서 한다.
+ */
+export async function inquireEstimatePerform(appKey, appSecret, env, code6) {
+  assertProdOnly(env, '종목추정실적')
+  const iscd = normalizeKisIscd(code6)
+  return await withCache(`kis:estimatePerform:${env}:${iscd}`, KIS_CACHE_TTL_ANALYSIS_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/estimate-perform',
+      params: { SHT_CD: iscd },
+      trId: 'HHKST668300C0',
+      kind: 'KIS 종목추정실적',
+    })
+    return {
+      header: normalizeKisOutputRows(data.output1)[0] ?? null,
+      income: normalizeKisOutputRows(data.output2),
+      indicators: normalizeKisOutputRows(data.output3),
+      periods: normalizeKisOutputRows(data.output4).map((r) => String(r?.dt ?? '').trim()),
+    }
+  })
+}
+
+const MARKET_CAP_RANK_ISCD = { ALL: '0000', KOSPI: '0001', KOSDAQ: '1001', KOSPI200: '2001' }
+const MARKET_CAP_RANK_SHARE_CLASS = { all: '0', common: '1', preferred: '2' }
+/** 시가총액 상위 `stck_avls` 단위(억원) → 원 */
+const MARKET_CAP_RANK_UNIT_KRW = 100_000_000
+
+/**
+ * [국내주식] 순위분석 > 국내주식 시가총액 상위 — FHPST01740000 (실전 전용), HTS [0174]
+ *
+ * 한 번에 최대 30건이고 다음 조회가 없다. 더 넓게 보려면 시장(KOSPI·KOSDAQ)이나 주식 종류를
+ * 나눠 부른다. 요청 파라미터 이름은 공식 예제대로 소문자다.
+ *
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {{ market?: 'ALL'|'KOSPI'|'KOSDAQ'|'KOSPI200', shareClass?: 'all'|'common'|'preferred' }} [opts]
+ * @returns {Promise<Array<{ rank: number, code: string, name: string, price: number | null, change: number | null, changePct: number | null, volume: number | null, listedShares: number | null, marketCapKrw: number | null, marketWeightPct: number | null }>>}
+ */
+export async function inquireMarketCapRank(appKey, appSecret, env, opts = {}) {
+  assertProdOnly(env, '시가총액 상위')
+  const market = String(opts.market ?? 'ALL').toUpperCase()
+  const iscd = MARKET_CAP_RANK_ISCD[market]
+  if (!iscd) throw new Error('market 은 ALL · KOSPI · KOSDAQ · KOSPI200 중 하나여야 합니다')
+  const div = MARKET_CAP_RANK_SHARE_CLASS[String(opts.shareClass ?? 'all')]
+  if (div == null) throw new Error('shareClass 는 all · common · preferred 중 하나여야 합니다')
+  return await withCache(`kis:marketCapRank:${env}:${iscd}:${div}`, KIS_CACHE_TTL_QUOTE_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/ranking/market-cap',
+      params: {
+        fid_input_price_2: '',
+        fid_cond_mrkt_div_code: 'J',
+        fid_cond_scr_div_code: '20174',
+        fid_div_cls_code: div,
+        fid_input_iscd: iscd,
+        fid_trgt_cls_code: '0',
+        fid_trgt_exls_cls_code: '0',
+        fid_input_price_1: '',
+        fid_vol_cnt: '',
+      },
+      trId: 'FHPST01740000',
+      kind: 'KIS 시가총액 상위',
+    })
+    return normalizeKisOutputRows(data.output)
+      .map((r, i) => {
+        const cap = num(r?.stck_avls)
+        return {
+          rank: num(r?.data_rank) ?? i + 1,
+          code: normalizeKisIscd(r?.mksc_shrn_iscd ?? ''),
+          name: typeof r?.hts_kor_isnm === 'string' ? r.hts_kor_isnm.trim() : '',
+          price: num(r?.stck_prpr),
+          change: signedBySignCode(num(r?.prdy_vrss), r?.prdy_vrss_sign),
+          changePct: signedBySignCode(num(r?.prdy_ctrt), r?.prdy_vrss_sign),
+          volume: num(r?.acml_vol),
+          listedShares: num(r?.lstn_stcn),
+          marketCapKrw: cap == null ? null : cap * MARKET_CAP_RANK_UNIT_KRW,
+          marketWeightPct: num(r?.mrkt_whol_avls_rlim),
+        }
+      })
+      .filter((r) => r.code)
+  })
+}
+
+const FLOW_RANK_ISCD = { ALL: '0000', KOSPI: '0001', KOSDAQ: '1001' }
+const FLOW_RANK_INVESTOR = { all: '0', foreign: '1', institution: '2' }
+/** 가집계 응답의 기관 세부 주체·기타법인 — [수량 필드, 금액 필드] */
+const FLOW_RANK_PARTS = {
+  investmentTrust: ['ivtr_ntby_qty', 'ivtr_ntby_tr_pbmn'],
+  bank: ['bank_ntby_qty', 'bank_ntby_tr_pbmn'],
+  insurance: ['insu_ntby_qty', 'insu_ntby_tr_pbmn'],
+  merchantBank: ['mrbn_ntby_qty', 'mrbn_ntby_tr_pbmn'],
+  pensionFund: ['fund_ntby_qty', 'fund_ntby_tr_pbmn'],
+  otherInstitution: ['etc_orgt_ntby_vol', 'etc_orgt_ntby_tr_pbmn'],
+  otherCorporation: ['etc_corp_ntby_vol', 'etc_corp_ntby_tr_pbmn'],
+}
+
+/**
+ * [국내주식] 시세분석 > 국내기관_외국인 매매종목가집계 — FHPTJ04400000 (실전 전용), HTS [0440]
+ *
+ * 증권사 직원이 장중에 집계·입력한 값의 누계(가집계)라 확정 수급이 아니고 당일치만 있다.
+ * 입력 시각은 외국인 09:30·11:20·13:20·14:30, 기관 10:00·11:20·13:20·14:30 (±10분).
+ * 금액 필드는 백만원(수량×현재가)이라 원으로 바꿔 돌려준다. 응답 필드를 그대로 옮기며 기관계는
+ * KIS 가 주는 `orgn_*` 값을 쓴다(세부 주체 합산은 하지 않는다). 순서는 KIS 가 준 그대로다.
+ *
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {{ market?: 'ALL'|'KOSPI'|'KOSDAQ', investor?: 'all'|'foreign'|'institution', side?: 'buy'|'sell', sortBy?: 'amount'|'shares' }} [opts]
+ */
+export async function inquireForeignInstitutionRank(appKey, appSecret, env, opts = {}) {
+  assertProdOnly(env, '기관·외국인 매매종목 가집계')
+  const market = String(opts.market ?? 'ALL').toUpperCase()
+  const iscd = FLOW_RANK_ISCD[market]
+  if (!iscd) throw new Error('market 은 ALL · KOSPI · KOSDAQ 중 하나여야 합니다')
+  const investor = FLOW_RANK_INVESTOR[String(opts.investor ?? 'all')]
+  if (investor == null) throw new Error('investor 는 all · foreign · institution 중 하나여야 합니다')
+  const side = String(opts.side ?? 'buy')
+  if (side !== 'buy' && side !== 'sell') throw new Error('side 는 buy · sell 중 하나여야 합니다')
+  const sortBy = String(opts.sortBy ?? 'amount')
+  if (sortBy !== 'amount' && sortBy !== 'shares') throw new Error('sortBy 는 amount · shares 중 하나여야 합니다')
+  const amount = (v) => {
+    const n = num(v)
+    return n == null ? null : n * INVESTOR_AMOUNT_UNIT_KRW
+  }
+  return await withCache(`kis:flowRank:${env}:${iscd}:${investor}:${side}:${sortBy}`, KIS_CACHE_TTL_QUOTE_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/foreign-institution-total',
+      params: {
+        FID_COND_MRKT_DIV_CODE: 'V',
+        FID_COND_SCR_DIV_CODE: '16449',
+        FID_INPUT_ISCD: iscd,
+        FID_DIV_CLS_CODE: sortBy === 'shares' ? '0' : '1',
+        FID_RANK_SORT_CLS_CODE: side === 'sell' ? '1' : '0',
+        FID_ETC_CLS_CODE: investor,
+      },
+      trId: 'FHPTJ04400000',
+      kind: 'KIS 기관·외국인 가집계',
+    })
+    return normalizeKisOutputRows(data.output ?? data.Output)
+      .map((r) => ({
+        code: normalizeKisIscd(r?.mksc_shrn_iscd ?? ''),
+        name: typeof r?.hts_kor_isnm === 'string' ? r.hts_kor_isnm.trim() : '',
+        price: num(r?.stck_prpr),
+        change: signedBySignCode(num(r?.prdy_vrss), r?.prdy_vrss_sign),
+        changePct: signedBySignCode(num(r?.prdy_ctrt), r?.prdy_vrss_sign),
+        volume: num(r?.acml_vol),
+        netShares: num(r?.ntby_qty),
+        foreignNetShares: num(r?.frgn_ntby_qty),
+        foreignNetAmountKrw: amount(r?.frgn_ntby_tr_pbmn),
+        institutionNetShares: num(r?.orgn_ntby_qty),
+        institutionNetAmountKrw: amount(r?.orgn_ntby_tr_pbmn),
+        parts: Object.fromEntries(
+          Object.entries(FLOW_RANK_PARTS).map(([name, [qty, amt]]) => [name, { netShares: num(r?.[qty]), netAmountKrw: amount(r?.[amt]) }]),
+        ),
+      }))
+      .filter((r) => r.code)
   })
 }
 

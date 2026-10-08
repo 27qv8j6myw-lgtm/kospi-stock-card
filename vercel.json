@@ -26,7 +26,8 @@
       "maxDuration": 300
     },
     "api/mcp.mjs": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": ".env"
     },
     "api/oauth/*.mjs": {
       "maxDuration": 10

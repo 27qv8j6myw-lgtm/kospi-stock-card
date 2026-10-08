@@ -9,6 +9,8 @@ import * as z from 'zod'
 import { getPortfolio, getSnapshots, getTrades } from './portfolioData.mjs'
 import { getQuotes, getWatchlist } from './quoteData.mjs'
 import { getDailyBars, getMinuteBars, getInvestorFlow } from './marketHistory.mjs'
+import { getFlowEstimate, getOrderbook, getMarketCalendar, getIndexBars, getAnalystOpinions, getEarningsEstimates, getMarketCapRanking, getFlowRanking } from './marketExtras.mjs'
+import { getServerStatus } from './serverStatus.mjs'
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -45,6 +47,14 @@ function errorResult(e) {
  */
 export function createSignal15McpServer(userId) {
   const server = new McpServer({ name: 'signal15', version: '1.0.0' })
+
+  /** 등록한 도구 이름 — get_server_status 가 그대로 돌려줘 커넥터의 도구 목록 캐시와 비교할 수 있다 */
+  const toolNames = []
+  const registerTool = server.registerTool.bind(server)
+  server.registerTool = (name, ...rest) => {
+    toolNames.push(name)
+    return registerTool(name, ...rest)
+  }
 
   server.registerTool(
     'get_portfolio',
@@ -180,8 +190,15 @@ export function createSignal15McpServer(userId) {
         end_date: z.string().regex(/^\d{8}$/).optional().describe('종료일 YYYYMMDD (기본 오늘)'),
         adjusted: z.boolean().optional().describe('true면 수정주가, 기본 false면 원주가'),
       }), getDailyBars],
-    ['get_minute_bars', '당일 분봉', '당일 1분봉 OHLCV 최대 30개를 조회합니다. end_time(HHMMSS)으로 당일 이전 구간을 조회할 수 있습니다. 과거 거래일 분봉은 지원하지 않습니다. 날짜가 없는 값은 당일로 단정하지 마세요.',
-      z.object({ code: codeSchema, end_time: z.string().regex(/^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/).optional(), market: z.enum(['krx', 'unified', 'nxt']).default('krx') }), getMinuteBars],
+    ['get_minute_bars', '분봉', '1분봉 OHLCV를 오래된 순으로 조회합니다. 아무것도 안 주면 당일 최근 30개입니다(end_time 으로 그 이전 구간). date(YYYYMMDD)를 주면 과거 거래일(최대 1년 전)의 분봉을, interval 을 주면 N분봉으로 묶어서, limit 으로 최대 800개까지 받습니다 — 이 세 가지는 KIS 실전 계정 전용입니다. 하루 전체는 KRX 기준 1분봉 391개이니 장중 고가·저가 도달 시각만 볼 때는 interval 5 이상을 쓰세요. KRX 는 기본으로 15:30 까지만 받으므로 수능일처럼 늦게 끝난 날은 end_time 을 주세요. 날짜가 없는 값은 당일로 단정하지 마세요.',
+      z.object({
+        code: codeSchema,
+        date: z.string().regex(/^\d{8}$/).optional().describe('조회할 거래일 YYYYMMDD (생략하면 당일)'),
+        end_time: z.string().regex(/^(?:[01]\d|2[0-3])[0-5]\d[0-5]\d$/).optional().describe('이 시각(HHMMSS)까지의 봉만'),
+        limit: z.number().int().min(1).max(800).optional().describe('최대 봉 수 (기본: 당일 최근 조회 30, 그 외 400)'),
+        interval: z.number().int().min(1).max(60).optional().describe('봉 간격(분): 1(기본) · 3 · 5 · 10 · 15 · 30 · 60'),
+        market: z.enum(['krx', 'unified', 'nxt']).default('krx'),
+      }), getMinuteBars],
     ['get_investor_flow', '외국인·기관 순매수', 'KRX 투자자별 일별 순매수 수량(주)·금액(원)과 3·5·20거래일 누계를 최신순으로 반환합니다. 기본은 KIS 최근 20일(최대 30일)입니다. start_date/end_date(YYYYMMDD)를 주거나 limit을 30 넘게 주면 30일보다 오래된 구간을 KIS 종목별 투자자매매동향(일별)로 받아 최대 1000일까지 돌려줍니다(history 필드에 호출 수·대조 결과). 과거 조회가 안 되면 매일 쌓는 누적 테이블로 대체합니다. 누계는 값이 전부 빈 날(pendingDates, 장중 당일 등)을 빼고 값이 있는 최근 N거래일을 합산합니다. 실시간 수급이 아니며 결측치는 null입니다.',
       z.object({
         code: codeSchema,
@@ -189,11 +206,72 @@ export function createSignal15McpServer(userId) {
         start_date: z.string().regex(/^\d{8}$/).optional().describe('시작일 YYYYMMDD'),
         end_date: z.string().regex(/^\d{8}$/).optional().describe('종료일 YYYYMMDD (기본 오늘)'),
       }), getInvestorFlow],
+    ['get_flow_estimate', '장중 외국인·기관 추정 수급', '당일 장중 외국인·기관 순매수 추정치(주, 누계)를 입력 시각별로 반환합니다. 증권사 직원이 09:30~14:30 사이 4~5회 집계해 넣는 값이라 확정 수급이 아니며 금액은 없습니다. 장 마감 전에 그날 수급 방향을 볼 때 쓰고, 확정치는 15:40 이후 get_investor_flow 로 확인하세요. KIS 실전 계정 전용입니다.',
+      z.object({ code: codeSchema }), getFlowEstimate],
+    ['get_orderbook', '호가·예상체결가', '매도·매수 호가와 잔량, 예상체결가를 반환합니다. 예상체결가는 동시호가(08:30~09:00, 15:20~15:30)와 장 종료 후에만 의미가 있고, 15:20~15:30 에는 당일 종가의 예상값으로 쓸 수 있습니다(확정 종가는 15:30). 종가 기준 손절·매수 판정을 장 마감 직전에 할 때 사용하세요.',
+      z.object({
+        code: codeSchema,
+        market: z.enum(['krx', 'unified', 'nxt']).default('krx').describe('기본 krx (종가 판정은 KRX 정규장 기준)'),
+        depth: z.number().int().min(1).max(10).optional().describe('호가 단계 수 (기본 5, 최대 10)'),
+      }), getOrderbook],
+    ['get_market_calendar', '개장일·휴장일', '주식시장 개장일과 평일 휴장일을 반환합니다. 기본은 오늘부터 21일이고 start_date(YYYYMMDD)와 days(최대 62)로 범위를 바꿉니다. 거래일 수 계산, 매수 마감일·월말 거래일·연휴 확인에 쓰세요. KIS 권고에 따라 하루 단위로 캐시합니다. KIS 실전 계정 전용입니다.',
+      z.object({
+        start_date: z.string().regex(/^\d{8}$/).optional().describe('시작일 YYYYMMDD (기본 오늘)'),
+        days: z.number().int().min(1).max(62).optional().describe('달력 일수 (기본 21, 최대 62)'),
+      }), getMarketCalendar],
+    ['get_index_bars', '지수 일봉', '코스피·코스닥·코스피200 등 지수(업종)의 일봉을 오래된 순으로 반환합니다. 기본은 KOSPI 최근 60개이고 start_date/end_date(YYYYMMDD)로 기간을, limit 으로 최대 1500개까지 지정합니다. 종목 수익률을 시장과 비교하거나 시장·업종의 추세(20일선 등)를 볼 때 쓰세요. 그 밖의 업종은 4자리 업종코드를 index 에 직접 넣습니다.',
+      z.object({
+        index: z.string().optional().describe('KOSPI(기본) · KOSDAQ · KOSPI200 또는 4자리 업종코드'),
+        limit: z.number().int().min(1).max(1500).optional().describe('최대 봉 수 (기본 60, start_date 지정 시 기본 1500)'),
+        start_date: z.string().regex(/^\d{8}$/).optional().describe('시작일 YYYYMMDD'),
+        end_date: z.string().regex(/^\d{8}$/).optional().describe('종료일 YYYYMMDD (기본 오늘)'),
+      }), getIndexBars],
+    ['get_analyst_opinions', '증권사 투자의견·목표가', '종목의 증권사별 투자의견·목표가 이력(최신순)과, 증권사마다 가장 최근 목표가를 모은 요약(평균·중간값·최고·최저, 직전 보고서 대비 상향·하향 수)을 반환합니다. 기본은 최근 180일입니다. 실적 발표 전후 목표가 상·하향 흐름을 볼 때 쓰세요. 영업이익 컨센서스는 없습니다. KIS 실전 계정 전용입니다.',
+      z.object({
+        code: codeSchema,
+        start_date: z.string().regex(/^\d{8}$/).optional().describe('시작일 YYYYMMDD (기본 종료일 180일 전)'),
+        end_date: z.string().regex(/^\d{8}$/).optional().describe('종료일 YYYYMMDD (기본 오늘)'),
+        limit: z.number().int().min(1).max(300).optional().describe('최대 건수 (기본 100)'),
+      }), getAnalystOpinions],
+    ['get_earnings_estimates', '한투 추정실적', '한국투자증권 리서치의 종목 추정실적을 결산기별로 반환합니다: 매출·영업이익·순이익과 증감률, EBITDA, EPS, PER, EV/EBITDA, ROE, 부채비율. 매월 초 갱신되는 약 160개 기업 한정이며 여러 증권사를 모은 시장 컨센서스가 아닙니다. 대상이 아니면 covered=false 입니다. KIS 실전 계정 전용입니다.',
+      z.object({ code: codeSchema }), getEarningsEstimates],
+    ['get_market_cap_ranking', '시가총액 상위', '시가총액 상위 종목의 순위·현재가·등락률·거래량·상장주식수·시가총액(원)·시장 내 비중을 반환합니다. 한 번에 최대 30종목이고, market 을 KOSPI·KOSDAQ 로 나눠 부르면 시장별로 30종목씩 볼 수 있습니다. 대형주 후보군(스크리닝 대상)을 만들 때 쓰고, 종목별 20일선·수급은 get_daily_bars·get_investor_flow 로 이어서 확인하세요. KIS 실전 계정 전용입니다.',
+      z.object({
+        market: z.enum(['ALL', 'KOSPI', 'KOSDAQ', 'KOSPI200']).optional().describe('ALL(기본, 전체) · KOSPI · KOSDAQ · KOSPI200'),
+        share_class: z.enum(['all', 'common', 'preferred']).optional().describe('all(기본) · common(보통주만) · preferred(우선주만)'),
+        limit: z.number().int().min(1).max(30).optional().describe('최대 종목 수 (기본·최대 30)'),
+      }), getMarketCapRanking],
+    ['get_flow_ranking', '외국인·기관 순매수 상위 (장중 가집계)', '당일 장중 외국인·기관 순매수(또는 순매도) 상위 종목과 종목별 외국인·기관 순매수 수량(주)·금액(원)·합계를 반환합니다. 증권사 직원이 09:30~14:30 사이 4~5회 입력하는 가집계 누계라 확정 수급이 아니고 당일치만 있습니다. 오늘 돈이 몰리는 종목을 찾을 때 쓰고, 확정치와 20일 누계는 종목별 get_investor_flow 로 확인하세요. KIS 실전 계정 전용입니다.',
+      z.object({
+        investor: z.enum(['all', 'foreign', 'institution']).optional().describe('all(기본, 외국인+기관) · foreign · institution'),
+        side: z.enum(['buy', 'sell']).optional().describe('buy(기본, 순매수 상위) · sell(순매도 상위)'),
+        market: z.enum(['ALL', 'KOSPI', 'KOSDAQ']).optional().describe('ALL(기본) · KOSPI · KOSDAQ'),
+        sort: z.enum(['amount', 'shares']).optional().describe('amount(기본, 금액순) · shares(수량순)'),
+        limit: z.number().int().min(1).max(100).optional().describe('최대 종목 수 (기본 30)'),
+        detail: z.boolean().optional().describe('true 면 투신·은행·보험·기금 등 세부 주체별 값도 포함'),
+      }), getFlowRanking],
   ]) {
     server.registerTool(name, { title, description, inputSchema: schema, annotations: READ_ONLY }, async (input) => {
       try { return jsonResult(await handler(input)) } catch (e) { return errorResult(e) }
     })
   }
+
+  server.registerTool(
+    'get_server_status',
+    {
+      title: '서버 연결 상태',
+      description:
+        'Signal15 MCP 서버가 KIS 실전(prod)·모의(vps) 중 어디에 연결돼 있는지, 배포 버전(커밋·호스트), 등록된 도구 목록을 반환합니다. 비밀값은 포함하지 않습니다. 실전 전용 도구가 모의투자 서버 오류를 내거나 새 도구가 보이지 않을 때 먼저 확인하세요.',
+      annotations: READ_ONLY,
+    },
+    async () => {
+      try {
+        return jsonResult(getServerStatus(toolNames))
+      } catch (e) {
+        return errorResult(e)
+      }
+    },
+  )
 
   return server
 }
