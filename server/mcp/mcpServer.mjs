@@ -11,6 +11,7 @@ import { getQuotes, getWatchlist } from './quoteData.mjs'
 import { getDailyBars, getMinuteBars, getInvestorFlow } from './marketHistory.mjs'
 import { getFlowEstimate, getOrderbook, getMarketCalendar, getIndexBars, getAnalystOpinions, getEarningsEstimates, getMarketCapRanking, getFlowRanking } from './marketExtras.mjs'
 import { getServerStatus } from './serverStatus.mjs'
+import { getRuleBacktest } from './ruleBacktest.mjs'
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -250,6 +251,15 @@ export function createSignal15McpServer(userId) {
         limit: z.number().int().min(1).max(100).optional().describe('최대 종목 수 (기본 30)'),
         detail: z.boolean().optional().describe('true 면 투신·은행·보험·기금 등 세부 주체별 값도 포함'),
       }), getFlowRanking],
+    ['get_rule_backtest', '월초 선정·규칙 시뮬레이션', '종목 목록과 달(YYYYMM)을 주면 종목별로 (1) 그 달 직전 거래일 종가 기준 선정 지표(20일선 대비·20일 등락·변동성·외국인/기관 20일·5일 순매수)와 (2) 그 달에 매매 규칙(첫 N거래일 안에 종가가 이틀 연속 하락한 날 종가 매수 → 목표가 도달 시 익절, 종가 손절선 이탈 시 다음 날 시가 정리, 아니면 월말 종가)을 적용한 결과를 반환합니다. 비교용으로 첫 거래일 종가 매수(day1)와 매수 창 마지막 날 종가 매수(forced)도 같이 줍니다. 기본은 선정 기준 통과 종목만 돌려주고(include=all 이면 전부), closes 에는 전 종목의 기준일 종가가 들어 있습니다. 여러 달을 차례로 불러 "여러 종목 대기 명단" 규칙을 검증할 때 쓰세요. 수정주가·비용 미반영, 금액은 억원입니다. 종목당 KIS 를 2번 부르므로 80종목이면 10여 초 걸립니다. KIS 실전 계정 전용입니다.',
+      z.object({
+        codes: z.array(codeSchema).min(1).max(80).describe('6자리 종목코드 목록 (최대 80개)'),
+        month: z.string().regex(/^\d{6}$/).describe('시뮬레이션할 달 YYYYMM'),
+        window: z.number().int().min(1).max(10).optional().describe('매수 창 거래일 수 (기본 5)'),
+        take_profit_pct: z.number().positive().max(100).optional().describe('익절 % (기본 10)'),
+        stop_loss_pct: z.number().positive().max(99).optional().describe('종가 손절 % (기본 15)'),
+        include: z.enum(['passed', 'all']).optional().describe('passed(기본, 선정 기준 통과 종목만) · all(전 종목)'),
+      }), getRuleBacktest],
   ]) {
     server.registerTool(name, { title, description, inputSchema: schema, annotations: READ_ONLY }, async (input) => {
       try { return jsonResult(await handler(input)) } catch (e) { return errorResult(e) }
