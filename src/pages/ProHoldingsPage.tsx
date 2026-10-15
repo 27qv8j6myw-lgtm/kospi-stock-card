@@ -737,7 +737,7 @@ export default function ProHoldingsPage() {
           </div>
         </div>
 
-        {holdings.length > 0 ? (
+        {!loading && groups.length > 0 ? (
           <>
             <PortfolioAnalysis
               refreshKey={portfolioRefreshKey}
