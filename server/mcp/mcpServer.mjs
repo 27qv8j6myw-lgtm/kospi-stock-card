@@ -8,7 +8,8 @@ import { McpServer } from '@modelcontextprotocol/server'
 import * as z from 'zod'
 import { getPortfolio, getSnapshots, getTrades } from './portfolioData.mjs'
 import { getQuotes, getWatchlist } from './quoteData.mjs'
-import { getDailyBars, getMinuteBars, getInvestorFlow } from './marketHistory.mjs'
+import { getDailyBars, getMinuteBars, getInvestorFlow, getRegularSession } from './marketHistory.mjs'
+import { getUsSnapshot } from './usSnapshot.mjs'
 import { getFlowEstimate, getOrderbook, getMarketCalendar, getIndexBars, getAnalystOpinions, getEarningsEstimates, getMarketCapRanking, getFlowRanking } from './marketExtras.mjs'
 import { getServerStatus } from './serverStatus.mjs'
 import { getRuleBacktest } from './ruleBacktest.mjs'
@@ -133,7 +134,7 @@ export function createSignal15McpServer(userId) {
     {
       title: '종목 현재가',
       description:
-        '국내 종목의 현재가와 시세 지표(전일대비·등락률·시가·고가·저가·거래량·거래대금·시가총액·PER·PBR·EPS·BPS·배당수익률·외국인 지분율)를 반환합니다. 6자리 종목코드와 종목명을 섞어 넣을 수 있습니다(예: ["005930", "SK하이닉스"]). 보유하지 않은 종목도 조회됩니다. 기본은 KRX+NXT 통합가라 NXT 프리마켓(08:00~08:50)·애프터마켓(15:30~20:00) 체결가도 잡힙니다. 응답의 basis 필드가 실제 적용된 기준입니다.',
+        '국내 종목의 현재가와 시세 지표(전일대비·등락률·시가·고가·저가·거래량·거래대금·시가총액·PER·PBR·EPS·BPS·배당수익률·외국인 지분율)를 반환합니다. 6자리 종목코드와 종목명을 섞어 넣을 수 있습니다(예: ["005930", "SK하이닉스"]). 보유하지 않은 종목도 조회됩니다. 기본은 KRX+NXT 통합가라 NXT 프리마켓(08:00~08:50)·애프터마켓(15:30~20:00) 체결가도 잡힙니다. 응답의 basis 필드가 실제 적용된 기준입니다. prevClose 는 기준가(통상 전일 종가)이고, 평일 15:30 이후에는 regularClose(KRX 정규장 종가)·afterHoursPrice(시간외 단일가)가 붙습니다 — 15:30 이후 price 는 시간외 체결가일 수 있으니 종가 판정은 regularClose 로 하세요. 날짜별 정규장 종가·OHLC 는 get_close.',
       inputSchema: z.object({
         symbols: z
           .array(z.string())
@@ -146,12 +147,16 @@ export function createSignal15McpServer(userId) {
           .describe(
             '시세 기준 (기본 unified = KRX+NXT 통합). 정규장 종가 기준만 보려면 krx, 시간외 NXT 체결만 보려면 nxt',
           ),
+        include_close: z
+          .boolean()
+          .optional()
+          .describe('regularClose·afterHoursPrice 를 붙일지. 기본은 평일 15:30 이후 자동. true 면 장중에도 시도(기준가가 전일 종가로 나올 수 있음), false 면 생략. KIS 실전 계정 전용 필드'),
       }),
       annotations: READ_ONLY,
     },
-    async ({ symbols, market }) => {
+    async ({ symbols, market, include_close }) => {
       try {
-        return jsonResult(await getQuotes(symbols, { market }))
+        return jsonResult(await getQuotes(symbols, { market, includeClose: include_close }))
       } catch (e) {
         return errorResult(e)
       }
@@ -251,6 +256,16 @@ export function createSignal15McpServer(userId) {
         limit: z.number().int().min(1).max(100).optional().describe('최대 종목 수 (기본 30)'),
         detail: z.boolean().optional().describe('true 면 투신·은행·보험·기금 등 세부 주체별 값도 포함'),
       }), getFlowRanking],
+    ['get_close', '정규장 종가·OHLC', '특정 날짜의 KRX 정규장 OHLCV 를 그 날 1분봉(09:00~15:30)만으로 계산해 반환합니다. close 는 15:30 봉 종가(=KRX 공식 종가)이고 시간외 단일가·NXT 체결은 섞이지 않습니다. 15:30 이후 get_quote 의 price(시간외 단일가)나 당일 일봉(시간외 포함 가능)과 혼동되는 종가 판정(손절·익절·20일선·전일 종가 대비)에 쓰세요. date 를 생략하면 오늘이며, 장중에는 complete=false 와 함께 마지막 봉 가격이 옵니다. 분봉 보관은 최대 1년, KIS 실전 계정 전용입니다.',
+      z.object({
+        code: codeSchema,
+        date: z.string().regex(/^\d{8}$/).optional().describe('거래일 YYYYMMDD (기본 오늘)'),
+      }), getRegularSession],
+    ['get_us_snapshot', '미국 시장 스냅샷', '미국 지수(다우·S&P500·나스닥·나스닥100·러셀2000·필라델피아반도체 SOX·VIX), 선물(나스닥100·S&P500·WTI·브렌트·금 근월 연속), 금리·환율(미 10년물·5년물 %, 달러인덱스, 원/달러), 반도체 관심종목(엔비디아·마이크론·AMD·브로드컴·인텔·TSMC·코어위브·SOXL·SMH·EWY)의 현재가·전일 종가·등락률·당일 고저·가격 시각(ET/KST)·최근 5일 종가·연속 상승/하락 일수를 한 번에 반환합니다. groups 로 일부만, symbols 로 야후 심볼을 최대 15개 추가할 수 있습니다(예: ["SKHY", "QQQ", "ZN=F"]). 아침 브리핑·유가 선(브렌트/WTI) 판정·SOX 연속 하락 확인에 쓰세요. 소스는 Yahoo(비공식, 지연 가능)이고 개별주는 KIS 해외주식 현재가로 폴백합니다. 미국 정규장 밖에서는 직전 종가 또는 선물 값이니 marketTimeET 를 확인하세요.',
+      z.object({
+        groups: z.array(z.enum(['indices', 'futures', 'rates_fx', 'stocks'])).optional().describe('조회할 그룹 (기본 전부)'),
+        symbols: z.array(z.string()).max(15).optional().describe('추가 야후 심볼 (최대 15개, 예: SKHY · QQQ · ZN=F · ^IRX)'),
+      }), getUsSnapshot],
     ['get_rule_backtest', '월초 선정·규칙 시뮬레이션', '종목 목록과 달(YYYYMM)을 주면 종목별로 (1) 그 달 직전 거래일 종가 기준 선정 지표(20일선 대비·20일 등락·변동성·외국인/기관 20일·5일 순매수)와 (2) 그 달에 매매 규칙(첫 N거래일 안에 종가가 이틀 연속 하락한 날 종가 매수 → 목표가 도달 시 익절, 종가 손절선 이탈 시 다음 날 시가 정리, 아니면 월말 종가)을 적용한 결과를 반환합니다. 비교용으로 첫 거래일 종가 매수(day1)와 매수 창 마지막 날 종가 매수(forced)도 같이 줍니다. 기본은 선정 기준 통과 종목만 돌려주고(include=all 이면 전부), closes 에는 전 종목의 기준일 종가가 들어 있습니다. 여러 달을 차례로 불러 "여러 종목 대기 명단" 규칙을 검증할 때 쓰세요. 수정주가·비용 미반영, 금액은 억원입니다. 종목당 KIS 를 2번 부르므로 80종목이면 10여 초 걸립니다. KIS 실전 계정 전용입니다.',
       z.object({
         codes: z.array(codeSchema).min(1).max(80).describe('6자리 종목코드 목록 (최대 80개)'),

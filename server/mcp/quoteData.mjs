@@ -4,7 +4,7 @@
  * 대화에서 "삼성전자 지금 얼마야" 처럼 이름으로 물어보는 경우가 많으므로
  * 6자리 코드와 종목명을 모두 받아 코드로 해석한 뒤 조회한다.
  */
-import { MARKET_DIV_DISPLAY } from '../kisClient.mjs'
+import { MARKET_DIV_DISPLAY, inquireOvertimePrice } from '../kisClient.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { searchStocksMaster } from '../lib/stocksMasterSearch.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
@@ -53,6 +53,57 @@ function seoulNow() {
     dateStyle: 'short',
     timeStyle: 'short',
   }).format(new Date())
+}
+
+/** 서울 기준 시각 — 요일과 HHMM. 정규장 종가 필드를 붙일지 판단하는 데 쓴다 */
+export function seoulClock(now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Seoul', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now)
+  const get = (type) => parts.find((x) => x.type === type)?.value ?? ''
+  return { weekday: get('weekday'), hhmm: `${get('hour')}${get('minute')}` }
+}
+
+/**
+ * KRX 정규장이 끝난 뒤(평일 15:30~24:00)인가. 이 시간대의 inquire-price 현재가는
+ * 시간외 단일가(16:00~18:00) 체결가로 바뀌므로 정규장 종가를 따로 붙여야 한다.
+ */
+export function isAfterRegularClose(now = new Date()) {
+  const { weekday, hhmm } = seoulClock(now)
+  if (weekday === 'Sat' || weekday === 'Sun') return false
+  return hhmm >= '1530'
+}
+
+/** KIS 인증정보 (regularClose 조회용) */
+function kisCredentials() {
+  const clean = (v) => String(v ?? '').trim().replace(/^(["'])(.*)\1$/, '$2').trim()
+  const key = clean(process.env.KIS_APP_KEY)
+  const secret = clean(process.env.KIS_APP_SECRET)
+  if (!key || !secret) return null
+  return /** @type {[string, string, 'prod' | 'vps']} */ ([key, secret, process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'])
+}
+
+/**
+ * 정규장 종가·시간외 단일가 — 15:30 이후에만 붙인다. 실전 전용 TR 이라 모의 환경이면 null.
+ * @param {string} code
+ */
+async function regularCloseFields(code) {
+  const creds = kisCredentials()
+  if (!creds) return {}
+  try {
+    const o = await inquireOvertimePrice(...creds, code)
+    return compact({
+      regularClose: won(o.regularClose),
+      regularCloseBasis: o.regularClose != null ? 'KRX 정규장 종가 (시간외 단일가 기준가)' : null,
+      afterHoursPrice: won(o.afterHoursPrice),
+      afterHoursChangePct: pct(o.afterHoursChangePct),
+      afterHoursVolume: won(o.afterHoursVolume),
+    })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (!/PROD_ONLY|실전 계정 전용/.test(msg)) console.warn('[mcp/quote] 시간외현재가 실패:', code, msg)
+    return {}
+  }
 }
 
 function requireSupabase() {
@@ -121,9 +172,11 @@ async function fetchNames(codes) {
  * @param {string} code
  * @param {'J' | 'NX' | 'UN'} marketDiv
  */
-async function quoteOne(code, marketDiv) {
+async function quoteOne(code, marketDiv, opts = {}) {
   const q = await getKisQuote(code, { marketDiv })
   const used = /** @type {'J' | 'NX' | 'UN'} */ (q.marketDiv ?? 'J')
+  // 정규장 종가는 KRX 기준(J·UN)에서 15:30 이후에만 의미가 있다. NXT 단독 조회에는 붙이지 않는다.
+  const closeFields = opts.includeClose && used !== 'NX' ? await regularCloseFields(code) : {}
   return compact({
     code: q.code,
     name: q.name,
@@ -133,6 +186,8 @@ async function quoteOne(code, marketDiv) {
     price: won(q.currentPrice),
     change: won(q.change),
     changePct: pct(q.changePct),
+    prevClose: won(q.basePrice),
+    ...closeFields,
     open: won(q.openPrice),
     dayHigh: won(q.dayHigh),
     dayLow: won(q.dayLow),
@@ -154,7 +209,7 @@ async function quoteOne(code, marketDiv) {
  * @param {'J' | 'NX' | 'UN'} [marketDiv]
  * @returns {Promise<Map<string, Record<string, unknown> | null>>}
  */
-async function quoteMany(codes, marketDiv = MARKET_DIV_DISPLAY) {
+async function quoteMany(codes, marketDiv = MARKET_DIV_DISPLAY, opts = {}) {
   const unique = [...new Set(codes)]
   /** @type {Map<string, Record<string, unknown> | null>} */
   const out = new Map()
@@ -164,7 +219,7 @@ async function quoteMany(codes, marketDiv = MARKET_DIV_DISPLAY) {
     const results = await Promise.all(
       chunk.map(async (code) => {
         try {
-          return /** @type {const} */ ([code, await quoteOne(code, marketDiv)])
+          return /** @type {const} */ ([code, await quoteOne(code, marketDiv, opts)])
         } catch (e) {
           console.warn('[mcp/quote]', code, e instanceof Error ? e.message : String(e))
           return /** @type {const} */ ([code, null])
@@ -184,6 +239,8 @@ async function quoteMany(codes, marketDiv = MARKET_DIV_DISPLAY) {
  */
 export async function getQuotes(symbols, opts = {}) {
   const marketDiv = MARKET_DIV_BY_NAME[opts.market ?? ''] ?? MARKET_DIV_DISPLAY
+  // 기본은 "장 마감 뒤면 붙인다". include_close=true 면 장중에도 시도(전일 종가가 기준가로 나올 수 있음).
+  const includeClose = opts.includeClose === true || (opts.includeClose !== false && isAfterRegularClose())
   const list = (Array.isArray(symbols) ? symbols : [symbols])
     .map((s) => String(s ?? '').trim())
     .filter(Boolean)
@@ -203,7 +260,7 @@ export async function getQuotes(symbols, opts = {}) {
   })
 
   const codes = targets.map((t) => t.code)
-  const [quotes, names] = await Promise.all([quoteMany(codes, marketDiv), fetchNames(codes)])
+  const [quotes, names] = await Promise.all([quoteMany(codes, marketDiv, { includeClose }), fetchNames(codes)])
 
   const items = targets.map((t) => {
     const quote = quotes.get(t.code)
@@ -212,14 +269,18 @@ export async function getQuotes(symbols, opts = {}) {
     return better ? { ...quote, name: better } : quote
   })
 
+  const closeNote = includeClose
+    ? ' 15:30 이후 price 는 시간외 단일가(16:00~18:00) 체결가일 수 있으니 종가 판정은 regularClose 를 쓰세요. prevClose 는 기준가(통상 전일 종가)입니다.'
+    : ' prevClose 는 기준가(통상 전일 종가)입니다.'
+
   return compact({
     asOf: seoulNow(),
     timezone: 'Asia/Seoul',
     currency: 'KRW',
     note:
-      marketDiv === 'J'
-        ? 'KRX 정규장 기준입니다 (09:00~15:30, 이후는 종가)'
-        : 'KRX+NXT 통합 기준입니다. NXT 프리마켓 08:00~08:50, 애프터마켓 15:30~20:00 체결가도 반영되고, NXT 미상장 종목은 KRX 값으로 폴백합니다 (종목별 basis 확인)',
+      (marketDiv === 'J'
+        ? 'KRX 정규장 기준입니다 (09:00~15:30).'
+        : 'KRX+NXT 통합 기준입니다. NXT 프리마켓 08:00~08:50, 애프터마켓 15:30~20:00 체결가도 반영되고, NXT 미상장 종목은 KRX 값으로 폴백합니다 (종목별 basis 확인).') + closeNote,
     quotes: items,
     unresolved: unresolved.length > 0 ? unresolved : null,
   })

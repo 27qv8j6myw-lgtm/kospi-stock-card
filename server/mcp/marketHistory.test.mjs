@@ -144,3 +144,28 @@ describe('MCP market history', () => {
     expect(vps.history.supported).toBe(false); expect(vps.note).toContain('실전 계정 전용')
   })
 })
+
+import { summarizeRegularSession, getRegularSession } from './marketHistory.mjs'
+describe('MCP regular session close', () => {
+  const bar = (time, close, volume = 10, extra = {}) => ({ time, open: close, high: close + 100, low: close - 100, close, volume, ...extra })
+  it('summarizes regular-session OHLCV from minute bars and flags the 15:30 close', () => {
+    const s = summarizeRegularSession([bar('090000', 151600, 5, { open: 156200, high: 156200, low: 149000 }), bar('120000', 160900), bar('153000', 163000, 7, { high: 163000, low: 163000 })])
+    expect(s).toEqual({ open: 156200, high: 163000, low: 149000, close: 163000, volume: 22, openTime: '090000', closeTime: '153000', barCount: 3, complete: true })
+    expect(summarizeRegularSession([bar('090000', 100), bar('101500', 105)]).complete).toBe(false)
+    expect(summarizeRegularSession([])).toBeNull()
+  })
+  it('asks KIS for that day only, on the KRX market, and labels incomplete sessions', async () => {
+    inquireDailyMinuteBars.mockResolvedValue({ bars: [
+      { date: '20261016', hhmmss: '090000', price: 152200, open: 156200, high: 156200, low: 149000, volume: 1 },
+      { date: '20261016', hhmmss: '153000', price: 152000, open: 152000, high: 152000, low: 152000, volume: 2 }], pages: 4 })
+    const out = await getRegularSession({ code: '096770', date: '20261016' })
+    expect(inquireDailyMinuteBars.mock.calls[0][3]).toBe('096770'); expect(inquireDailyMinuteBars.mock.calls[0][4]).toEqual({ date: '20261016', marketDiv: 'J', maxBars: 400 })
+    expect(out.close).toBe(152000); expect(out.high).toBe(156200); expect(out.low).toBe(149000); expect(out.complete).toBe(true); expect(out.basis).toBe('KRX 정규장 1분봉')
+    inquireDailyMinuteBars.mockResolvedValue({ bars: [{ date: '20261020', hhmmss: '101500', price: 165000, volume: 1 }], pages: 1 })
+    const live = await getRegularSession({ code: '096770', date: '20261020' })
+    expect(live.complete).toBe(false); expect(live.note).toContain('종가가 아닙니다')
+    inquireDailyMinuteBars.mockResolvedValue({ bars: [], pages: 1 })
+    expect((await getRegularSession({ code: '096770', date: '20261018' })).close).toBeNull()
+    await expect(getRegularSession({ code: '096770', date: '2026-10-16' })).rejects.toThrow('YYYYMMDD')
+  })
+})

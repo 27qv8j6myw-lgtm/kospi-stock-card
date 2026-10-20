@@ -115,7 +115,16 @@ export async function getKisQuote(code6, opts = {}) {
     foreignHoldingRate: quote.foreignHoldingRate ?? null,
     foreignHoldingQty: quote.foreignHoldingQty ?? null,
     foreignNetBuy: quote.foreignNetBuy ?? null,
+    // 기준가(stck_sdpr) — 통상 전일 종가. 배당·권리락일엔 전일 종가와 다를 수 있다.
+    basePrice: kisNumber(raw?.stck_sdpr),
   }
+}
+
+/** KIS 숫자 문자열 → number (빈 값은 null) */
+function kisNumber(v) {
+  if (v === undefined || v === null || v === '') return null
+  const n = Number(String(v).replace(/,/g, ''))
+  return Number.isFinite(n) ? n : null
 }
 
 /**

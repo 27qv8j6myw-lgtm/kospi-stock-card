@@ -329,3 +329,59 @@ export async function getInvestorFlow({ code, limit, start_date, end_date }, dep
     note: `${FLOW_NOTE} ${historyNote} ${storedNote}`,
     cumulative3d: summarizeFlow(merged, 3), cumulative5d: summarizeFlow(merged, 5), cumulative20d: summarizeFlow(merged, 20), rows }
 }
+
+/** 정규장 마감 분봉 시각 — KRX 는 15:30 봉이 종가 */
+const REGULAR_CLOSE_HHMMSS = '153000'
+
+/**
+ * 1분봉 묶음 → 정규장 OHLCV. 시간외(15:30 이후 체결)는 KRX 분봉에 없으므로 그대로 정규장 값이다.
+ * @param {Array<{time: string, open: number | null, high: number | null, low: number | null, close: number, volume: number}>} bars 시각 오름차순
+ */
+export function summarizeRegularSession(bars) {
+  const valid = (bars ?? []).filter((b) => b && Number.isFinite(Number(b.close)))
+  if (valid.length === 0) return null
+  const first = valid[0]
+  const last = valid.at(-1)
+  let high = -Infinity
+  let low = Infinity
+  let volume = 0
+  for (const b of valid) {
+    high = Math.max(high, Number(b.high ?? b.close))
+    low = Math.min(low, Number(b.low ?? b.close))
+    volume += Number(b.volume ?? 0)
+  }
+  return {
+    open: Number(first.open ?? first.close),
+    high,
+    low,
+    close: Number(last.close),
+    volume,
+    openTime: first.time,
+    closeTime: last.time,
+    barCount: valid.length,
+    complete: last.time === REGULAR_CLOSE_HHMMSS,
+  }
+}
+
+/**
+ * 정규장 종가·OHLC — 그 날의 KRX 1분봉(09:00~15:30)만으로 계산한다.
+ * 15:30 이후 inquire-price 의 현재가는 시간외 단일가로, 당일 일봉은 시간외까지 섞여 올 수 있어
+ * 종가 판정(손절·익절·20일선)은 이 값을 기준으로 한다.
+ * @param {{code: string, date?: string}} input
+ */
+export async function getRegularSession({ code, date }) {
+  const creds = credentials(code)
+  if (date != null && !YMD.test(date)) throw new Error('date는 YYYYMMDD 형식이어야 합니다')
+  const day = date ?? seoulToday()
+  const { bars: rows, pages } = await inquireDailyMinuteBars(...creds, { date: day, marketDiv: 'J', maxBars: MINUTE_RANGE_DEFAULT })
+  const bars = rows.map(({ hhmmss, price, open, high, low, volume }) => ({ time: hhmmss, open: open ?? null, high: high ?? null, low: low ?? null, close: price, volume }))
+  const session = summarizeRegularSession(bars)
+  if (!session) {
+    return { ...metadata(code, 'KRX 정규장 1분봉'), date: day, pages, close: null, complete: false,
+      note: `${day} 분봉이 없습니다. 휴장일·상장 전·1년 넘은 날짜이거나 아직 개장 전입니다.` }
+  }
+  return { ...metadata(code, 'KRX 정규장 1분봉'), date: day, pages, ...session,
+    note: session.complete
+      ? `${day} 정규장 OHLCV 입니다. close 는 15:30 봉 종가(=KRX 공식 종가)이며 시간외 단일가·NXT 체결은 포함하지 않습니다.`
+      : `${day} 정규장이 아직 끝나지 않았거나(마지막 봉 ${session.closeTime}) 분봉이 일부만 있습니다. close 는 마지막 봉 가격이라 종가가 아닙니다.` }
+}

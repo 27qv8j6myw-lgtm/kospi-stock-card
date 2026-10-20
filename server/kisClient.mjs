@@ -2099,3 +2099,100 @@ export async function getTopFlowStocks(
 }
 
 export { firstNumByKeyHint }
+
+/** 시간외 단일가 현재가 캐시 — 10분 단위 체결이라 30초면 충분 */
+const KIS_CACHE_TTL_OVERTIME_MS = 30_000
+
+/**
+ * 국내주식 시간외현재가 [국내주식-076] FHPST02300000 (실전 전용)
+ *
+ * `ovtm_untp_sdpr`(시간외 단일가 기준가)가 그날 KRX 정규장 종가다. 15:30 이후 inquire-price 의
+ * stck_prpr 은 시간외 단일가 체결가로 바뀌므로, 종가 판정에는 이 값을 쓴다.
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {string} code6
+ * @returns {Promise<{ regularClose: number | null, afterHoursPrice: number | null, afterHoursChange: number | null,
+ *   afterHoursChangePct: number | null, afterHoursVolume: number | null, afterHoursHigh: number | null,
+ *   afterHoursLow: number | null, afterHoursExpectedPrice: number | null, raw: Record<string, unknown> }>}
+ */
+export async function inquireOvertimePrice(appKey, appSecret, env, code6) {
+  assertProdOnly(env, '국내주식 시간외현재가')
+  const iscd = normalizeKisIscd(code6)
+  const cacheKey = `kis:overtime:${env}:${iscd}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_OVERTIME_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/inquire-overtime-price',
+      params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: iscd },
+      trId: 'FHPST02300000',
+      kind: 'KIS 시간외현재가',
+    })
+    const o = normalizeKisOutputRows(data.output)[0]
+    if (!o || typeof o !== 'object') throw new Error('KIS 시간외현재가 output 없음')
+    const regularClose = num(o.ovtm_untp_sdpr)
+    const afterHoursPrice = num(o.ovtm_untp_prpr)
+    const afterHoursChange =
+      regularClose != null && afterHoursPrice != null && afterHoursPrice > 0 ? afterHoursPrice - regularClose : null
+    return {
+      regularClose: regularClose != null && regularClose > 0 ? regularClose : null,
+      afterHoursPrice: afterHoursPrice != null && afterHoursPrice > 0 ? afterHoursPrice : null,
+      afterHoursChange,
+      afterHoursChangePct:
+        afterHoursChange != null && regularClose ? Math.round((afterHoursChange / regularClose) * 10000) / 100 : null,
+      afterHoursVolume: num(o.ovtm_untp_vol),
+      afterHoursHigh: num(o.ovtm_untp_hgpr),
+      afterHoursLow: num(o.ovtm_untp_lwpr),
+      afterHoursExpectedPrice: num(o.ovtm_untp_antc_cnpr),
+      raw: o,
+    }
+  })
+}
+
+/** 해외주식 현재체결가 캐시 — 미국은 0분 지연 무료시세 */
+const KIS_CACHE_TTL_OVERSEAS_PRICE_MS = 60_000
+
+/**
+ * 해외주식 현재체결가 [v1_해외주식-009] HHDFS00000300
+ * @param {string} appKey
+ * @param {string} appSecret
+ * @param {'prod'|'vps'} env
+ * @param {'NAS'|'NYS'|'AMS'} excd 거래소 코드
+ * @param {string} symb 종목코드 (예: NVDA)
+ * @returns {Promise<{ symbol: string, exchange: string, price: number, prevClose: number | null, change: number | null,
+ *   changePct: number | null, volume: number | null, tradingValue: number | null }>}
+ */
+export async function inquireOverseasStockPrice(appKey, appSecret, env, excd, symb) {
+  const exchange = String(excd || '').trim().toUpperCase()
+  const symbol = String(symb || '').trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(exchange)) throw new Error('거래소 코드는 NAS·NYS·AMS 중 하나여야 합니다')
+  if (!/^[A-Z0-9.\-]{1,16}$/.test(symbol)) throw new Error('해외 종목코드 형식이 아닙니다')
+  const cacheKey = `kis:ovrs-price:${env}:${exchange}:${symbol}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_OVERSEAS_PRICE_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/overseas-price/v1/quotations/price',
+      params: { AUTH: '', EXCD: exchange, SYMB: symbol },
+      trId: 'HHDFS00000300',
+      kind: 'KIS 해외주식 현재가',
+    })
+    const o = normalizeKisOutputRows(data.output)[0]
+    const price = num(o?.last)
+    if (price == null || !(price > 0)) throw new Error(`해외주식 현재가 없음 (${exchange}:${symbol})`)
+    const prevClose = num(o?.base)
+    return {
+      symbol,
+      exchange,
+      price,
+      prevClose,
+      change: num(o?.diff),
+      changePct: num(o?.rate),
+      volume: num(o?.tvol),
+      tradingValue: num(o?.tamt),
+    }
+  })
+}
