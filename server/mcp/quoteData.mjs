@@ -4,7 +4,7 @@
  * 대화에서 "삼성전자 지금 얼마야" 처럼 이름으로 물어보는 경우가 많으므로
  * 6자리 코드와 종목명을 모두 받아 코드로 해석한 뒤 조회한다.
  */
-import { MARKET_DIV_DISPLAY, inquireOvertimePrice } from '../kisClient.mjs'
+import { MARKET_DIV_DISPLAY, inquireOvertimePrice, inquireMinuteBars } from '../kisClient.mjs'
 import { isValidStockCode, normalizeKisIscd } from '../lib/stockCode.mjs'
 import { searchStocksMaster } from '../lib/stocksMasterSearch.mjs'
 import { getSupabaseService } from '../lib/supabaseService.mjs'
@@ -83,27 +83,49 @@ function kisCredentials() {
   return /** @type {[string, string, 'prod' | 'vps']} */ ([key, secret, process.env.KIS_ENV === 'prod' ? 'prod' : 'vps'])
 }
 
+/** KRX 정규장 마감 분봉 시각 */
+const REGULAR_CLOSE_HHMMSS = '153000'
+
 /**
- * 정규장 종가·시간외 단일가 — 15:30 이후에만 붙인다. 실전 전용 TR 이라 모의 환경이면 null.
+ * 정규장 종가·시간외 단일가 — 15:30 이후에만 붙인다.
+ * 종가는 당일 1분봉의 15:30 봉(KIS 당일분봉, 모의 환경에서도 동작)에서 읽고,
+ * 시간외 단일가(실전 전용 TR)는 값이 있을 때만 덧붙인다. 둘 다 실패해도 시세 자체는 돌려준다.
  * @param {string} code
  */
 async function regularCloseFields(code) {
   const creds = kisCredentials()
   if (!creds) return {}
+  /** @type {Record<string, unknown>} */
+  const out = {}
+
+  try {
+    const bars = await inquireMinuteBars(...creds, code, { endHhmmss: REGULAR_CLOSE_HHMMSS, marketDiv: 'J', settled: true })
+    const last = bars.at(-1)
+    if (last && last.hhmmss === REGULAR_CLOSE_HHMMSS && Number(last.price) > 0) {
+      out.regularClose = won(last.price)
+      out.regularCloseBasis = 'KRX 정규장 종가 (15:30 1분봉)'
+      if (last.date) out.regularCloseDate = String(last.date)
+    }
+  } catch (e) {
+    console.warn('[mcp/quote] 15:30 분봉 조회 실패:', code, e instanceof Error ? e.message : String(e))
+  }
+
   try {
     const o = await inquireOvertimePrice(...creds, code)
-    return compact({
-      regularClose: won(o.regularClose),
-      regularCloseBasis: o.regularClose != null ? 'KRX 정규장 종가 (시간외 단일가 기준가)' : null,
-      afterHoursPrice: won(o.afterHoursPrice),
-      afterHoursChangePct: pct(o.afterHoursChangePct),
-      afterHoursVolume: won(o.afterHoursVolume),
-    })
+    if (out.regularClose == null && o.regularClose != null) {
+      out.regularClose = won(o.regularClose)
+      out.regularCloseBasis = 'KRX 정규장 종가 (시간외 단일가 기준가)'
+    }
+    if (o.afterHoursPrice != null) {
+      out.afterHoursPrice = won(o.afterHoursPrice)
+      out.afterHoursChangePct = pct(o.afterHoursChangePct)
+      out.afterHoursVolume = won(o.afterHoursVolume)
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     if (!/PROD_ONLY|실전 계정 전용/.test(msg)) console.warn('[mcp/quote] 시간외현재가 실패:', code, msg)
-    return {}
   }
+  return compact(out)
 }
 
 function requireSupabase() {
