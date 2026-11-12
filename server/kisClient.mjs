@@ -2196,3 +2196,131 @@ export async function inquireOverseasStockPrice(appKey, appSecret, env, excd, sy
     }
   })
 }
+
+// ───────────────────────── 해외주식 확장 (일봉·분봉·현재가상세) ─────────────────────────
+
+function assertOverseasArgs(excd, symb) {
+  const exchange = String(excd || '').trim().toUpperCase()
+  const symbol = String(symb || '').trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(exchange)) throw new Error('거래소 코드는 NAS·NYS·AMS 중 하나여야 합니다')
+  if (!/^[A-Z0-9.\-]{1,16}$/.test(symbol)) throw new Error('해외 종목코드 형식이 아닙니다')
+  return { exchange, symbol }
+}
+
+/** YYYYMMDD 하루 전 */
+function ymdMinusOneDay(yyyymmdd) {
+  const d = new Date(Date.UTC(Number(yyyymmdd.slice(0, 4)), Number(yyyymmdd.slice(4, 6)) - 1, Number(yyyymmdd.slice(6, 8))))
+  d.setUTCDate(d.getUTCDate() - 1)
+  return d.toISOString().slice(0, 10).replace(/-/g, '')
+}
+
+/** 해외 일봉 페이지 반복으로 받을 최대 봉 수 */
+export const KIS_OVERSEAS_DAILY_MAX_BARS = 500
+
+/**
+ * 해외주식 기간별시세 (HHDFS76240000) — 한 번에 100건, BYMD 를 거슬러 올라가며 이어 붙인다.
+ * @param {{period?: 'D'|'W'|'M', endDate?: string, adjusted?: boolean, maxBars?: number}} [opts]
+ * @returns {Promise<{bars: {date: string, open: number|null, high: number|null, low: number|null, close: number, volume: number|null, tradingValue: number|null}[], pages: number}>} 오래된 순
+ */
+export async function inquireOverseasDailyBars(appKey, appSecret, env, excd, symb, opts = {}) {
+  const { exchange, symbol } = assertOverseasArgs(excd, symb)
+  const gubn = { D: '0', W: '1', M: '2' }[opts.period ?? 'D']
+  if (!gubn) throw new Error('period 는 D·W·M 중 하나여야 합니다')
+  const maxBars = Math.min(Math.max(1, opts.maxBars ?? 100), KIS_OVERSEAS_DAILY_MAX_BARS)
+  const modp = opts.adjusted === false ? '0' : '1'
+  const cacheKey = `kis:ovrs-daily:${env}:${exchange}:${symbol}:${gubn}:${modp}:${opts.endDate ?? ''}:${maxBars}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_OVERSEAS_PRICE_MS, async () => {
+    /** @type {Map<string, any>} */
+    const byDate = new Map()
+    let bymd = opts.endDate ?? ''
+    let pages = 0
+    while (byDate.size < maxBars && pages < 6) {
+      if (pages > 0) await new Promise((r) => setTimeout(r, dailyPageDelayMs(env)))
+      const data = await kisGet({
+        appKey, appSecret, env,
+        path: '/uapi/overseas-price/v1/quotations/dailyprice',
+        params: { AUTH: '', EXCD: exchange, SYMB: symbol, GUBN: gubn, BYMD: bymd, MODP: modp },
+        trId: 'HHDFS76240000',
+        kind: 'KIS 해외주식 기간별시세',
+      })
+      pages += 1
+      const rows = normalizeKisOutputRows(data.output2).filter((r) => /^\d{8}$/.test(String(r?.xymd ?? '')) && num(r?.clos) > 0)
+      if (rows.length === 0) break
+      let added = 0
+      for (const r of rows) {
+        if (byDate.has(r.xymd)) continue
+        byDate.set(r.xymd, { date: r.xymd, open: num(r.open), high: num(r.high), low: num(r.low), close: num(r.clos), volume: num(r.tvol), tradingValue: num(r.tamt) })
+        added += 1
+      }
+      if (added === 0 || rows.length < 100) break
+      const oldest = rows.reduce((m, r) => (r.xymd < m ? r.xymd : m), rows[0].xymd)
+      bymd = ymdMinusOneDay(oldest)
+    }
+    if (byDate.size === 0) throw new Error(`해외주식 일봉 없음 (${exchange}:${symbol})`)
+    const bars = [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : 1)).slice(-maxBars)
+    return { bars, pages }
+  })
+}
+
+/**
+ * 해외주식 분봉 (HHDFS76950200) — 최근 최대 120개. 시각은 현지(xymd/xhms)와 한국(kymd/khms) 둘 다 온다.
+ * @param {{nmin?: number, includePrev?: boolean, maxBars?: number}} [opts]
+ * @returns {Promise<{localDate: string, localTime: string, kstDate: string|null, kstTime: string|null, open: number|null, high: number|null, low: number|null, close: number, volume: number|null, tradingValue: number|null}[]>} 오래된 순
+ */
+export async function inquireOverseasMinuteBars(appKey, appSecret, env, excd, symb, opts = {}) {
+  const { exchange, symbol } = assertOverseasArgs(excd, symb)
+  const nmin = opts.nmin ?? 1
+  if (!Number.isInteger(nmin) || nmin < 1 || nmin > 240) throw new Error('분봉 간격은 1~240 정수여야 합니다')
+  const nrec = Math.min(Math.max(1, opts.maxBars ?? 120), 120)
+  const pinc = opts.includePrev ? '1' : '0'
+  const cacheKey = `kis:ovrs-minute:${env}:${exchange}:${symbol}:${nmin}:${pinc}:${nrec}`
+  return await withCache(cacheKey, KIS_CACHE_TTL_OVERSEAS_PRICE_MS, async () => {
+    const data = await kisGet({
+      appKey, appSecret, env,
+      path: '/uapi/overseas-price/v1/quotations/inquire-time-itemchartprice',
+      params: { AUTH: '', EXCD: exchange, SYMB: symbol, NMIN: String(nmin), PINC: pinc, NEXT: '', NREC: String(nrec), FILL: '', KEYB: '' },
+      trId: 'HHDFS76950200',
+      kind: 'KIS 해외주식 분봉',
+    })
+    const rows = normalizeKisOutputRows(data.output2).filter((r) => /^\d{8}$/.test(String(r?.xymd ?? '')) && num(r?.last) > 0)
+    if (rows.length === 0) throw new Error(`해외주식 분봉 없음 (${exchange}:${symbol})`)
+    return rows
+      .map((r) => ({
+        localDate: String(r.xymd), localTime: String(r.xhms ?? '').padStart(6, '0'),
+        kstDate: r.kymd ? String(r.kymd) : null, kstTime: r.khms ? String(r.khms).padStart(6, '0') : null,
+        open: num(r.open), high: num(r.high), low: num(r.low), close: num(r.last), volume: num(r.evol), tradingValue: num(r.eamt),
+      }))
+      .sort((a, b) => (`${a.localDate}${a.localTime}` < `${b.localDate}${b.localTime}` ? -1 : 1))
+  })
+}
+
+/**
+ * 해외주식 현재가상세 (HHDFS76200200) — 시가·고저·52주·PER·시총·원화환산 포함.
+ */
+export async function inquireOverseasPriceDetail(appKey, appSecret, env, excd, symb) {
+  const { exchange, symbol } = assertOverseasArgs(excd, symb)
+  return await withCache(`kis:ovrs-detail:${env}:${exchange}:${symbol}`, KIS_CACHE_TTL_OVERSEAS_PRICE_MS, async () => {
+    const data = await kisGet({
+      appKey, appSecret, env,
+      path: '/uapi/overseas-price/v1/quotations/price-detail',
+      params: { AUTH: '', EXCD: exchange, SYMB: symbol },
+      trId: 'HHDFS76200200',
+      kind: 'KIS 해외주식 현재가상세',
+    })
+    const o = normalizeKisOutputRows(data.output)[0]
+    const price = num(o?.last)
+    if (price == null || !(price > 0)) throw new Error(`해외주식 현재가상세 없음 (${exchange}:${symbol})`)
+    const prevClose = num(o?.base)
+    const change = prevClose != null ? price - prevClose : null
+    return {
+      symbol, exchange, price, prevClose, change,
+      changePct: prevClose ? (change / prevClose) * 100 : null,
+      open: num(o?.open), high: num(o?.high), low: num(o?.low),
+      volume: num(o?.tvol), tradingValue: num(o?.tamt), prevVolume: num(o?.pvol),
+      high52w: num(o?.h52p), low52w: num(o?.l52p),
+      per: num(o?.perx), pbr: num(o?.pbrx), eps: num(o?.epsx), bps: num(o?.bpsx),
+      marketCap: num(o?.tomv), currency: o?.curr ? String(o.curr) : 'USD',
+      krwPrice: num(o?.t_xprc), fxRate: num(o?.t_rate), sector: o?.e_icod ? String(o.e_icod) : null,
+    }
+  })
+}

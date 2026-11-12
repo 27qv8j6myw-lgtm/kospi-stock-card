@@ -123,7 +123,8 @@ export function parseYahooChart(symbol, json) {
   // 마지막 봉이 진행 중인 당일이면 그 전 봉이 전일 종가
   const lastSessionDate = nyYmd(meta.regularMarketTime)
   const settled = dailyCloses.filter((d) => d.date !== lastSessionDate)
-  const prevClose = numberOrNull(meta.chartPreviousClose) ?? numberOrNull(meta.previousClose) ?? settled.at(-1)?.close ?? null
+  // chartPreviousClose 는 조회 범위(5일) 시작 전 종가라 전일 종가가 아니다 — 확정 봉의 마지막 종가를 먼저 쓴다
+  const prevClose = settled.at(-1)?.close ?? numberOrNull(meta.previousClose) ?? numberOrNull(meta.chartPreviousClose) ?? null
   const change = prevClose != null ? price - prevClose : null
   const streakCloses = [...settled.map((d) => d.close), price]
 

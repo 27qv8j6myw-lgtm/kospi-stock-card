@@ -27,6 +27,10 @@ describe('US snapshot', () => {
     expect(out.sessionDate).toBe('20261016'); expect(out.dailyCloses).toHaveLength(5)
     expect(out.streak).toEqual({ direction: 'down', days: 4 }); expect(out.source).toBe('yahoo')
   })
+  it('uses the last settled close, not the range-start chartPreviousClose, as previous close', () => {
+    const out = parseYahooChart('SKHY', yahoo('SKHY', [142.62, 145.36, 164.7, 162.09, 149.21], { chartPreviousClose: 137.02 }))
+    expect(out.prevClose).toBe(162.09); expect(out.changePct).toBe(-7.95)
+  })
   it('falls back to settled closes when the meta has no previous close', () => {
     const json = yahoo('CL=F', [95.15, 98.88], { chartPreviousClose: undefined, previousClose: undefined })
     const out = parseYahooChart('CL=F', json)

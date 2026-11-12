@@ -10,6 +10,7 @@ import { getPortfolio, getSnapshots, getTrades } from './portfolioData.mjs'
 import { getQuotes, getWatchlist } from './quoteData.mjs'
 import { getDailyBars, getMinuteBars, getInvestorFlow, getRegularSession } from './marketHistory.mjs'
 import { getUsSnapshot } from './usSnapshot.mjs'
+import { getUsDailyBars, getUsMinuteBars, getUsQuotes } from './usStocks.mjs'
 import { getFlowEstimate, getOrderbook, getMarketCalendar, getIndexBars, getAnalystOpinions, getEarningsEstimates, getMarketCapRanking, getFlowRanking } from './marketExtras.mjs'
 import { getServerStatus } from './serverStatus.mjs'
 import { getRuleBacktest } from './ruleBacktest.mjs'
@@ -266,6 +267,28 @@ export function createSignal15McpServer(userId) {
         groups: z.array(z.enum(['indices', 'futures', 'rates_fx', 'stocks'])).optional().describe('조회할 그룹 (기본 전부)'),
         symbols: z.array(z.string()).max(15).optional().describe('추가 야후 심볼 (최대 15개, 예: SKHY · QQQ · ZN=F · ^IRX)'),
       }), getUsSnapshot],
+    ['get_us_quote', '미국 종목 현재가상세', '미국 개별종목(최대 10개)의 현재가·전일 종가·등락률·시가·고저·거래량·52주 고저·PER·PBR·시가총액·원화 환산가를 KIS 해외주식 현재가상세로 반환합니다. lastTrade 에 가장 최근 1분봉의 체결가·시각(ET/KST)·세션(pre/regular/after)과 정규장 가격 대비 괴리를 함께 줍니다. 거래소(NAS·NYS·AMS)는 자동으로 찾습니다. 지수·선물·금리는 get_us_snapshot 을 쓰세요.',
+      z.object({
+        symbols: z.array(z.string()).min(1).max(10).describe('미국 종목 심볼 (예: ["NVDA", "MU", "SKHY"])'),
+        exchange: z.enum(['NAS', 'NYS', 'AMS']).optional().describe('거래소를 알면 지정 (기본 자동 탐색)'),
+      }), getUsQuotes],
+    ['get_us_daily_bars', '미국 종목 일봉', '미국 개별종목의 일봉(또는 주봉·월봉) OHLCV 를 KIS 해외주식 기간별시세로 반환합니다. 최대 500봉, 기본 수정주가, 날짜는 미국 현지 거래일이고 오래된 순입니다. 전일 대비 등락률·연속 하락·고점 대비 낙폭·ADR 과 본주 비교를 직접 계산할 때 쓰세요.',
+      z.object({
+        symbol: z.string().describe('미국 종목 심볼 (예: NVDA)'),
+        limit: z.number().int().min(1).max(500).optional().describe('봉 수 (기본 60, 최대 500)'),
+        end_date: z.string().regex(/^\d{8}$/).optional().describe('마지막 날짜 YYYYMMDD (기본 최근)'),
+        period: z.enum(['D', 'W', 'M']).optional().describe('D 일봉(기본) · W 주봉 · M 월봉'),
+        adjusted: z.boolean().optional().describe('수정주가 여부 (기본 true)'),
+        exchange: z.enum(['NAS', 'NYS', 'AMS']).optional().describe('거래소를 알면 지정'),
+      }), getUsDailyBars],
+    ['get_us_minute_bars', '미국 종목 분봉', '미국 개별종목의 최근 분봉(1·5·10·15·30·60분, 최대 120개)을 KIS 해외주식 분봉으로 반환합니다. 각 봉에 현지(ET)·한국 시각과 세션(pre/regular/after)이 붙습니다. 장중 흐름, 실적 발표 직후 움직임, 시간외 체결 확인에 쓰세요.',
+      z.object({
+        symbol: z.string().describe('미국 종목 심볼 (예: NVDA)'),
+        interval: z.number().int().optional().describe('분 간격 1·5·10·15·30·60 (기본 5)'),
+        limit: z.number().int().min(1).max(120).optional().describe('봉 수 (기본 60, 최대 120)'),
+        include_prev: z.boolean().optional().describe('전일 봉 포함 여부 (기본 false)'),
+        exchange: z.enum(['NAS', 'NYS', 'AMS']).optional().describe('거래소를 알면 지정'),
+      }), getUsMinuteBars],
     ['get_rule_backtest', '월초 선정·규칙 시뮬레이션', '종목 목록과 달(YYYYMM)을 주면 종목별로 (1) 그 달 직전 거래일 종가 기준 선정 지표(20일선 대비·20일 등락·변동성·외국인/기관 20일·5일 순매수)와 (2) 그 달에 매매 규칙(첫 N거래일 안에 종가가 이틀 연속 하락한 날 종가 매수 → 목표가 도달 시 익절, 종가 손절선 이탈 시 다음 날 시가 정리, 아니면 월말 종가)을 적용한 결과를 반환합니다. 비교용으로 첫 거래일 종가 매수(day1)와 매수 창 마지막 날 종가 매수(forced)도 같이 줍니다. 기본은 선정 기준 통과 종목만 돌려주고(include=all 이면 전부), closes 에는 전 종목의 기준일 종가가 들어 있습니다. 여러 달을 차례로 불러 "여러 종목 대기 명단" 규칙을 검증할 때 쓰세요. 수정주가·비용 미반영, 금액은 억원입니다. 종목당 KIS 를 2번 부르므로 80종목이면 10여 초 걸립니다. KIS 실전 계정 전용입니다.',
       z.object({
         codes: z.array(codeSchema).min(1).max(80).describe('6자리 종목코드 목록 (최대 80개)'),
