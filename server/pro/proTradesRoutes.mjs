@@ -20,6 +20,10 @@ import { fetchProChartBars } from '../lib/proStockChart.mjs'
 import { calcCost } from '../lib/pricing.mjs'
 import { fetchRecentDiagnoses } from '../lib/diagnosisArchive.mjs'
 
+/** 인사이트·복기 출력 한도 — 본문은 3~5문장이지만 thinking 토큰이 같은 한도를 쓴다 */
+const LIGHT_TASK_MAX_TOKENS = 4000
+const EMPTY_AI_TEXT_MESSAGE = 'AI 응답이 비어 있습니다. 잠시 후 다시 시도해 주세요.'
+
 /** @param {unknown} raw */
 function normalizeCode6(raw) {
   const code = normalizeKisIscd(raw)
@@ -500,7 +504,7 @@ export function registerProTradesRoutes(app, { getSupabaseService, getUserIdFrom
           .eq('cache_key', cacheKey)
           .gt('expires_at', new Date().toISOString())
           .maybeSingle()
-        if (cached?.data) {
+        if (cached?.data?.insight) {
           res.json(cached.data)
           return
         }
@@ -519,7 +523,8 @@ export function registerProTradesRoutes(app, { getSupabaseService, getUserIdFrom
         anthropic,
         {
           model: insightModel,
-          max_tokens: 500,
+          // 최신 모델은 thinking 이 기본 ON 이라 출력 한도에 사고 토큰이 포함된다 — 본문이 잘리지 않게 여유를 둔다
+          max_tokens: LIGHT_TASK_MAX_TOKENS,
           messages: [
             {
               role: 'user',
@@ -547,6 +552,11 @@ ${lines.join('\n')}
       const content = block && 'text' in block ? String(block.text).trim() : ''
       if (resp.usage) {
         await logApiUsage(userId, 'trade-insight', insightModel, resp.usage)
+      }
+      if (!content) {
+        console.warn(`[Trade Insight] 빈 응답 model=${insightModel} stop=${resp.stop_reason}`)
+        res.json({ insight: null, message: EMPTY_AI_TEXT_MESSAGE })
+        return
       }
 
       const payload = { insight: content, generatedAt: new Date().toISOString() }
@@ -690,7 +700,7 @@ ${lines.join('\n')}
         .eq('cache_key', cacheKey)
         .gt('expires_at', new Date().toISOString())
         .maybeSingle()
-      if (cached?.data) {
+      if (cached?.data?.review) {
         res.json(cached.data)
         return
       }
@@ -743,7 +753,7 @@ ${lines.join('\n')}
         anthropic,
         {
           model: reviewModel,
-          max_tokens: 550,
+          max_tokens: LIGHT_TASK_MAX_TOKENS,
           messages: [
             {
               role: 'user',
@@ -775,6 +785,12 @@ ${diagLines.length ? `\n매도 시점 이전 이 종목에 대한 AI 진단 기�
       const reviewText = block && 'text' in block ? String(block.text).trim() : ''
       if (resp.usage) {
         await logApiUsage(userId, 'trade-review', reviewModel, resp.usage)
+      }
+      // 본문이 비면 캐시하지 않는다 — 빈 결과가 당일 내내 재사용되는 것을 막는다
+      if (!reviewText) {
+        console.warn(`[Trade Review] 빈 응답 model=${reviewModel} stop=${resp.stop_reason}`)
+        res.json({ review: null, summary, diagnoses, message: EMPTY_AI_TEXT_MESSAGE })
+        return
       }
 
       const payload = { review: reviewText, summary, diagnoses, generatedAt: new Date().toISOString() }
