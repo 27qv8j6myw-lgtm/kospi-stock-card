@@ -4,6 +4,7 @@
  * 비밀값은 넣지 않는다.
  */
 import { kisEnvStatus } from '../lib/kisEnv.mjs'
+import { dartConfigured } from './dartDisclosures.mjs'
 
 /** @param {string[]} [toolNames] 이 서버에 등록된 도구 이름 */
 export function getServerStatus(toolNames = []) {
@@ -14,6 +15,7 @@ export function getServerStatus(toolNames = []) {
     retrievedAt: new Date().toISOString(),
     timezone: 'Asia/Seoul',
     kis: { ...kis, prodOnlyToolsAvailable },
+    dart: { apiKeyConfigured: dartConfigured() },
     deployment: {
       vercelEnv: process.env.VERCEL_ENV || null,
       host: process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL || null,

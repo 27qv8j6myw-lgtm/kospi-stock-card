@@ -14,6 +14,7 @@ import { getUsDailyBars, getUsMinuteBars, getUsQuotes } from './usStocks.mjs'
 import { getFlowEstimate, getOrderbook, getMarketCalendar, getIndexBars, getAnalystOpinions, getEarningsEstimates, getMarketCapRanking, getFlowRanking } from './marketExtras.mjs'
 import { getServerStatus } from './serverStatus.mjs'
 import { getRuleBacktest } from './ruleBacktest.mjs'
+import { getDisclosures, getDisclosureDocument } from './dartDisclosures.mjs'
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -289,6 +290,27 @@ export function createSignal15McpServer(userId) {
         include_prev: z.boolean().optional().describe('전일 봉 포함 여부 (기본 false)'),
         exchange: z.enum(['NAS', 'NYS', 'AMS']).optional().describe('거래소를 알면 지정'),
       }), getUsMinuteBars],
+    ['get_disclosures', '공시 목록 (DART)', '금융감독원 전자공시(OpenDART)의 공시 목록을 최신순으로 반환합니다. codes 를 주면 종목별(최대 10종목, 기본 최근 90일)로, 생략하면 시장 전체(기본 오늘, 최대 7일)에서 찾습니다. 공시마다 날짜·제목·제출인·접수번호·원문 링크와 제목 기반 태그(earnings 잠정실적 · earnings_schedule 결산실적공시예고·IR 개최 · order 단일판매ㆍ공급계약 · dilution 증자·CB · buyback · dividend · ownership 대량보유·임원 주요주주 · periodic 정기보고서 · mna · investment · risk)가 붙고, summary 에 실적 일정·실적·수주·위험 공시를 따로 모아 줍니다. 종목을 사기 전 실적 발표일과 최근 공시를 확인하거나, 급등락·블록딜의 원인 공시를 찾거나, 오늘 수주 공시가 나온 종목을 훑을 때 쓰세요. 금액 등 숫자는 get_disclosure_document 로 원문을 열어 확인합니다. 서버에 DART_API_KEY 가 필요합니다.',
+      z.object({
+        codes: z.array(z.string().regex(/^[0-9A-Za-z]{6}$/)).max(10).optional().describe('6자리 종목코드 목록 (생략하면 시장 전체)'),
+        days: z.number().int().min(1).max(1100).optional().describe('종료일부터 거슬러 볼 달력 일수 (종목 기본 90, 시장 전체 기본 1·최대 7)'),
+        start_date: z.string().regex(/^\d{8}$/).optional().describe('시작일 YYYYMMDD (days 대신)'),
+        end_date: z.string().regex(/^\d{8}$/).optional().describe('종료일 YYYYMMDD (기본 오늘)'),
+        type: z.enum(['periodic', 'major', 'issuance', 'ownership', 'other', 'audit', 'exchange', 'ftc']).optional().describe('공시유형: periodic 정기 · major 주요사항 · issuance 발행 · ownership 지분 · other 기타(자기주식 등) · exchange 거래소공시(잠정실적·공급계약·실적예고·IR)'),
+        tags: z.array(z.enum(['earnings', 'earnings_schedule', 'guidance', 'order', 'dilution', 'buyback', 'dividend', 'ownership', 'periodic', 'mna', 'investment', 'risk'])).optional().describe('이 태그 중 하나라도 붙은 공시만'),
+        keyword: z.string().max(40).optional().describe('제목·회사명에 포함된 글자로 거르기 (예: 공급계약)'),
+        market: z.enum(['KOSPI', 'KOSDAQ']).optional().describe('시장 전체 조회에서 시장 한정'),
+        final_only: z.boolean().optional().describe('true 면 정정 전 공시는 빼고 최종본만'),
+        limit: z.number().int().min(1).max(200).optional().describe('최대 건수 (기본 40, 여러 종목이면 종목별로 나눔)'),
+      }), getDisclosures],
+    ['get_disclosure_document', '공시 원문 (DART)', '접수번호(rcept_no)로 공시 원문을 텍스트로 반환합니다. 표는 행마다 한 줄, 칸은 " | " 로 구분됩니다. 잠정실적의 매출·영업이익, 공급계약의 계약금액·매출 대비 비율·계약기간, 증자 규모, 지분 변동 사유처럼 제목에 없는 숫자를 확인할 때 쓰세요. 긴 문서는 max_chars(기본 6000)까지만 오고 nextOffset 으로 이어 읽으며, keyword 를 주면 그 단어 주변만 발췌합니다. 첨부가 여러 개면 files 목록을 보고 file 번호로 고릅니다. 서버에 DART_API_KEY 가 필요합니다.',
+      z.object({
+        rcept_no: z.string().regex(/^\d{14}$/).describe('14자리 접수번호 (get_disclosures 의 rceptNo)'),
+        keyword: z.string().max(40).optional().describe('이 단어 주변만 발췌 (예: 영업이익)'),
+        max_chars: z.number().int().min(500).max(20000).optional().describe('최대 글자 수 (기본 6000)'),
+        offset: z.number().int().min(0).optional().describe('시작 위치 (이어 읽기)'),
+        file: z.number().int().min(0).optional().describe('ZIP 안 파일 번호 (기본 0 = 본문)'),
+      }), getDisclosureDocument],
     ['get_rule_backtest', '월초 선정·규칙 시뮬레이션', '종목 목록과 달(YYYYMM)을 주면 종목별로 (1) 그 달 직전 거래일 종가 기준 선정 지표(20일선 대비·20일 등락·변동성·외국인/기관 20일·5일 순매수)와 (2) 그 달에 매매 규칙(첫 N거래일 안에 종가가 이틀 연속 하락한 날 종가 매수 → 목표가 도달 시 익절, 종가 손절선 이탈 시 다음 날 시가 정리, 아니면 월말 종가)을 적용한 결과를 반환합니다. 비교용으로 첫 거래일 종가 매수(day1)와 매수 창 마지막 날 종가 매수(forced)도 같이 줍니다. 기본은 선정 기준 통과 종목만 돌려주고(include=all 이면 전부), closes 에는 전 종목의 기준일 종가가 들어 있습니다. 여러 달을 차례로 불러 "여러 종목 대기 명단" 규칙을 검증할 때 쓰세요. 수정주가·비용 미반영, 금액은 억원입니다. 종목당 KIS 를 2번 부르므로 80종목이면 10여 초 걸립니다. KIS 실전 계정 전용입니다.',
       z.object({
         codes: z.array(codeSchema).min(1).max(80).describe('6자리 종목코드 목록 (최대 80개)'),
