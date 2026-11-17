@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import AdmZip from 'adm-zip'
-import { classifyReport, parseCorpXml, documentToText, getDisclosures, getDisclosureDocument, setCorpMap, kstYmd } from './dartDisclosures.mjs'
+import { classifyReport, buildCorpMap, documentToText, getDisclosures, getDisclosureDocument, setCorpMap, kstYmd } from './dartDisclosures.mjs'
 
 const json = (body) => ({ ok: true, status: 200, json: async () => body })
 const row = (o) => ({ corp_cls: 'Y', corp_name: '삼성E&A', corp_code: '00126308', stock_code: '028050', flr_nm: '삼성E&A', rm: '유', ...o })
@@ -19,13 +19,30 @@ describe('DART disclosures', () => {
     expect(classifyReport('주요사항보고서(유상증자결정)').tags).toEqual(['dilution'])
     expect(classifyReport('분기보고서 (2026.09)')).toEqual({ tags: ['periodic'], correction: false })
   })
-  it('parses corpCode.xml keeping listed companies and the latest entry', () => {
-    const xml = `<result>
-      <list><corp_code>00000001</corp_code><corp_name>비상장</corp_name><stock_code> </stock_code><modify_date>20240101</modify_date></list>
-      <list><corp_code>00000002</corp_code><corp_name>옛이름</corp_name><stock_code>123450</stock_code><modify_date>20200101</modify_date></list>
-      <list><corp_code>00000003</corp_code><corp_name>새이름</corp_name><corp_eng_name>New</corp_eng_name><stock_code>123450</stock_code><modify_date>20250101</modify_date></list>
-    </result>`
-    expect(parseCorpXml(xml)).toEqual({ '123450': { corpCode: '00000003', name: '새이름', modified: '20250101' } })
+  it('builds the corp map from periodic filings, paging each market and widening the window when thin', async () => {
+    const calls = []
+    vi.stubGlobal('fetch', vi.fn(async (u) => {
+      const q = new URL(u).searchParams
+      calls.push(`${q.get('corp_cls')}:${q.get('bgn_de')}:${q.get('page_no')}`)
+      expect(q.get('pblntf_ty')).toBe('A'); expect(q.get('last_reprt_at')).toBe('Y')
+      if (q.get('corp_cls') === 'N') return json({ status: '013', message: '없음' })
+      const page = Number(q.get('page_no'))
+      const cls = q.get('corp_cls')
+      const code = cls === 'Y' ? `00${page}000` : `10${page}000`
+      return json({ status: '000', total_count: 150, total_page: 2, list: [
+        { corp_code: `0000${cls === 'Y' ? 1 : 2}00${page}`, corp_name: `회사${cls}${page}`, stock_code: code },
+        { corp_code: '00009999', corp_name: '비상장', stock_code: '' },
+      ] })
+    }))
+    const map = await buildCorpMap(Date.UTC(2026, 10, 17, 3))
+    expect(map['001000']).toEqual({ corpCode: '00001001', name: '회사Y1' })
+    expect(map['102000']).toEqual({ corpCode: '00002002', name: '회사K2' })
+    expect(Object.keys(map)).toHaveLength(4)
+    expect(calls).toContain('Y:20260820:2'); expect(calls).toContain('K:20260522:1') // 표가 얇아 앞 90일도 조회
+  })
+  it('reports a slow DART as a timeout instead of hanging', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { const e = new Error('timeout'); e.name = 'TimeoutError'; throw e }))
+    await expect(getDisclosures({})).rejects.toThrow('응답 지연')
   })
   it('turns markup into rows of text', () => {
     const t = documentToText('<?xml version="1.0"?><BODY><TITLE>영업(잠정)실적</TITLE><TABLE><TR><TH>구분</TH><TH>당기</TH></TR><TR><TD>영업이익</TD><TD>1,234&nbsp;억 &amp; </TD></TR></TABLE><P>끝</P></BODY>')

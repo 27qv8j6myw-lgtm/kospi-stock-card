@@ -3,7 +3,9 @@
  *
  * 메우려는 빈칸: 실적 발표일(결산실적공시예고·IR 개최), 잠정실적, 수주(단일판매ㆍ공급계약),
  * 블록딜·지분 변동(대량보유·임원 주요주주), 증자·CB 같은 희석 공시.
- * 종목코드 → DART 고유번호(corp_code)는 corpCode.xml 을 받아 인스턴스 메모리와 임시 파일에 하루 보관한다.
+ * 종목코드 → DART 고유번호(corp_code)는 정기보고서 목록(list.json)을 훑어 만든다.
+ * corpCode.xml 은 내려받는 데 1~2분이 걸려 서버리스 제한 시간(60초)을 넘기므로 쓰지 않는다.
+ * 만든 표는 인스턴스 메모리와 임시 파일에 7일 보관한다. 모든 호출에는 제한 시간이 있다.
  * DART_API_KEY 가 필요하다 (opendart.fss.or.kr 무료 발급, 하루 20,000건).
  */
 import AdmZip from 'adm-zip'
@@ -13,8 +15,11 @@ import path from 'node:path'
 
 const BASE = 'https://opendart.fss.or.kr/api'
 const VIEWER = 'https://dart.fss.or.kr/dsaf001/main.do?rcpNo='
-const CORP_TTL_MS = 24 * 60 * 60 * 1000
-const CORP_TMP = path.join(os.tmpdir(), 'signal15-dart-corp-map.json')
+const CORP_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const CORP_TMP = path.join(os.tmpdir(), 'signal15-dart-corp-map-v2.json')
+const LIST_TIMEOUT_MS = 12_000
+const DOC_TIMEOUT_MS = 25_000
+const MAP_BUDGET_MS = 30_000
 
 /** 공시유형(pblntf_ty) */
 export const DISCLOSURE_TYPES = {
@@ -70,37 +75,67 @@ export function classifyReport(reportName) {
   return { tags, correction: /^\s*\[[^\]]*정정/.test(name) }
 }
 
-/**
- * corpCode.xml → { 종목코드: { corpCode, name } }. 상장 종목(종목코드 있는 것)만, 같은 코드는 최근 수정분 우선.
- * @param {string} xml
- */
-export function parseCorpXml(xml) {
-  /** @type {Record<string, {corpCode: string, name: string, modified: string}>} */
-  const map = {}
-  const field = (block, tag) => {
-    const m = block.match(new RegExp(`<${tag}>\\s*([^<]*?)\\s*</${tag}>`))
-    return m ? m[1] : ''
+/** 제한 시간이 있는 fetch — DART 가 느릴 때 함수 전체가 멈추지 않게 한다 */
+async function timedFetch(url, ms, what) {
+  try {
+    return await fetch(url, { signal: AbortSignal.timeout(ms) })
+  } catch (e) {
+    const name = e instanceof Error ? e.name : ''
+    if (name === 'TimeoutError' || name === 'AbortError') throw new Error(`DART ${what} 응답 지연 (${Math.round(ms / 1000)}초 초과) — 잠시 뒤 다시 시도하세요`)
+    throw new Error(`DART ${what} 연결 실패: ${e instanceof Error ? e.message : String(e)}`)
   }
-  for (const block of xml.split('<list>').slice(1)) {
-    const stock = field(block, 'stock_code').toUpperCase()
-    if (!/^[0-9A-Z]{6}$/.test(stock)) continue
-    const corpCode = field(block, 'corp_code')
-    if (!/^\d{8}$/.test(corpCode)) continue
-    const modified = field(block, 'modify_date')
-    if (map[stock] && map[stock].modified >= modified) continue
-    map[stock] = { corpCode, name: field(block, 'corp_name'), modified }
-  }
-  return map
 }
 
 /** @type {Record<string, {corpCode: string, name: string}> | null} */
 let corpMap = null
 let corpMapAt = 0
+/** @type {Promise<Record<string, {corpCode: string, name: string}>> | null} */
+let corpMapBuilding = null
 
 /** 테스트·사전 주입용 */
 export function setCorpMap(map) {
   corpMap = map
   corpMapAt = map ? Date.now() : 0
+  corpMapBuilding = null
+}
+
+/** 목록 행에서 종목코드 ↔ 고유번호를 배운다 (시장 전체 조회 때도 호출) */
+function learn(map, rows) {
+  for (const r of rows) {
+    const stock = String(r.stock_code ?? '').trim().toUpperCase()
+    const corpCode = String(r.corp_code ?? '').trim()
+    if (/^[0-9A-Z]{6}$/.test(stock) && /^\d{8}$/.test(corpCode) && !map[stock]) map[stock] = { corpCode, name: r.corp_name }
+  }
+}
+
+const ymdMinus = (ymd, days) => new Date(Date.UTC(+ymd.slice(0, 4), +ymd.slice(4, 6) - 1, +ymd.slice(6, 8)) - days * 86_400_000).toISOString().slice(0, 10).replaceAll('-', '')
+
+/**
+ * 정기보고서(사업·반기·분기) 목록을 시장별로 훑어 상장사 고유번호 표를 만든다.
+ * 최근 90일에 제출 마감이 없을 수 있어(11월 중순~3월 말) 부족하면 그 앞 90일도 본다.
+ * @param {number} [now]
+ */
+export async function buildCorpMap(now = Date.now()) {
+  /** @type {Record<string, {corpCode: string, name: string}>} */
+  const map = {}
+  const deadline = Date.now() + MAP_BUDGET_MS
+  const end = kstYmd(0, now)
+  const windows = [[ymdMinus(end, 89), end], [ymdMinus(end, 179), ymdMinus(end, 90)]]
+  for (const [bgn, fin] of windows) {
+    await Promise.all(['Y', 'K', 'N'].map(async (cls) => {
+      const base = { pblntf_ty: 'A', corp_cls: cls, bgn_de: bgn, end_de: fin, last_reprt_at: 'Y', page_count: 100 }
+      const first = await fetchList({ ...base, page_no: 1 })
+      learn(map, first.list)
+      const pages = []
+      for (let p = 2; p <= Math.min(first.totalPage, 40); p += 1) pages.push(p)
+      for (let i = 0; i < pages.length && Date.now() < deadline; i += 5) {
+        const outs = await Promise.all(pages.slice(i, i + 5).map((p) => fetchList({ ...base, page_no: p }).catch(() => ({ list: [] }))))
+        for (const o of outs) learn(map, o.list)
+      }
+    }))
+    if (Object.keys(map).length >= 1500 || Date.now() >= deadline) break
+  }
+  return map
 }
 
 async function loadCorpMap() {
@@ -113,16 +148,14 @@ async function loadCorpMap() {
       return corpMap
     }
   } catch { /* 임시 파일 없음 */ }
-  const res = await fetch(`${BASE}/corpCode.xml?crtfc_key=${encodeURIComponent(apiKey())}`)
-  if (!res.ok) throw new Error(`DART corpCode HTTP ${res.status}`)
-  const buf = Buffer.from(await res.arrayBuffer())
-  if (buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error(`DART corpCode 오류: ${dartErrorText(buf)}`)
-  const entry = new AdmZip(buf).getEntries().find((e) => /\.xml$/i.test(e.entryName))
-  if (!entry) throw new Error('DART corpCode ZIP 안에 XML 이 없습니다')
-  corpMap = parseCorpXml(entry.getData().toString('utf-8'))
-  corpMapAt = Date.now()
-  writeFile(CORP_TMP, JSON.stringify(corpMap)).catch(() => {})
-  return corpMap
+  corpMapBuilding ??= buildCorpMap().finally(() => { corpMapBuilding = null })
+  const built = await corpMapBuilding
+  if (Object.keys(built).length) {
+    corpMap = built
+    corpMapAt = Date.now()
+    writeFile(CORP_TMP, JSON.stringify(built)).catch(() => {})
+  }
+  return built
 }
 
 /** ZIP 대신 온 오류 본문(XML/JSON)에서 메시지 추출 */
@@ -140,7 +173,7 @@ function dartErrorText(buf) {
 async function fetchList(params) {
   const qs = new URLSearchParams({ crtfc_key: apiKey() })
   for (const [k, v] of Object.entries(params)) if (v != null && v !== '') qs.set(k, String(v))
-  const res = await fetch(`${BASE}/list.json?${qs}`)
+  const res = await timedFetch(`${BASE}/list.json?${qs}`, LIST_TIMEOUT_MS, '공시 목록')
   if (!res.ok) throw new Error(`DART list HTTP ${res.status}`)
   const body = await res.json()
   if (body.status === '013') return { list: [], totalCount: 0, totalPage: 0 }
@@ -218,6 +251,7 @@ export async function getDisclosures(input = {}) {
       const out = await fetchList({ ...common, bgn_de: start, end_de: end, corp_cls: corpCls, page_no: page })
       totalPage = out.totalPage
       totalCount = out.totalCount
+      if (corpMap) learn(corpMap, out.list)
       for (const r of out.list) {
         if (!r.stock_code) continue // 비상장 제외
         const row = toRow(r)
@@ -242,7 +276,7 @@ export async function getDisclosures(input = {}) {
   const perCode = Math.max(1, Math.ceil(limit / codes.length))
   const results = await Promise.all(codes.map(async (code) => {
     const corp = map[code]
-    if (!corp) return { code, error: 'DART 고유번호를 찾지 못했습니다 (상장 종목코드인지 확인)' }
+    if (!corp) return { code, error: 'DART 고유번호를 찾지 못했습니다 (최근 6개월 정기보고서가 없는 종목 — ETF·신규 상장·종목코드 오류)' }
     try {
       const rows = []
       let page = 1, totalPage = 1, totalCount = 0
@@ -312,7 +346,7 @@ export async function getDisclosureDocument(input) {
   if (!/^\d{14}$/.test(rceptNo)) throw new Error('rcept_no 는 14자리 접수번호입니다 (get_disclosures 의 rceptNo)')
   const maxChars = Math.min(Math.max(input.max_chars ?? 6000, 500), 20000)
   const offset = Math.max(input.offset ?? 0, 0)
-  const res = await fetch(`${BASE}/document.xml?crtfc_key=${encodeURIComponent(apiKey())}&rcept_no=${rceptNo}`)
+  const res = await timedFetch(`${BASE}/document.xml?crtfc_key=${encodeURIComponent(apiKey())}&rcept_no=${rceptNo}`, DOC_TIMEOUT_MS, '공시 원문')
   if (!res.ok) throw new Error(`DART document HTTP ${res.status}`)
   const buf = Buffer.from(await res.arrayBuffer())
   if (buf[0] !== 0x50 || buf[1] !== 0x4b) throw new Error(`DART 원문 오류: ${dartErrorText(buf)}`)
