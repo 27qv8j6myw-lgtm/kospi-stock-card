@@ -47,6 +47,7 @@ describe('DART disclosures', () => {
   it('turns markup into rows of text', () => {
     const t = documentToText('<?xml version="1.0"?><BODY><TITLE>영업(잠정)실적</TITLE><TABLE><TR><TH>구분</TH><TH>당기</TH></TR><TR><TD>영업이익</TD><TD>1,234&nbsp;억 &amp; </TD></TR></TABLE><P>끝</P></BODY>')
     expect(t).toBe('영업(잠정)실적\n구분 | 당기\n영업이익 | 1,234 억 &\n끝')
+    expect(documentToText('<TABLE><TR>\r\n<TD>\r\n 매출액 </TD>\r\n<TD>\r\n 3,763,278 </TD>\r\n<TD> - </TD>\r\n</TR>\r\n<TR><TD>영업이익</TD><TD>690,957</TD></TR></TABLE>')).toBe('매출액 | 3,763,278 | -\n영업이익 | 690,957')
   })
   it('lists disclosures per code with summary and filters', async () => {
     const fetchMock = vi.fn(async () => json({ status: '000', total_count: 3, total_page: 1, list: [
