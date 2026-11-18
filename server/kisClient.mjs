@@ -2324,3 +2324,91 @@ export async function inquireOverseasPriceDetail(appKey, appSecret, env, excd, s
     }
   })
 }
+
+/** 장중 추이는 빨리 변하므로 짧게 캐시한다 (ms) */
+const KIS_CACHE_TTL_INTRADAY_FLOW_MS = 10_000
+
+/**
+ * [국내주식] 시세분석 > 종목별 프로그램매매추이(체결) — FHPPG04650101, HTS [0465]
+ *
+ * 당일 프로그램 매도·매수·순매수의 누계를 체결 시각별로 준다(최근 구간, 다음조회 없음).
+ * 금액 필드의 단위는 응답에 없어 그대로 돌려준다 — 호출 쪽에서 수량×현재가와 비교해 맞춘다.
+ *
+ * @param {{ marketDiv?: 'J' | 'NX' | 'UN' }} [opts]
+ * @returns {Promise<Array<{ time: string, price: number | null, changePct: number | null, volume: number | null,
+ *   sellShares: number | null, buyShares: number | null, netShares: number | null,
+ *   sellAmountRaw: number | null, buyAmountRaw: number | null, netAmountRaw: number | null,
+ *   netSharesDelta: number | null, netAmountDeltaRaw: number | null }>>} 시각 오름차순
+ */
+export async function inquireProgramTradeByStock(appKey, appSecret, env, code6, opts = {}) {
+  assertProdOnly(env, '종목별 프로그램매매추이')
+  const iscd = normalizeKisIscd(code6)
+  const marketDiv = opts.marketDiv ?? 'J'
+  return await withCache(`kis:programByStock:${env}:${marketDiv}:${iscd}`, KIS_CACHE_TTL_INTRADAY_FLOW_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/program-trade-by-stock',
+      params: { FID_COND_MRKT_DIV_CODE: marketDiv, FID_INPUT_ISCD: iscd },
+      trId: 'FHPPG04650101',
+      kind: 'KIS 종목별 프로그램매매추이',
+    })
+    return normalizeKisOutputRows(data.output)
+      .map((r) => ({
+        time: String(r?.bsop_hour ?? '').trim(),
+        price: num(r?.stck_prpr),
+        changePct: num(r?.prdy_ctrt),
+        volume: num(r?.acml_vol),
+        sellShares: num(r?.whol_smtn_seln_vol),
+        buyShares: num(r?.whol_smtn_shnu_vol),
+        netShares: num(r?.whol_smtn_ntby_qty),
+        sellAmountRaw: num(r?.whol_smtn_seln_tr_pbmn),
+        buyAmountRaw: num(r?.whol_smtn_shnu_tr_pbmn),
+        netAmountRaw: num(r?.whol_smtn_ntby_tr_pbmn),
+        netSharesDelta: num(r?.whol_ntby_vol_icdc),
+        netAmountDeltaRaw: num(r?.whol_ntby_tr_pbmn_icdc),
+      }))
+      .filter((r) => /^\d{6}$/.test(r.time))
+      .sort((a, b) => a.time.localeCompare(b.time))
+  })
+}
+
+/**
+ * [국내주식] 시세분석 > 종목별 외국계 순매수추이 — FHKST644400C0, HTS [0433]
+ *
+ * 외국계 증권사 창구로 체결된 매도·매수와 순매수 누계를 시각별로 준다. 외국계 창구 = 외국인 전체가
+ * 아니다(국내 창구로 주문하는 외국인, 외국계 창구를 쓰는 내국인이 있다). FID_INPUT_ISCD_2 는 외국계
+ * 전체(99999)로 고정한다.
+ *
+ * @returns {Promise<Array<{ time: string, price: number | null, changePct: number | null, volume: number | null,
+ *   sellShares: number | null, buyShares: number | null, netShares: number | null, netSharesDelta: number | null }>>} 시각 오름차순
+ */
+export async function inquireForeignMemberNetTrend(appKey, appSecret, env, code6) {
+  assertProdOnly(env, '종목별 외국계 순매수추이')
+  const iscd = normalizeKisIscd(code6)
+  return await withCache(`kis:frgnMemberTrend:${env}:${iscd}`, KIS_CACHE_TTL_INTRADAY_FLOW_MS, async () => {
+    const data = await kisGet({
+      appKey,
+      appSecret,
+      env,
+      path: '/uapi/domestic-stock/v1/quotations/frgnmem-pchs-trend',
+      params: { FID_COND_MRKT_DIV_CODE: 'J', FID_INPUT_ISCD: iscd, FID_INPUT_ISCD_2: '99999' },
+      trId: 'FHKST644400C0',
+      kind: 'KIS 종목별 외국계 순매수추이',
+    })
+    return normalizeKisOutputRows(data.output)
+      .map((r) => ({
+        time: String(r?.bsop_hour ?? '').trim(),
+        price: num(r?.stck_prpr),
+        changePct: num(r?.prdy_ctrt),
+        volume: num(r?.acml_vol),
+        sellShares: num(r?.frgn_seln_vol),
+        buyShares: num(r?.frgn_shnu_vol),
+        netShares: num(r?.glob_ntby_qty),
+        netSharesDelta: num(r?.frgn_ntby_qty_icdc),
+      }))
+      .filter((r) => /^\d{6}$/.test(r.time))
+      .sort((a, b) => a.time.localeCompare(b.time))
+  })
+}

@@ -15,6 +15,8 @@ import { getFlowEstimate, getOrderbook, getMarketCalendar, getIndexBars, getAnal
 import { getServerStatus } from './serverStatus.mjs'
 import { getRuleBacktest } from './ruleBacktest.mjs'
 import { getDisclosures, getDisclosureDocument } from './dartDisclosures.mjs'
+import { getUsMacro, getKrMacro } from './macroData.mjs'
+import { getProgramTrade, getForeignBrokerFlow } from './intradayFlow.mjs'
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -216,6 +218,17 @@ export function createSignal15McpServer(userId) {
       }), getInvestorFlow],
     ['get_flow_estimate', '장중 외국인·기관 추정 수급', '당일 장중 외국인·기관 순매수 추정치(주, 누계)를 입력 시각별로 반환합니다. 증권사 직원이 09:30~14:30 사이 4~5회 집계해 넣는 값이라 확정 수급이 아니며 금액은 없습니다. 장 마감 전에 그날 수급 방향을 볼 때 쓰고, 확정치는 15:40 이후 get_investor_flow 로 확인하세요. KIS 실전 계정 전용입니다.',
       z.object({ code: codeSchema }), getFlowEstimate],
+    ['get_program_trade', '종목별 프로그램 매매 추이 (장중 실시간)', '종목의 당일 프로그램 매매(매도·매수·순매수 누계)를 체결 시각별로 반환합니다. 하루 4번만 갱신되는 외국인·기관 가집계(get_flow_estimate) 사이에 "지금 큰손이 사는지 파는지"의 방향을 볼 때 쓰세요. 최신 누계(latest), 반환 구간 안의 방향(trend: buying/selling/flat), 누적 거래량 대비 순매수 비중이 함께 옵니다. 프로그램 매매는 외국인 전체와 같지 않은 대용 지표이고 KIS 가 최근 구간만 줍니다. KIS 실전 계정 전용입니다.',
+      z.object({
+        code: codeSchema,
+        limit: z.number().int().min(1).max(100).optional().describe('최근 몇 개 시점까지 (기본 20)'),
+        market: z.enum(['krx', 'unified', 'nxt']).optional().describe('krx(기본) · unified(KRX+NXT) · nxt'),
+      }), getProgramTrade],
+    ['get_foreign_broker_flow', '종목별 외국계 창구 순매수 추이 (장중 실시간)', '종목의 당일 외국계 증권사 창구 매도·매수·순매수 누계를 시각별로 반환합니다. 외국인 가집계(09:30·11:20·13:20·14:30)를 기다리지 않고 외국계 창구의 방향이 바뀌는지 볼 때 쓰세요. 최신 누계(latest)와 반환 구간 안의 방향(trend), 순매수 추정 금액(수량×현재가)이 함께 옵니다. 외국계 창구는 외국인 전체와 같지 않으며 확정 수급은 15:40 이후 get_investor_flow 입니다. KIS 실전 계정 전용입니다.',
+      z.object({
+        code: codeSchema,
+        limit: z.number().int().min(1).max(100).optional().describe('최근 몇 개 시점까지 (기본 20)'),
+      }), getForeignBrokerFlow],
     ['get_orderbook', '호가·예상체결가', '매도·매수 호가와 잔량, 예상체결가를 반환합니다. 예상체결가는 동시호가(08:30~09:00, 15:20~15:30)와 장 종료 후에만 의미가 있고, 15:20~15:30 에는 당일 종가의 예상값으로 쓸 수 있습니다(확정 종가는 15:30). 종가 기준 손절·매수 판정을 장 마감 직전에 할 때 사용하세요.',
       z.object({
         code: codeSchema,
@@ -311,6 +324,24 @@ export function createSignal15McpServer(userId) {
         offset: z.number().int().min(0).optional().describe('시작 위치 (이어 읽기)'),
         file: z.number().int().min(0).optional().describe('ZIP 안 파일 번호 (기본 0 = 본문)'),
       }), getDisclosureDocument],
+    ['get_us_macro', '미국 거시지표 (FRED)', '미국 경제지표의 실제 수치를 세인트루이스 연준 FRED 에서 반환합니다. series 에 별칭(CPI · CORE_CPI · PPI · CORE_PPI · PCE · CORE_PCE · UNEMPLOYMENT · PAYROLLS · JOBLESS_CLAIMS · RETAIL_SALES · INDUSTRIAL_PRODUCTION · GDP · GDP_GROWTH · CONSUMER_SENTIMENT · FED_FUNDS · FED_TARGET_UPPER · FED_TARGET_LOWER · UST2Y · UST10Y · UST30Y · YIELD_CURVE_10Y2Y · BREAKEVEN_10Y · HY_SPREAD · DOLLAR_INDEX_BROAD · WTI · VIX)이나 FRED 시리즈 ID 를 최대 10개 넣습니다. 생략하면 CPI·근원 CPI·PPI·실업률·고용·기준금리 상단·10년물입니다. 시리즈마다 최근 관측값(오래된 순)과 직전 대비·전년 대비 변화, 다음 발표 예정일을 줍니다. CPI·PPI·고용 발표 수치를 기사 대신 원자료로 확인하거나 발표 일정을 볼 때 쓰세요. 시장 예상치(컨센서스)는 없습니다. 서버에 FRED_API_KEY 가 필요합니다.',
+      z.object({
+        series: z.array(z.string().max(40)).max(10).optional().describe('별칭 또는 FRED 시리즈 ID (예: ["CPI", "CORE_CPI", "DGS10"])'),
+        limit: z.number().int().min(1).max(120).optional().describe('시리즈당 관측값 수 (기본 6)'),
+        include_release: z.boolean().optional().describe('다음 발표 예정일 포함 여부 (기본 true, false 면 더 빠름)'),
+      }), getUsMacro],
+    ['get_kr_macro', '한국 거시지표 (한국은행 ECOS)', '한국은행 경제통계시스템(ECOS)의 지표를 반환합니다. mode=key(기본): 100대 통계지표 최신값(기준금리·환율·물가·수출·경상수지 등)을 keyword 로 걸러서. mode=series: indicator 별칭(base_rate 기준금리 · usdkrw 원/달러 · cpi 소비자물가지수 · ktb3y · ktb10y) 또는 stat_code+item_codes+cycle 로 시계열과 직전 대비·전년 대비 변화. mode=search: keyword 로 통계표 코드 찾기. mode=items: 통계표의 항목코드 목록. 별칭에 없는 지표는 search → items → series 순서로 찾으세요. 서버에 ECOS_API_KEY 가 필요합니다.',
+      z.object({
+        mode: z.enum(['key', 'series', 'search', 'items']).optional().describe('key(기본) · series · search · items'),
+        indicator: z.enum(['base_rate', 'usdkrw', 'cpi', 'ktb3y', 'ktb10y']).optional().describe('series 용 별칭'),
+        keyword: z.string().max(40).optional().describe('key·search·items 에서 이름에 포함된 글자'),
+        stat_code: z.string().regex(/^[0-9A-Za-z]{3,12}$/).optional().describe('통계표 코드 (예: 722Y001)'),
+        item_codes: z.array(z.string().regex(/^[0-9A-Za-z_*\-]{1,20}$/)).max(4).optional().describe('항목코드 (통계표의 항목 순서대로, 최대 4개)'),
+        cycle: z.enum(['D', 'M', 'Q', 'A']).optional().describe('주기: D 일 · M 월 · Q 분기 · A 년'),
+        start: z.string().regex(/^\d{4}(\d{2}|\d{4}|Q[1-4])?$/).optional().describe('시작 시점 (D: YYYYMMDD · M: YYYYMM · Q: YYYYQn · A: YYYY)'),
+        end: z.string().regex(/^\d{4}(\d{2}|\d{4}|Q[1-4])?$/).optional().describe('종료 시점 (형식은 start 와 같음)'),
+        limit: z.number().int().min(1).max(500).optional().describe('항목당 관측값 수 (기본 12)'),
+      }), getKrMacro],
     ['get_rule_backtest', '월초 선정·규칙 시뮬레이션', '종목 목록과 달(YYYYMM)을 주면 종목별로 (1) 그 달 직전 거래일 종가 기준 선정 지표(20일선 대비·20일 등락·변동성·외국인/기관 20일·5일 순매수)와 (2) 그 달에 매매 규칙(첫 N거래일 안에 종가가 이틀 연속 하락한 날 종가 매수 → 목표가 도달 시 익절, 종가 손절선 이탈 시 다음 날 시가 정리, 아니면 월말 종가)을 적용한 결과를 반환합니다. 비교용으로 첫 거래일 종가 매수(day1)와 매수 창 마지막 날 종가 매수(forced)도 같이 줍니다. 기본은 선정 기준 통과 종목만 돌려주고(include=all 이면 전부), closes 에는 전 종목의 기준일 종가가 들어 있습니다. 여러 달을 차례로 불러 "여러 종목 대기 명단" 규칙을 검증할 때 쓰세요. 수정주가·비용 미반영, 금액은 억원입니다. 종목당 KIS 를 2번 부르므로 80종목이면 10여 초 걸립니다. KIS 실전 계정 전용입니다.',
       z.object({
         codes: z.array(codeSchema).min(1).max(80).describe('6자리 종목코드 목록 (최대 80개)'),
